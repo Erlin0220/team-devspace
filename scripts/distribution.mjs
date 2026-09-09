@@ -1,0 +1,102 @@
+import { cp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { run, sha256File } from './build-utils.mjs';
+
+const SHA256 = /^[a-f0-9]{64}$/;
+const TARGET = /^(win32|darwin|linux)-(x64|arm64)$/;
+const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
+
+export function validateDistributionConfig(release) {
+  const distribution = release?.distribution;
+  if (!distribution || !Array.isArray(distribution.targets) || distribution.targets.length === 0 ||
+      distribution.targets.some(target => !TARGET.test(target)) || new Set(distribution.targets).size !== distribution.targets.length) {
+    throw new Error('release.config.json distribution.targets must contain unique supported OS/architecture targets');
+  }
+  if (typeof distribution.bucket !== 'string' || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(distribution.bucket)) {
+    throw new Error('release.config.json distribution.bucket must be a valid R2 bucket name');
+  }
+  const base = new URL(distribution.baseUrl);
+  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash || base.pathname.endsWith('/')) {
+    throw new Error('release.config.json distribution.baseUrl must be a fixed HTTPS URL without a trailing slash');
+  }
+  if (distribution.hostname !== base.hostname || base.pathname !== '/releases') {
+    throw new Error('distribution.hostname and baseUrl must identify the dedicated R2 custom domain /releases path');
+  }
+  if (distribution.visibility !== 'public') {
+    throw new Error('This fixed release model requires the explicitly approved public R2 artifact origin');
+  }
+  if (!VERSION.test(release.version ?? '')) throw new Error('Release version must be explicit semver, never latest');
+  return distribution;
+}
+
+async function componentArchive({ name, version, bundle, paths, tar, staging, layout, required = true, condition }) {
+  if (!Array.isArray(paths) || paths.length === 0) throw new Error(`Component ${name} has no payload paths`);
+  const temporary = join(staging, `${name}.tar.gz`);
+  await rm(temporary, { force: true });
+  await run(tar, ['-czf', temporary, '-C', bundle, ...paths], { timeout: 600000 });
+  const sha256 = await sha256File(temporary);
+  if (!SHA256.test(sha256)) throw new Error(`Component ${name} did not produce a SHA-256 digest`);
+  const size = (await stat(temporary)).size;
+  const filename = `${name}.tar.gz`;
+  const relativePath = `objects/sha256/${sha256}/${filename}`;
+  const destination = join(layout, ...relativePath.split('/'));
+  await mkdir(dirname(destination), { recursive: true });
+  await cp(temporary, destination);
+  return {
+    name, version, required, ...(condition ? { condition } : {}),
+    format: 'tar.gz', path: relativePath, sha256, size,
+  };
+}
+
+export async function buildReleaseLayout({ bundle, target, release, tar, outputDirectory = 'release' }) {
+  if (!TARGET.test(target)) throw new Error(`Unsupported release target: ${target}`);
+  const distribution = validateDistributionConfig(release);
+  if (!distribution.targets.includes(target)) throw new Error(`Target ${target} is not enabled in release.config.json`);
+  const root = resolve(outputDirectory);
+  const staging = resolve('build', `distribution-${target}`);
+  const layout = join(root, 'offline', release.version, target);
+  await rm(staging, { recursive: true, force: true });
+  await rm(layout, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true });
+  await mkdir(layout, { recursive: true });
+
+  // The small app shell and large upstream dependency graph are separate immutable cache units.
+  const appPaths = [
+    'client', 'platform', 'package.json', 'release.config.json', 'README.md',
+    'sbom.cdx.json', 'THIRD-PARTY-NOTICES.txt', 'release-provenance.json',
+    ...(target === 'win32-x64' ? ['bin/team-devspace.cmd'] : []),
+  ];
+  const cloudflaredPath = target === 'win32-x64' ? 'bin/cloudflared.exe' : 'bin/cloudflared';
+  const components = [
+    await componentArchive({ name: 'app', version: release.version, bundle, paths: appPaths, tar, staging, layout }),
+    await componentArchive({ name: 'devspace-runtime', version: release.devspaceVersion, bundle,
+      paths: ['node_modules', 'package-lock.json', '.npmrc'], tar, staging, layout }),
+    await componentArchive({ name: 'node', version: release.nodeVersion, bundle, paths: ['runtime'], tar, staging, layout }),
+    await componentArchive({ name: 'cloudflared', version: release.cloudflaredVersion, bundle,
+      paths: [cloudflaredPath], tar, staging, layout }),
+  ];
+  if (target === 'win32-x64') {
+    components.push(await componentArchive({ name: 'git-fallback', version: release.gitFallbackVersion, bundle,
+      paths: ['git'], tar, staging, layout, required: false, condition: 'git-and-bash-unavailable' }));
+  }
+
+  const manifest = {
+    schema: 1,
+    trust: 'bootstrap-embedded-manifest',
+    release: release.version,
+    target,
+    sourceBase: `${distribution.baseUrl}/${release.version}/${target}/`,
+    runtime: {
+      devspaceVersion: release.devspaceVersion,
+      nodeVersion: release.nodeVersion,
+      cloudflaredVersion: release.cloudflaredVersion,
+      ...(target === 'win32-x64' ? { gitFallbackVersion: release.gitFallbackVersion } : {}),
+    },
+    components,
+  };
+  const manifestPath = join(layout, 'manifest.json');
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifestSha256 = await sha256File(manifestPath);
+  await writeFile(join(layout, 'manifest.json.sha256'), `${manifestSha256}  manifest.json\n`);
+  return { layout, manifest, manifestPath, manifestSha256, components };
+}

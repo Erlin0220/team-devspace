@@ -1,0 +1,20 @@
+{
+  "node": {
+    "win32-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-win-x64.zip", "sha256": "425a5bd68cc95e8eb16bcccd0a75081b48983fc6a26f67126bd4d6c7198231e8" },
+    "darwin-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-darwin-x64.tar.gz", "sha256": "dc2ccab261fd70c347e4cc52085d8d226f471ccba1fc2a7252283949b31ca9f9" },
+    "darwin-arm64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-darwin-arm64.tar.gz", "sha256": "e0f383a215dd3093de6d2c74f87056dc2306a2e09ad494cbffdba28f89046f56" },
+    "linux-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-x64.tar.gz", "sha256": "535eeb608ca1e0b71d49a0e36991d449d5f935fbb04eca61677519b010cd673a" },
+    "linux-arm64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-arm64.tar.gz", "sha256": "0c96aa074abd109e0b5da8d10202a9bbcea9bcf9ddb587b20944f71b8f21f8c8" }
+  },
+  "cloudflared": {
+    "win32-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-windows-amd64.exe", "sha256": "83e726ed18ea78c5ad5213c4c3a3a27051393950d2bc8ed4de69bec12d14eaae" },
+    "darwin-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-amd64.tgz", "sha256": "61e1316266a00fd70ce40da011d612badc805367fb65293dd1925f938f704c99" },
+    "darwin-arm64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-arm64.tgz", "sha256": "40c9144d86df8937c5b43293a1f7d2d2107029aa74725023dd46b1b27154352f" },
+    "linux-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64", "sha256": "f29324fe934d1e100617484c78deef803c4dc2cd351d645bbde42e96b4fccc5e" },
+    "linux-arm64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-arm64", "sha256": "4bcfd35521a7cbc545ebfd5d57334a71ee180e2a64874981f374c81472118391" }
+  },
+  "git": {
+    "win32-x64": { "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/PortableGit-2.55.0.5-64-bit.7z.exe", "sha256": "5aa8a20f6e9abb2c755f0e73c91c687701a46b309ad84a0ca6509380fa4ae290" }
+  },
+  "nsis": { "url": "https://prdownloads.sourceforge.net/nsis/nsis-3.12.zip", "sha256": "56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f" }
+}
