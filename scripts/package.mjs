@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { buildReleaseLayout } from './distribution.mjs';
-import { pruneRuntime, RUNTIME_PROFILE } from './runtime-profile.mjs';
+import { dependencyFingerprint, pruneRuntime, RUNTIME_PROFILE } from './runtime-profile.mjs';
 
 const { values } = parseArgs({ options: {
   'prepare-only': { type: 'boolean' }, 'reuse-dependencies': { type: 'boolean' },
@@ -94,8 +94,9 @@ const lockSha256 = createHash('sha256').update(await readFile('package-lock.json
 const omitOptionalDependencies = process.platform === 'win32';
 const dependencyInstallProfile = `${RUNTIME_PROFILE}:${omitOptionalDependencies ? 'omit-dev-optional' : 'omit-dev'}`;
 const dependencyOmissions = ['--omit=dev', ...(omitOptionalDependencies ? ['--omit=optional'] : [])];
-const fingerprint = createHash('sha256').update(lockSha256).update(target).update(version).update(npmVersion)
-  .update(dependencyInstallProfile).digest('hex');
+const fingerprint = dependencyFingerprint({ lockfile: JSON.parse(await readFile('package-lock.json', 'utf8')),
+  packageJson, npmrc: await readFile('.npmrc', 'utf8'), target, nodeVersion: version, npmVersion,
+  profile: dependencyInstallProfile });
 const dependencyMarker = join(bundle, '.dependency-fingerprint');
 let previousFingerprint;
 try { previousFingerprint = (await readFile(dependencyMarker, 'utf8')).trim(); } catch {}
@@ -105,6 +106,13 @@ if (!values['reuse-dependencies'] || previousFingerprint !== fingerprint) {
     { cwd: bundle, env: buildEnvironment, timeout: 600000 });
 }
 await pruneRuntime(bundle, target);
+if (process.platform === 'darwin') {
+  // microsoft/node-pty#850: stable 1.1.0 ships its macOS spawn-helper as 0644.
+  // Fix executable metadata only; keep upstream code and the pinned version.
+  const helper = join(bundle, 'node_modules', 'node-pty', 'prebuilds', target, 'spawn-helper');
+  await chmod(helper, 0o755);
+  await access(helper, 1); // X_OK; the real PTY test below must still pass.
+}
 const installed = JSON.parse(await readFile(join(bundle, 'node_modules', '@waishnav', 'devspace', 'package.json'), 'utf8'));
 if (installed.version !== release.devspaceVersion) throw new Error('Installed upstream package differs from release pin');
 if (omitOptionalDependencies) {

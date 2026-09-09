@@ -1,7 +1,19 @@
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
-export const RUNTIME_PROFILE = 'no-subagents-target-native-v2';
+export const RUNTIME_PROFILE = 'no-subagents-target-native-v3';
+
+export function dependencyFingerprint({ lockfile, packageJson, npmrc, target, nodeVersion, npmVersion, profile }) {
+  // An app-only release changes two lockfile metadata fields, not dependencies.
+  // Keep every dependency version, lifecycle script, override and npm policy.
+  const lock = structuredClone(lockfile);
+  const pkg = { ...packageJson };
+  delete lock.version;
+  if (lock.packages?.['']) delete lock.packages[''].version;
+  delete pkg.version;
+  return createHash('sha256').update(JSON.stringify({ lock, pkg, npmrc, target, nodeVersion, npmVersion, profile })).digest('hex');
+}
 
 // Team DevSpace disables local subagents. Do not prune the SDK itself or arbitrary
 // production dependencies: only optional platform executables and foreign PTYs.

@@ -7,7 +7,8 @@ This file records evidence that has actually been produced. A checked item means
 - [x] Local `check`, 23 tests and unified Worker dry-run passed after the optimization. New tests cover canonical deployment versions, Admin/D1/assets readiness, recovery route ownership, public assets routing and targeted optional/native pruning.
 - [x] Actual Windows NSIS transaction exercised the official PortableGit SFX with system Git/Bash deliberately absent from PATH, successful upgrade/repair, old-version and stale-cache collection, and corrupt-artifact rejection preserving the current installation.
 - [ ] Five-target 0.1.1 native build and installer transaction evidence (record CI run after completion).
-- [ ] Unified 0.1.1 production deployment/readiness (record CI run after completion).
+- [x] Unified 0.1.1 production deployment passed in Actions run `34359451366` at commit `f5c383d`; Worker version `32a78dfb-99b8-40e2-9e81-76b5aa3dc81a`. Release, administrator/D1 and exact static asset content/CORS probes all passed. Independent public verification returned 0.1.1/1.0.8, matching JS bytes and HTTP 401 for unauthenticated MCP.
+- [x] Initial Linux x64 native build plus actual offline installer transaction passed in run `34359446174`. Its macOS jobs exposed upstream node-pty 1.1.0's non-executable spawn-helper, rather than silently passing a require-only check; the build now corrects only that helper's executable metadata and retains the real spawn gate.
 - [ ] Signed fixed-version GitHub Release. Production Windows/Apple signing credentials were absent when this optimization started; build success cannot close this gate.
 
 ## Earlier baseline local evidence

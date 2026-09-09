@@ -5,7 +5,24 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildReleaseLayout, validateDistributionConfig } from '../scripts/distribution.mjs';
 import { run, sha256File } from '../scripts/build-utils.mjs';
-import { pruneRuntime } from '../scripts/runtime-profile.mjs';
+import { dependencyFingerprint, pruneRuntime } from '../scripts/runtime-profile.mjs';
+
+test('runtime cache ignores only app version metadata, not dependency or installation policy changes', () => {
+  const input = { lockfile: { version: '0.1.0', packages: { '': { version: '0.1.0' }, 'node_modules/dependency': { version: '1.2.3' } } },
+    packageJson: { version: '0.1.0', scripts: { postinstall: 'node install.mjs' }, dependencies: { dependency: '1.2.3' } },
+    npmrc: 'registry=https://registry.npmjs.org/', target: 'linux-x64', nodeVersion: 'v22', npmVersion: '11', profile: 'profile' };
+  const before = dependencyFingerprint(input);
+  const versionOnly = structuredClone(input);
+  versionOnly.lockfile.version = versionOnly.lockfile.packages[''].version = versionOnly.packageJson.version = '0.1.1';
+  assert.equal(dependencyFingerprint(versionOnly), before);
+  assert.equal(input.lockfile.version, '0.1.0', 'Computing a key must not mutate provenance input');
+  for (const change of [value => { value.lockfile.packages['node_modules/dependency'].version = '1.2.4'; },
+    value => { value.packageJson.scripts.postinstall = 'node changed.mjs'; },
+    value => { value.npmrc += '\nignore-scripts=true'; }, value => { value.target = 'darwin-x64'; }]) {
+    const changed = structuredClone(input); change(changed);
+    assert.notEqual(dependencyFingerprint(changed), before);
+  }
+});
 
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
