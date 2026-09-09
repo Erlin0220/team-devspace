@@ -11,10 +11,7 @@
   "cloudflaredVersion": "2026.8.3",
   "gitFallbackVersion": "2.55.0.windows.5",
   "distribution": {
-    "bucket": "team-devspace-releases",
-    "baseUrl": "https://releases.568920429.xyz/releases",
-    "hostname": "releases.568920429.xyz",
-    "visibility": "public",
+    "mode": "private-github-release",
     "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
   }
 }

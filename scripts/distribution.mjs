@@ -8,22 +8,12 @@ const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function validateDistributionConfig(release) {
   const distribution = release?.distribution;
-  if (!distribution || !Array.isArray(distribution.targets) || distribution.targets.length === 0 ||
+  if (!distribution || distribution.mode !== 'private-github-release') {
+    throw new Error('release.config.json distribution.mode must be private-github-release');
+  }
+  if (!Array.isArray(distribution.targets) || distribution.targets.length === 0 ||
       distribution.targets.some(target => !TARGET.test(target)) || new Set(distribution.targets).size !== distribution.targets.length) {
     throw new Error('release.config.json distribution.targets must contain unique supported OS/architecture targets');
-  }
-  if (typeof distribution.bucket !== 'string' || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(distribution.bucket)) {
-    throw new Error('release.config.json distribution.bucket must be a valid R2 bucket name');
-  }
-  const base = new URL(distribution.baseUrl);
-  if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash || base.pathname.endsWith('/')) {
-    throw new Error('release.config.json distribution.baseUrl must be a fixed HTTPS URL without a trailing slash');
-  }
-  if (distribution.hostname !== base.hostname || base.pathname !== '/releases') {
-    throw new Error('distribution.hostname and baseUrl must identify the dedicated R2 custom domain /releases path');
-  }
-  if (distribution.visibility !== 'public') {
-    throw new Error('This fixed release model requires the explicitly approved public R2 artifact origin');
   }
   if (!VERSION.test(release.version ?? '')) throw new Error('Release version must be explicit semver, never latest');
   return distribution;
@@ -60,7 +50,6 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
   await mkdir(staging, { recursive: true });
   await mkdir(layout, { recursive: true });
 
-  // The small app shell and large upstream dependency graph are separate immutable cache units.
   const appPaths = [
     'client', 'platform', 'package.json', 'release.config.json', 'README.md',
     'sbom.cdx.json', 'THIRD-PARTY-NOTICES.txt', 'release-provenance.json',
@@ -85,7 +74,7 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
     trust: 'bootstrap-embedded-manifest',
     release: release.version,
     target,
-    sourceBase: `${distribution.baseUrl}/${release.version}/${target}/`,
+    installMode: 'offline',
     runtime: {
       devspaceVersion: release.devspaceVersion,
       nodeVersion: release.nodeVersion,

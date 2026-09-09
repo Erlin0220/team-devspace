@@ -90,10 +90,8 @@ function Assert-Manifest([object]$Manifest) {
       $Manifest.target -ne 'win32-x64' -or $Manifest.release -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
     throw 'This release manifest is not valid for Windows x64.'
   }
-  $source = [uri]$Manifest.sourceBase
-  if ($source.Scheme -ne 'https' -or -not $source.AbsoluteUri.EndsWith('/') -or
-      $source.AbsoluteUri -match '/latest(?:/|$)' -or $source.Query -or $source.Fragment) {
-    throw 'The release source must be a fixed HTTPS version path, never latest.'
+  if ($Manifest.installMode -ne 'offline') {
+    throw 'This installer only accepts the offline release contract.'
   }
   $names = @{}
   foreach ($component in @($Manifest.components)) {
@@ -133,14 +131,7 @@ function Receive-Artifact([object]$Manifest, [object]$Component) {
     if ($offlineArtifact -and (Test-Path -LiteralPath $offlineArtifact)) {
       Copy-Item -LiteralPath $offlineArtifact -Destination $temporary
     } else {
-      $source = [uri]::new([uri]$Manifest.sourceBase, [string]$Component.path)
-      Write-Host "Downloading $($Component.name) $($Component.version) from immutable release $($Manifest.release)..."
-      $bits = Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue
-      if ($bits) {
-        Start-BitsTransfer -Source $source.AbsoluteUri -Destination $temporary -TransferType Download
-      } else {
-        Invoke-WebRequest -Uri $source.AbsoluteUri -OutFile $temporary -UseBasicParsing -MaximumRedirection 5
-      }
+      throw "Artifact $($Component.name) is missing from the offline release package. Re-run setup from the complete package supplied by your administrator."
     }
     Assert-Artifact $temporary $Component
     Move-Item -LiteralPath $temporary -Destination $destination

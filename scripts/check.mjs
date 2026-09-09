@@ -25,15 +25,15 @@ if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
 if (manifest.version !== release.version) throw new Error('Package and release versions differ');
 validateDistributionConfig(release);
 if (deployment.accountId !== release.cloudflare.accountId || deployment.zoneId !== release.cloudflare.zoneId ||
-    deployment.gateway !== release.gateway || deployment.releaseBucket !== release.distribution.bucket ||
-    deployment.releaseHostname !== release.distribution.hostname || deployment.releaseVisibility !== release.distribution.visibility) {
-  throw new Error('Declarative deployment resources differ from canonical release metadata');
+    deployment.gateway !== release.gateway) {
+  throw new Error('Declarative deployment resources differ from canonical gateway metadata');
 }
 if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string) {
   throw new Error('Gateway must keep privacy-aware Workers Logs enabled');
 }
-if (!releaseWorkflow.includes('rclone copy') || !releaseWorkflow.includes('--immutable') || releaseWorkflow.includes('r2 object put')) {
-  throw new Error('Release workflow must use immutable bulk publication and cannot use overwritable per-object puts');
+if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes("--jq '.private'") ||
+    /\brclone\b|cloudflarestorage\.com|RCLONE_CONFIG_RELEASES/i.test(releaseWorkflow)) {
+  throw new Error('Release workflow must publish only to a verified private GitHub Release and contain no legacy object-storage publication path');
 }
 if (manifest.dependencies['@clack/prompts']) throw new Error('Administrator-only prompts must not ship as an employee runtime dependency');
 if (!/^[a-f0-9]{32}$/.test(release.cloudflare?.accountId ?? '') || !/^[a-f0-9]{32}$/.test(release.cloudflare?.zoneId ?? '') ||
@@ -45,4 +45,4 @@ if (gateway.protocol !== 'https:' || !gateway.hostname.endsWith(`.${release.clou
   throw new Error('Release gateway must be a bare HTTPS subdomain of the configured Cloudflare zone');
 }
 execFileSync('git', ['diff', '--check'], { stdio: 'inherit' });
-console.log('Syntax, release/upstream pins, dependency boundary, Cloudflare metadata, and diff whitespace checks passed.');
+console.log('Syntax, release/upstream pins, dependency boundary, private GitHub release policy, Cloudflare gateway metadata, and diff whitespace checks passed.');

@@ -9,18 +9,15 @@ import { run, sha256File } from '../scripts/build-utils.mjs';
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', gitFallbackVersion: '2.55.0.windows.5',
-  distribution: { bucket: 'team-devspace-releases', baseUrl: 'https://team.example.test/releases',
-    hostname: 'team.example.test', visibility: 'public', targets: ['win32-x64'] },
+  distribution: { mode: 'private-github-release', targets: ['win32-x64'] },
 };
 
-test('distribution config requires explicit immutable targets and source path', () => {
-  assert.equal(validateDistributionConfig(baseRelease).bucket, 'team-devspace-releases');
+test('distribution config requires private GitHub Releases and explicit immutable targets', () => {
+  assert.equal(validateDistributionConfig(baseRelease).mode, 'private-github-release');
   assert.throws(() => validateDistributionConfig({ ...baseRelease,
-    distribution: { ...baseRelease.distribution, baseUrl: 'https://team.example.test/latest/' } }));
+    distribution: { ...baseRelease.distribution, mode: 'public-object-storage' } }));
   assert.throws(() => validateDistributionConfig({ ...baseRelease,
     distribution: { ...baseRelease.distribution, targets: ['win32-x64', 'win32-x64'] } }));
-  assert.throws(() => validateDistributionConfig({ ...baseRelease,
-    distribution: { ...baseRelease.distribution, visibility: 'private' } }));
 });
 
 test('release layout separates app, upstream dependencies, runtimes and optional fallback', async t => {
@@ -52,6 +49,7 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   const listing = (await run(tar, ['-tzf', appArchive], { capture: true })).stdout;
   assert.doesNotMatch(listing, /node_modules/);
   const manifest = JSON.parse(await readFile(built.manifestPath, 'utf8'));
-  assert.equal(manifest.sourceBase, 'https://team.example.test/releases/1.2.3/win32-x64/');
+  assert.equal(manifest.installMode, 'offline');
+  assert.equal('sourceBase' in manifest, false);
   assert.equal(await sha256File(built.manifestPath), built.manifestSha256);
 });

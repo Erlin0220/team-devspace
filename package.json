@@ -14,7 +14,7 @@
     "test:native": "node scripts/native-smoke.mjs",
     "test:installer": "node scripts/installer-smoke.mjs",
     "test:distribution": "node --test --test-concurrency=1 test/distribution.test.mjs",
-    "verify:release": "node scripts/verify-remote-release.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "assets": "node scripts/assets.mjs",
     "configure": "node scripts/configure.mjs",
     "dev:gateway": "wrangler dev --local",

@@ -59,7 +59,7 @@ schema=$(sed -n 's/^[[:space:]]*"schema": \([0-9][0-9]*\),$/\1/p' "$MANIFEST")
 trust=$(sed -n 's/^[[:space:]]*"trust": "\([^"]*\)",$/\1/p' "$MANIFEST")
 release=$(sed -n 's/^[[:space:]]*"release": "\([^"]*\)",$/\1/p' "$MANIFEST")
 manifest_target=$(sed -n 's/^[[:space:]]*"target": "\([^"]*\)",$/\1/p' "$MANIFEST")
-source_base=$(sed -n 's/^[[:space:]]*"sourceBase": "\([^"]*\)",$/\1/p' "$MANIFEST")
+install_mode=$(sed -n 's/^[[:space:]]*"installMode": "\([^"]*\)",$/\1/p' "$MANIFEST")
 node_version=$(sed -n 's/^[[:space:]]*"nodeVersion": "\([^"]*\)",$/\1/p' "$MANIFEST")
 devspace_version=$(sed -n 's/^[[:space:]]*"devspaceVersion": "\([^"]*\)",$/\1/p' "$MANIFEST")
 cloudflared_version=$(sed -n 's/^[[:space:]]*"cloudflaredVersion": "\([^"]*\)".*$/\1/p' "$MANIFEST")
@@ -67,8 +67,10 @@ cloudflared_version=$(sed -n 's/^[[:space:]]*"cloudflaredVersion": "\([^"]*\)".*
   echo 'Release manifest does not match this platform.' >&2; exit 2;
 }
 case "$release" in ''|*[!0-9A-Za-z.-]*) echo 'Invalid fixed release version.' >&2; exit 2 ;; esac
-case "$source_base" in https://*/"$release"/"$TARGET"/) ;; *) echo 'Release source is not a fixed HTTPS version path.' >&2; exit 2 ;; esac
-case "$source_base" in */latest/*) echo 'Release source must never follow latest.' >&2; exit 2 ;; esac
+[ "$install_mode" = offline ] || { echo 'This bootstrap only accepts the offline release contract.' >&2; exit 2; }
+if [ -z "$OFFLINE_ROOT" ]; then
+  OFFLINE_ROOT=$(CDPATH= cd -- "$(dirname -- "$MANIFEST")" && pwd)
+fi
 
 manifest_sha() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
@@ -115,8 +117,8 @@ while IFS='|' read -r name version required condition relative sha size; do
     if [ -n "$OFFLINE_ROOT" ] && [ -f "$OFFLINE_ROOT/$relative" ]; then
       cp "$OFFLINE_ROOT/$relative" "$partial"
     else
-      echo "Downloading $name $version from immutable release $release..."
-      curl --fail --location --proto '=https' --tlsv1.2 --output "$partial" "$source_base$relative"
+      echo "Artifact $name is missing from the offline release package. Re-run setup from the complete package supplied by your administrator." >&2
+      exit 1
     fi
     verify_artifact "$partial" "$size" "$sha" || { echo "Artifact verification failed: $name" >&2; exit 1; }
     mv "$partial" "$artifact"

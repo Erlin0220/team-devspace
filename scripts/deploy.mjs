@@ -18,7 +18,6 @@ const config = values['dry-run'] ? null : values.ci ? {
   deviceDomain: release.cloudflare.deviceDomain,
   deployToken: process.env.CLOUDFLARE_API_TOKEN,
   runtimeToken: process.env.CF_RUNTIME_API_TOKEN,
-  releaseVisibility: process.env.TEAM_DEVSPACE_RELEASE_VISIBILITY,
 } : await readJson(values.config ?? join(directory, 'cloudflare.json'));
 const workerName = 'team-devspace';
 const environment = { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true',
@@ -54,15 +53,10 @@ if (values['dry-run']) {
   const gateway = normalizeGateway(config.gateway);
   if (new URL(gateway).protocol !== 'https:') throw new Error('A deployed gateway must use HTTPS');
   const hostname = new URL(gateway).hostname;
-  const releaseHostname = release.distribution.hostname;
-  const releaseVisibility = release.distribution.visibility;
   if (gateway !== normalizeGateway(release.gateway)) throw new Error('Gateway differs from the installer release configuration. Update release.config.json deliberately before deployment.');
   const zone = await api(`/zones/${config.zoneId}`);
   if (zone.account.id !== config.accountId || zone.name !== config.deviceDomain || !hostname.endsWith(`.${zone.name}`)) {
     throw new Error('Account, zone, device domain and gateway hostname do not match');
-  }
-  if (!releaseHostname.endsWith(`.${zone.name}`) || new URL(release.distribution.baseUrl).hostname !== releaseHostname) {
-    throw new Error('Release custom domain must belong to the configured Cloudflare zone');
   }
   const domains = await api(`/accounts/${config.accountId}/workers/domains`);
   const owned = domains.find(domain => domain.hostname === hostname);
@@ -71,27 +65,9 @@ if (values['dry-run']) {
     const records = await api(`/zones/${config.zoneId}/dns_records?name=${encodeURIComponent(hostname)}`);
     if (records.length) throw new Error('The requested new hostname already has DNS records; existing services will not be replaced');
   }
-  const bucketListing = await api(`/accounts/${config.accountId}/r2/buckets`);
-  const buckets = Array.isArray(bucketListing) ? bucketListing : bucketListing.buckets;
-  if (!buckets?.some(bucket => bucket.name === release.distribution.bucket)) {
-    await api(`/accounts/${config.accountId}/r2/buckets`, 'POST', { name: release.distribution.bucket });
-  }
-  const customDomains = await api(`/accounts/${config.accountId}/r2/buckets/${encodeURIComponent(release.distribution.bucket)}/domains/custom`);
-  const domains_ = Array.isArray(customDomains) ? customDomains : customDomains.domains;
-  const releaseDomain = domains_?.find(domain => domain.domain === releaseHostname);
-  if (config.releaseVisibility && config.releaseVisibility !== releaseVisibility) {
-    throw new Error('Deployment credentials attempted to override the approved release visibility');
-  }
-  if (!releaseDomain) {
-    await api(`/accounts/${config.accountId}/r2/buckets/${encodeURIComponent(release.distribution.bucket)}/domains/custom`,
-      'POST', { domain: releaseHostname, enabled: true, zoneId: config.zoneId, minTLS: '1.2' });
-  } else if (!releaseDomain.enabled) {
-    throw new Error('The R2 release custom domain exists but public access is disabled');
-  }
   let database;
   if (deployment.gateway !== gateway || deployment.accountId !== config.accountId || deployment.zoneId !== config.zoneId ||
-      deployment.databaseName !== workerName || deployment.releaseBucket !== release.distribution.bucket ||
-      deployment.releaseHostname !== release.distribution.hostname || deployment.releaseVisibility !== releaseVisibility) {
+      deployment.databaseName !== workerName) {
     throw new Error('deployment.config.json does not match the canonical release and Cloudflare resources');
   }
   if (deployment.databaseId !== '00000000-0000-0000-0000-000000000000') {

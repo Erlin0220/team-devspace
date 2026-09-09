@@ -186,6 +186,7 @@ if (!values['prepare-only']) {
     await mkdir(join(contents, 'Resources'), { recursive: true });
     await cp('platform/unix/bootstrap.sh', join(contents, 'Resources', 'bootstrap.sh'));
     await cp(distribution.manifestPath, join(contents, 'Resources', 'release-manifest.json'));
+    await cp(join(distribution.layout, 'objects'), join(contents, 'Resources', 'objects'), { recursive: true });
     await chmod(join(contents, 'Resources', 'bootstrap.sh'), 0o755);
     await cp('platform/macos/launch-app.sh', join(contents, 'MacOS', 'TeamDevSpace'));
     await chmod(join(contents, 'MacOS', 'TeamDevSpace'), 0o755);
@@ -220,9 +221,10 @@ if (!values['prepare-only']) {
     await mkdir(bootstrapRoot, { recursive: true });
     await cp('platform/unix/bootstrap.sh', join(bootstrapRoot, 'install.sh'));
     await cp(distribution.manifestPath, join(bootstrapRoot, 'release-manifest.json'));
+    await cp(join(distribution.layout, 'objects'), join(bootstrapRoot, 'objects'), { recursive: true });
     await chmod(join(bootstrapRoot, 'install.sh'), 0o755);
-    artifact = join(outputDirectory, `Team-DevSpace-${release.version}-linux-${process.arch}-bootstrap.tar.gz`);
-    await run(tar, ['-czf', artifact, '-C', bootstrapRoot, 'install.sh', 'release-manifest.json']);
+    artifact = join(outputDirectory, `Team-DevSpace-${release.version}-linux-${process.arch}-offline.tar.gz`);
+    await run(tar, ['-czf', artifact, '-C', bootstrapRoot, 'install.sh', 'release-manifest.json', 'objects']);
   }
   await cp(artifact, join(distribution.layout, artifact.split(/[\\/]/).pop()));
   const checksum = await sha256File(artifact);

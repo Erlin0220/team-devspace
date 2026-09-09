@@ -45,10 +45,10 @@ InstallDirRegKey HKCU "${PRODUCT_KEY}" "InstallDir"
 SetCompressor zlib
 ShowInstDetails show
 ShowUninstDetails show
-BrandingText "Team DevSpace online installer - official DevSpace ${DEVSPACE_VERSION}"
+BrandingText "Team DevSpace offline installer - official DevSpace ${DEVSPACE_VERSION}"
 VIProductVersion "${APP_VERSION_NUM}"
 VIAddVersionKey "ProductName" "Team DevSpace"
-VIAddVersionKey "FileDescription" "Team DevSpace verified online bootstrapper"
+VIAddVersionKey "FileDescription" "Team DevSpace verified offline bootstrapper"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 
 Var Dialog
@@ -93,7 +93,7 @@ Function EnrollmentPage
   ${If} $Dialog == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 24u "Enter the Access Key issued by your administrator. The installer downloads only this fixed release and verifies every artifact before activation."
+  ${NSD_CreateLabel} 0 0 100% 24u "Enter the Access Key issued by your administrator. The installer uses only the supplied fixed release package and verifies every artifact before activation."
   Pop $0
   ${NSD_CreatePassword} 0 28u 100% 14u ""
   Pop $KeyControl
@@ -172,7 +172,7 @@ Section "Install"
   StrCpy $AccessKey ""
   ${If} $ResultCode != 0
     SetErrorLevel 4
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Download, verification, or startup failed. The previously active version and Enrollment were retained. Re-run this installer or use Repair connection after checking the network/source." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Offline payload verification or startup failed. The previously active version and Enrollment were retained. Re-run setup from the complete package supplied by your administrator." /SD IDOK
     Abort
   ${EndIf}
 

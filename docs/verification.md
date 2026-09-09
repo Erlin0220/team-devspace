@@ -13,7 +13,7 @@ This file records evidence that has actually been produced. A checked item means
 - [x] `npm run test:installer`: an actual test-isolated NSIS build was exercised against a controlled loopback Enrollment endpoint with production startup deliberately disabled; the distribution transaction and native startup are verified separately so the test never claims a real Tunnel is online.
 - [x] `npm run test:distribution`: fixed target/version metadata, component separation, exact size/SHA-256 and content-addressed offline layout are verified.
 - [x] The actual Windows bootstrap installer is 88 KB class and contains no Node, DevSpace `node_modules`, cloudflared or Git Payload; those exist only as manifest-addressed artifacts.
-- [x] The Windows production graph omits unused optional dependencies: the real bundle contains neither `node-pty` nor the 219 MB-class platform Claude executable. `node_modules` fell from 540,693,792 to 254,205,718 bytes and the compressed `devspace-runtime` artifact from 165,975,610 to 51,041,979 bytes; the required online components total 102,670,830 bytes. macOS/Linux keep optional dependencies for upstream Unix TTY support.
+- [x] The Windows production graph omits unused optional dependencies: the real bundle contains neither `node-pty` nor the 219 MB-class platform Claude executable. `node_modules` fell from 540,693,792 to 254,205,718 bytes and the compressed `devspace-runtime` artifact from 165,975,610 to 51,041,979 bytes; the required component archives total 102,670,830 bytes. macOS/Linux keep optional dependencies for upstream Unix TTY support.
 - [x] Isolated NSIS smoke verifies offline acquisition, shared cache, A/B activation, repeated-install Enrollment preservation, Repair reacquisition, failed-repair active-version retention, rollback retention and uninstall preservation.
 - [x] Gateway and static MCP assets compile as separate Workers; privacy-aware Workers Logs are enabled and scheduled cleanup has a deterministic reconciler test.
 
@@ -26,8 +26,8 @@ This file records evidence that has actually been produced. A checked item means
 - [ ] macOS x64 package built natively and installed/tested.
 - [ ] Linux x64/arm64 payloads built and tested on native CI; Linux remains outside stable handoff until this evidence exists.
 - [ ] Windows Authenticode and macOS Developer ID Installer/notarization/stapling gates exercised with production signing identities.
-- [ ] All five native layouts aggregated, uploaded with immutable R2 semantics, and fully re-downloaded/verified through the R2 Custom Domain.
-- [x] Product owner explicitly selected public R2 runtime artifacts; canonical release/deployment metadata and CI prevent an environment override.
+- [ ] All five native layouts aggregated, locally SHA-256 verified, and published once to a private fixed-version GitHub Release.
+- [x] Product owner selected private GitHub Releases for administrator handoff; employee installers are offline-only and contain no GitHub credential or remote artifact origin.
 - [ ] Two real Workspace users prove ChatGPT OAuth identity A/B routes to Device A/B, and the same two identities enroll their own devices; Access Key IAM is retained until then.
 - [ ] Linked App Token is proven through wildcard per-device Access before considering removal of Device Secret / MASTER_KEY.
 - [ ] Windows and macOS devices are online simultaneously and Access Key A cannot route to Device B (and vice versa).

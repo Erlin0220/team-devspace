@@ -1,15 +1,10 @@
-name: Build, verify and publish fixed release
+name: Build, verify and publish private release
 
 on:
   workflow_dispatch:
     inputs:
-      free_budget_confirmed:
-        description: 'I verified runner/storage allowance and a stop-usage budget'
-        type: boolean
-        required: true
-        default: false
       publish:
-        description: 'Sign and publish this fixed release after all native jobs pass'
+        description: 'Sign and publish this fixed release to the private GitHub repository'
         type: boolean
         required: true
         default: false
@@ -23,7 +18,6 @@ concurrency:
 
 jobs:
   package:
-    if: ${{ inputs.free_budget_confirmed }}
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -150,19 +144,15 @@ jobs:
           compression-level: 0
 
   publish:
-    if: ${{ inputs.free_budget_confirmed && inputs.publish }}
+    if: ${{ inputs.publish }}
     needs: package
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     environment: production
     env:
-      RELEASE_VISIBILITY: public
-      RCLONE_CONFIG_RELEASES_TYPE: s3
-      RCLONE_CONFIG_RELEASES_PROVIDER: Cloudflare
-      RCLONE_CONFIG_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      RCLONE_CONFIG_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      RCLONE_CONFIG_RELEASES_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-      RELEASE_BUCKET: team-devspace-releases
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -175,29 +165,37 @@ jobs:
           pattern: team-devspace-*
           path: release
           merge-multiple: true
-      - name: Enforce explicit release exposure decision
+      - name: Refuse publication from a public repository
+        shell: bash
         run: |
-          test "$RELEASE_VISIBILITY" = "$(node -p "require('./release.config.json').distribution.visibility")"
-      - name: Install mature immutable transfer tool
-        run: sudo apt-get update && sudo apt-get install --yes rclone
-      - name: Upload content-addressed objects without overwrite
+          set -euo pipefail
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private')" = true
+      - name: Verify complete offline layouts before publication
+        run: npm run verify:release
+      - name: Assemble administrator handoff assets
+        shell: bash
         run: |
+          set -euo pipefail
           VERSION=$(node -p "require('./release.config.json').version")
-          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
-            --immutable --checksum --include '*/objects/**' --transfers 8 --checkers 16
-      - name: Verify every remote object byte and SHA-256
-        run: node scripts/verify-remote-release.mjs
-      - name: Publish signed fixed-version entrypoints without overwrite
+          mkdir -p release/publish
+          (cd "release/offline/$VERSION/win32-x64" && zip -qr "../../../publish/Team-DevSpace-$VERSION-windows-x64-offline.zip" .)
+          cp "release/offline/$VERSION/darwin-arm64/Team-DevSpace-$VERSION-macos-arm64.pkg" release/publish/
+          cp "release/offline/$VERSION/darwin-x64/Team-DevSpace-$VERSION-macos-x64.pkg" release/publish/
+          cp "release/offline/$VERSION/linux-x64/Team-DevSpace-$VERSION-linux-x64-offline.tar.gz" release/publish/
+          cp "release/offline/$VERSION/linux-arm64/Team-DevSpace-$VERSION-linux-arm64-offline.tar.gz" release/publish/
+          (cd release/publish && sha256sum * > SHA256SUMS)
+      - name: Create immutable-by-policy private GitHub Release
+        shell: bash
         run: |
+          set -euo pipefail
           VERSION=$(node -p "require('./release.config.json').version")
-          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
-            --immutable --checksum --include '*/Team-DevSpace-*' --transfers 4 --checkers 8
-      - name: Verify remote signed entrypoints
-        run: node scripts/verify-remote-release.mjs --entrypoints
-      - name: Publish immutable manifests last
-        run: |
-          VERSION=$(node -p "require('./release.config.json').version")
-          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
-            --immutable --checksum --include '*/manifest.json*' --transfers 4 --checkers 8
-      - name: Verify published manifests
-        run: node scripts/verify-remote-release.mjs --manifests
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; fixed-version releases are never overwritten." >&2
+            exit 1
+          fi
+          gh release create "$TAG" release/publish/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Team DevSpace $VERSION" \
+            --notes "Private administrator handoff. Employees install only from the complete offline package supplied by the administrator."

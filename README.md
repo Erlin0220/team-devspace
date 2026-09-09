@@ -127,11 +127,11 @@ npm run package
 npm run test:native
 ```
 
-`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出同时包含小型平台入口与 `release/offline/<version>/<target>`；后者也是在线 R2 发布的唯一 Payload 来源。再次本地构建可使用 `npm run package -- --reuse-dependencies`。
+`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`。
 
 `test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。
 
-GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布；正式 Windows/macOS 发布强制签名，公开 R2 使用 `rclone --immutable`，远程 SHA 验证通过后最后发布 manifest。该 workflow 仍仅手动触发并要求显式确认预算。
+GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布；正式 Windows/macOS 发布强制签名。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 
