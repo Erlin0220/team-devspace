@@ -19,6 +19,9 @@ const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const deployment = JSON.parse(await readFile('deployment.config.json', 'utf8'));
 const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
+const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
+const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
+const windowsPlatformFiles = await readdir('platform/windows');
 if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
   throw new Error('Unexpected upstream DevSpace version pin');
 }
@@ -40,6 +43,13 @@ if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled |
 if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes("--jq '.private'") ||
     /\brclone\b|cloudflarestorage\.com|RCLONE_CONFIG_RELEASES/i.test(releaseWorkflow)) {
   throw new Error('Release workflow must publish only to a verified private GitHub Release and contain no legacy object-storage publication path');
+}
+if (!windowsInstaller.includes('nsExec::ExecToLog') || /ExecWait[^\r\n]*powershell/i.test(windowsInstaller)) {
+  throw new Error('Windows install/uninstall bootstrap must use no-console NSIS execution');
+}
+if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
+    windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
+  throw new Error('Windows background startup must use only the precompiled no-console launcher');
 }
 if (release.distribution.trustProfile === 'internal-free' &&
     (!releaseWorkflow.includes('WINDOWS_INTERNAL_SIGNING_PFX_BASE64') ||

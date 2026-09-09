@@ -1,8 +1,30 @@
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
+import { delimiter, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createBridge } from './bridge.mjs';
 import { DEVSPACE_VERSION, loadState, stateHome, upstreamEnvironment, writeUpstreamConfig } from './state.mjs';
 
 const require = createRequire(import.meta.url);
+const applicationRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+export function prepareWindowsRuntimeEnvironment(root = applicationRoot) {
+  if (process.platform !== 'win32') return;
+  const currentPath = process.env.PATH ?? '';
+  const bundledBash = join(root, 'git', 'bin');
+  let bashDirectory = existsSync(join(bundledBash, 'bash.exe')) ? bundledBash : null;
+  if (!bashDirectory) {
+    for (const entry of currentPath.split(delimiter)) {
+      const directory = entry.replace(/^"(.*)"$/, '$1');
+      if (!directory || !existsSync(join(directory, 'git.exe'))) continue;
+      const sibling = resolve(directory, '..', 'bin');
+      if (existsSync(join(sibling, 'bash.exe'))) { bashDirectory = sibling; break; }
+    }
+  }
+  process.env.PATH = [bashDirectory, currentPath, join(root, 'git', 'cmd'), join(root, 'runtime'), join(root, 'bin')]
+    .filter(Boolean).join(delimiter);
+  delete process.env.NODE_OPTIONS;
+}
 
 async function listen(server, port) {
   await new Promise((resolve, reject) => {
@@ -13,6 +35,7 @@ async function listen(server, port) {
 }
 
 export async function startUpstream(state, home = stateHome()) {
+  prepareWindowsRuntimeEnvironment();
   const installed = require('@waishnav/devspace/package.json');
   if (installed.version !== DEVSPACE_VERSION) throw new Error('Upstream DevSpace version differs from the release pin');
   await writeUpstreamConfig(state, home);

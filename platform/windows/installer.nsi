@@ -168,7 +168,8 @@ Section "Install"
   ${If} $NoStartup == "1"
     StrCpy $Arguments '$Arguments -NoStartup'
   ${EndIf}
-  ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" $Arguments' $ResultCode
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" $Arguments'
+  Pop $ResultCode
   StrCpy $AccessKey ""
   ${If} $ResultCode != 0
     SetErrorLevel 4
@@ -192,7 +193,8 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  ExecWait '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\bootstrap.ps1" -Mode Uninstall -InstallPath "$INSTDIR"' $ResultCode
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\bootstrap.ps1" -Mode Uninstall -InstallPath "$INSTDIR"'
+  Pop $ResultCode
   ${If} $ResultCode != 0
     SetErrorLevel 5
     Abort "Could not remove user-login startup. Application versions were retained for repair."

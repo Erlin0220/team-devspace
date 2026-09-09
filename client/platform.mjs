@@ -10,7 +10,7 @@ import { installRoot, privateDirectory, stateHome } from './state.mjs';
 const exec = promisify(execFile);
 export const COMPONENTS = ['runtime', 'tunnel'];
 export const xml = value => String(value).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
-const quoted = value => `"${String(value).replaceAll('"', '\\"')}"`;
+const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 const systemdQuoted = value => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 
 export async function executablePaths(root = installRoot) {
@@ -50,16 +50,19 @@ export function launchAgentXml(state, component, home, paths, root = installRoot
 }
 
 export function windowsTaskXml(state, component, home, sid, root = installRoot) {
-  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-    '-File', join(root, 'platform', 'windows', 'launch.ps1'), '-Component', component, '-HomePath', home, '-InstallPath', root];
+  if (!COMPONENTS.includes(component)) throw new Error('Unknown component');
+  const launcher = join(root, 'platform', 'windows', 'tds-launcher.exe');
+  const program = component === 'tunnel' ? join(root, 'bin', 'cloudflared.exe') : join(root, 'runtime', 'node.exe');
+  const args = ['--cwd', root, '--stdout', join(home, 'logs', `${component}.log`),
+    '--stderr', join(home, 'logs', `${component}.error.log`), '--env', `TEAM_DEVSPACE_HOME=${home}`,
+    '--env', 'NODE_OPTIONS=', '--', program, ...componentArguments(component, home, state, root)];
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
 <RegistrationInfo><Description>Team DevSpace ${xml(component)}; runs only in this employee session.</Description></RegistrationInfo>
 <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(sid)}</UserId></LogonTrigger></Triggers>
 <Principals><Principal id="Employee"><UserId>${xml(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>
-<Actions Context="Employee"><Exec><Command>${xml(powershell)}</Command><Arguments>${xml(args.map(quoted).join(' '))}</Arguments><WorkingDirectory>${xml(root)}</WorkingDirectory></Exec></Actions>
+<Actions Context="Employee"><Exec><Command>${xml(launcher)}</Command><Arguments>${xml(args.map(quoted).join(' '))}</Arguments><WorkingDirectory>${xml(root)}</WorkingDirectory></Exec></Actions>
 </Task>\n`;
 }
 
@@ -99,6 +102,7 @@ export async function installServices(state, home = stateHome()) {
   const paths = await executablePaths();
   await access(paths.cloudflared);
   if (process.platform === 'win32') {
+    await access(join(installRoot, 'platform', 'windows', 'tds-launcher.exe'));
     const sid = await windowsSid();
     for (const component of COMPONENTS) {
       const task = join(home, 'startup', `${component}.xml`);

@@ -1,6 +1,6 @@
 # Client distribution
 
-`release.config.json` is the canonical release declaration. CI builds every enabled OS/architecture on a native runner, runs the runtime tests, and produces four required immutable components (`app`, `devspace-runtime`, `node`, `cloudflared`) plus the conditional Windows `git-fallback` component. Employee machines never run `npm install` or a native build.
+`release.config.json` is the canonical release declaration. CI builds every enabled OS/architecture on a native runner, runs the runtime tests, and produces four required immutable components (`app`, `devspace-runtime`, `node`, `cloudflared`) plus the conditional Windows `git-fallback` component. The Windows build uses the SHA-256-pinned official Zig 0.15.2 toolchain only to compile the native x64 no-console launcher; the compiler is not shipped. Employee machines never run `npm install` or a native build.
 
 Each target first produces a content-addressed offline layout:
 

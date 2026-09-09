@@ -1,0 +1,65 @@
+import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { downloadPinned, run } from './build-utils.mjs';
+
+export const WINDOWS_GUI_SUBSYSTEM = 2;
+export const WINDOWS_X64_MACHINE = 0x8664;
+
+export async function peDetails(path) {
+  const image = await readFile(path);
+  if (image.length < 256 || image[0] !== 0x4d || image[1] !== 0x5a) throw new Error('Windows launcher is not a PE image');
+  const pe = image.readUInt32LE(0x3c);
+  if (pe + 256 >= image.length || image.toString('ascii', pe, pe + 4) !== 'PE\0\0') {
+    throw new Error('Windows launcher has an invalid PE header');
+  }
+  const optional = pe + 24;
+  const magic = image.readUInt16LE(optional);
+  const dataDirectories = optional + (magic === 0x20b ? 112 : magic === 0x10b ? 96 : 0);
+  if (!dataDirectories) throw new Error('Windows launcher has an unknown PE optional header');
+  return {
+    machine: image.readUInt16LE(pe + 4),
+    subsystem: image.readUInt16LE(optional + 68),
+    clrHeaderSize: image.readUInt32LE(dataDirectories + (14 * 8) + 4),
+  };
+}
+
+export async function peSubsystem(path) { return (await peDetails(path)).subsystem; }
+
+async function zigCompiler() {
+  const target = 'win32-x64';
+  const binaries = JSON.parse(await readFile(new URL('./binaries.json', import.meta.url), 'utf8'));
+  const cache = resolve('build/cache');
+  const archive = await downloadPinned(binaries.zig[target], cache);
+  const root = resolve('build/zig-win32-x64');
+  let compiler;
+  try {
+    const directory = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory());
+    compiler = directory && join(root, directory.name, 'zig.exe');
+    await access(compiler);
+  } catch {
+    await rm(root, { recursive: true, force: true });
+    await mkdir(root, { recursive: true });
+    const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+    await run(tar, ['-xf', archive, '-C', root], { timeout: 120000 });
+    const directory = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory());
+    if (!directory) throw new Error('Unexpected Zig archive layout');
+    compiler = join(root, directory.name, 'zig.exe');
+  }
+  const version = (await run(compiler, ['version'], { capture: true, timeout: 30000 })).stdout.trim();
+  if (version !== '0.15.2') throw new Error('Pinned Zig compiler version differs from build contract');
+  return compiler;
+}
+
+export async function buildWindowsLauncher(output, source = resolve('platform/windows/tds-launcher.c')) {
+  if (process.platform !== 'win32') throw new Error('Build the Windows launcher on Windows x64');
+  await mkdir(dirname(output), { recursive: true });
+  await rm(output, { force: true });
+  const zig = await zigCompiler();
+  await run(zig, ['cc', source, '-target', 'x86_64-windows-gnu', '-municode',
+    '-Wl,--subsystem,windows', '-Os', '-s', '-o', output, '-lshell32'], { capture: true, timeout: 120000 });
+  const pe = await peDetails(output);
+  if (pe.subsystem !== WINDOWS_GUI_SUBSYSTEM || pe.machine !== WINDOWS_X64_MACHINE || pe.clrHeaderSize !== 0) {
+    throw new Error('Windows launcher must be a native x64 GUI executable');
+  }
+  return output;
+}

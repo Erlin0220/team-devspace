@@ -148,7 +148,13 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(task.includes('InteractiveToken'));
   assert.ok(task.includes('LeastPrivilege'));
   assert.ok(task.includes('&amp;'));
+  assert.ok(task.includes('tds-launcher.exe'));
+  assert.ok(task.includes('runtime.log'));
+  assert.ok(!/powershell|launch\.ps1/i.test(task));
   assert.ok(!task.includes(state.deviceSecret) && !task.includes(state.accessKey));
+  const tunnelTask = windowsTaskXml(state, 'tunnel', home, 'S-1-5-21-123', root);
+  assert.ok(tunnelTask.includes('tds-launcher.exe') && tunnelTask.includes('cloudflared.exe'));
+  assert.ok(tunnelTask.includes('--token-file') && !/powershell|launch\.ps1/i.test(tunnelTask));
   const launch = launchAgentXml(state, 'tunnel', home, { node: '/app/node', cloudflared: '/app/cloudflared' }, root);
   assert.ok(launch.includes('--token-file'));
   assert.ok(launch.includes('<key>KeepAlive</key><true/>'));

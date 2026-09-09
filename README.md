@@ -78,7 +78,7 @@ npm run admin -- --config .runtime/admin.json device reset "张三-Windows"
 
 管理员先完成云端部署，再从 private GitHub Release 下载并分发对应的完整离线包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
 
-**Windows x64：**解压管理员提供的完整离线 ZIP，先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行 `Team-DevSpace-0.1.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 使用内部自签 Authenticode，不把私钥交给员工；公开 `.cer` 只用于建立当前用户信任。EXE 只携带固定版本 manifest 和 bootstrapper，不能脱离同目录的 `objects` 单独分发。Node、DevSpace runtime、cloudflared 和可选 Git/Bash 均从离线介质或已校验缓存取得；Git 直接使用官方 PortableGit 自解压包，不再解压重打包。应用使用 `%LOCALAPPDATA%\TDS` 下的 cache、staging 和短版本槽，Enrollment/配置单独保存在 `%LOCALAPPDATA%\TeamDevSpace`。失败不会切换当前可用版本。
+**Windows x64：**解压管理员提供的完整离线 ZIP，先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行 `Team-DevSpace-0.1.2-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 使用内部自签 Authenticode，不把私钥交给员工；公开 `.cer` 只用于建立当前用户信任。EXE 只携带固定版本 manifest 和 bootstrapper，不能脱离同目录的 `objects` 单独分发。Node、DevSpace runtime、cloudflared 和可选 Git/Bash 均从离线介质或已校验缓存取得；Git 直接使用官方 PortableGit 自解压包，不再解压重打包。应用使用 `%LOCALAPPDATA%\TDS` 下的 cache、staging 和短版本槽，Enrollment/配置单独保存在 `%LOCALAPPDATA%\TeamDevSpace`。失败不会切换当前可用版本。
 
 **macOS：**分别使用 arm64 或 x64 的自包含 `.pkg`，包内已包含离线 runtime 组件；当前 `internal-free` 发行配置明确保持 `.pkg` 未签名、未公证。管理员只通过 private GitHub Release 交付并核对 SHA-256；员工首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime。
 
@@ -132,7 +132,7 @@ npm run test:native
 
 `package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建后自动清理解压/组装中间文件；员工 runtime 不携带构建用 npm 和 lock/.npmrc。
 
-`test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试。Unix 打包还会实际启动 native PTY；托管 CI 的包安装测试不等于真实登录会话自启动验收。
+`test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试。Unix 打包还会实际启动 native PTY；托管 CI 的包安装测试不等于真实登录会话自启动验收。
 
 GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布。当前 canonical trust profile 是 `internal-free`：发布前只要求 `production` 环境中的固定 Windows 内部自签 PFX；CI 用它签 Windows 安装器，并把公开证书和当前用户信任脚本一起放进 Windows 离线 ZIP。macOS 发布物明确保持未签名/未公证，不再要求 Apple Developer Program 凭据。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
 

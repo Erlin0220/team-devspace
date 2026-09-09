@@ -144,6 +144,14 @@ function Receive-Artifact([object]$Manifest, [object]$Component) {
   }
 }
 
+function Resolve-OfflineRoot([string]$Root, [object]$Manifest) {
+  if (-not $Root) { return '' }
+  if (Test-Path -LiteralPath (Join-Path $Root 'objects') -PathType Container) { return $Root }
+  $nested = Join-Path $Root (Join-Path 'offline' (Join-Path ([string]$Manifest.release) ([string]$Manifest.target)))
+  if (Test-Path -LiteralPath (Join-Path $nested 'objects') -PathType Container) { return $nested }
+  return $Root
+}
+
 function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
   $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
   $entries = & $tar -tzf $Archive
@@ -198,7 +206,8 @@ function Assert-Version([string]$Root, [object]$Manifest) {
   $cloudflared = Join-Path $Root 'bin\cloudflared.exe'
   $upstreamFile = Join-Path $Root 'node_modules\@waishnav\devspace\package.json'
   $releaseFile = Join-Path $Root 'release.config.json'
-  foreach ($path in @($node, $cloudflared, $upstreamFile, $releaseFile, (Join-Path $Root 'client\cli.mjs'))) {
+  $launcher = Join-Path $Root 'platform\windows\tds-launcher.exe'
+  foreach ($path in @($node, $cloudflared, $launcher, $upstreamFile, $releaseFile, (Join-Path $Root 'client\cli.mjs'))) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Installed version is missing: $path" }
   }
   if ((& $node --version).Trim() -ne "v$($Manifest.runtime.nodeVersion)") { throw 'Installed Node version differs from manifest.' }
@@ -239,6 +248,7 @@ try {
 
   $manifest = Read-Json $ManifestPath
   Assert-Manifest $manifest
+  $OfflineRoot = Resolve-OfflineRoot $OfflineRoot $manifest
   New-Item -ItemType Directory -Path $versionsRoot, $stagingRoot, $cacheRoot -Force | Out-Null
   $manifestSha = Get-Sha256 $ManifestPath
   $stage = $stagingRoot

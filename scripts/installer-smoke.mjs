@@ -17,17 +17,20 @@ assert.ok((await stat(sourceInstaller)).size < 5 * 1024 * 1024, 'Default install
 const exists = async path => access(path).then(() => true, () => false);
 const suffix = randomUUID().slice(0, 8);
 const work = resolve(process.env.TEMP ?? '.', `tds-i-${suffix}`);
-const layout = join(work, 'offline');
+const releaseRoot = join(work, 'release');
+const layout = join(releaseRoot, 'offline', release.version, 'win32-x64');
 const home = join(work, 'state');
 const install = resolve(process.env.LOCALAPPDATA ?? process.env.TEMP ?? '.', `T${suffix.slice(0, 4)}`);
 const project = join(work, 'project');
 await secureStateDirectory(work);
 await mkdir(project);
+await mkdir(dirname(layout), { recursive: true });
 await cp(dirname(sourceInstaller), layout, { recursive: true });
 const compilerRoot = resolve('build/nsis');
 const compilerDirectory = (await readdir(compilerRoot, { withFileTypes: true })).find(entry => entry.isDirectory() && entry.name.startsWith('nsis-'));
 if (!compilerDirectory) throw new Error('Build the Windows package before running installer smoke');
-const installer = join(layout, `Team-DevSpace-smoke-${suffix}.exe`);
+// Match the developer release tree: the convenient root EXE must find its complete nested offline layout.
+const installer = join(releaseRoot, `Team-DevSpace-smoke-${suffix}.exe`);
 await run(join(compilerRoot, compilerDirectory.name, 'makensis.exe'), ['/V2', '/NOCD',
   `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${join(layout, 'manifest.json')}`,
   `/DPLATFORM_DIR=${resolve('platform/windows')}`, `/DAPP_VERSION=${release.version}`,

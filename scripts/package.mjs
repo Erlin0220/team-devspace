@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { buildReleaseLayout } from './distribution.mjs';
 import { dependencyFingerprint, pruneRuntime, RUNTIME_PROFILE } from './runtime-profile.mjs';
+import { buildWindowsLauncher } from './windows-launcher.mjs';
 
 const { values } = parseArgs({ options: {
   'prepare-only': { type: 'boolean' }, 'reuse-dependencies': { type: 'boolean' },
@@ -76,6 +77,10 @@ if (process.platform === 'win32') {
 for (const directory of ['client', 'platform']) {
   await rm(join(bundle, directory), { recursive: true, force: true });
   await cp(directory, join(bundle, directory), { recursive: true });
+}
+if (process.platform === 'win32') {
+  await buildWindowsLauncher(join(bundle, 'platform', 'windows', 'tds-launcher.exe'));
+  await rm(join(bundle, 'platform', 'windows', 'tds-launcher.c'));
 }
 for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
 const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(runtime, 'bin', 'node');

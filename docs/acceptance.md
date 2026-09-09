@@ -18,7 +18,7 @@ npm run package
 npm run test:native
 ```
 
-Windows 额外执行 `npm run test:installer`。它从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离 NSIS，使用同一 offline layout 与回环 Enrollment，并显式关闭启动；验证轻量安装入口、共享校验缓存、A/B version slots、重复安装保留 Enrollment、Repair 重取、损坏 artifact 不切换和卸载保留。真实 Task Scheduler/runtime 启动由 `test:native` 单独验证，两者都不声称公网 Tunnel 已在线，也不会读取或覆盖已有员工安装。
+Windows 额外执行 `npm run test:installer`。它从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离 NSIS，使用同一 offline layout 与回环 Enrollment，并显式关闭启动；验证轻量安装入口、共享校验缓存、A/B version slots、重复安装保留 Enrollment、Repair 重取、损坏 artifact 不切换和卸载保留。真实 Task Scheduler/runtime 启动由 `test:native` 单独验证；Windows 还会检查计划任务进程树为 `tds-launcher.exe -> node.exe`，且没有长期 PowerShell/cmd supervisor。两者都不声称公网 Tunnel 已在线，也不会读取或覆盖已有员工安装。
 
 `test:native` 和 `test:installer` 均只创建自己的临时状态、测试项目和原生启动项，测试后清理。不要在真实员工设备的状态目录内改造测试夹具。
 

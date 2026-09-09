@@ -51,6 +51,25 @@ async function waitForPorts(expected) {
   }
   throw new Error(`Native runtime failed to become ${expected ? 'online' : 'offline'} (devspace=${active[0]}, bridge=${active[1]})`);
 }
+function encodedPowerShell(command) {
+  const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(`$ProgressPreference='SilentlyContinue';${command}`, 'utf16le').toString('base64')],
+  { encoding: 'utf8', windowsHide: true });
+}
+function assertWindowsLauncherTree(homePath) {
+  const escaped = homePath.replaceAll("'", "''");
+  const output = encodedPowerShell(`Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${escaped}*' } | ` +
+    'Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress');
+  const parsed = output.trim() ? JSON.parse(output) : [];
+  const processes = Array.isArray(parsed) ? parsed : [parsed];
+  const supervisors = processes.filter(process => /^(powershell|cmd)\.exe$/i.test(process.Name));
+  const launchers = processes.filter(process => /^tds-launcher\.exe$/i.test(process.Name));
+  assert.deepEqual(supervisors, [], 'Runtime must not retain PowerShell or cmd supervisors');
+  assert.equal(launchers.length, 1, 'Runtime must have one no-console launcher');
+  assert.ok(processes.some(process => /^node\.exe$/i.test(process.Name) &&
+    Number(process.ParentProcessId) === Number(launchers[0].ProcessId)), 'Launcher must directly own the runtime Node process');
+}
 const state = {
   schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
   accessKey: `tds_${stateModule.randomSecret()}`, deviceSecret: stateModule.randomSecret(), ownerToken: stateModule.randomSecret(),
@@ -69,6 +88,7 @@ try {
   // Native process supervision is real. No tunnel is started and no private files are exposed.
   await platform.serviceAction('start', state, home, ['runtime']);
   await waitForPorts(true);
+  if (process.platform === 'win32') assertWindowsLauncherTree(home);
   client = new Client({ name: 'team-devspace-native-smoke', version: '1.0.0' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${state.ports.bridge}/mcp`), {
     requestInit: { headers: { Authorization: `Bearer ${state.deviceSecret}`, 'X-Team-Binding-Id': state.bindingId } },
@@ -100,7 +120,8 @@ try {
   installed = false;
   console.log(JSON.stringify({ passed: true, platform: process.platform, architecture: process.arch,
     actualNativeStartup: true, packagedRuntime: true, authenticatedMcp: true,
-    stopRestartCleanup: true, realCloudflare: false, realChatGPT: false }));
+    stopRestartCleanup: true, ...(process.platform === 'win32' ? { noConsoleSupervisor: true } : {}),
+    realCloudflare: false, realChatGPT: false }));
 } catch (error) {
   for (const component of ['runtime']) {
     for (const suffix of ['.log', '.error.log']) {
