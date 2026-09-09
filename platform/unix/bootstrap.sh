@@ -33,8 +33,27 @@ VERSIONS="$ROOT/versions"
 STAGING="$ROOT/staging"
 CACHE="$ROOT/cache/sha256"
 ACTIVE="$ROOT/active-path"
-PREVIOUS="$ROOT/previous-path"
 mkdir -p "$VERSIONS" "$STAGING" "$CACHE"
+# POSIX mkdir is atomic on both macOS and Linux. Never run activation/cache GC
+# concurrently. Traps release this lock; SIGKILL recovery fails closed with a
+# diagnostic rather than stealing a potentially live installer's lock.
+LOCK="$ROOT/install.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "Another installer may be active. Lock: $LOCK (owner PID: $(cat "$LOCK/pid" 2>/dev/null || echo unknown)). If no installer is running, remove this stale lock directory and retry." >&2
+  exit 1
+fi
+printf '%s\n' "$$" > "$LOCK/pid"
+components_file=''
+stage=''
+partial=''
+cleanup() {
+  [ -z "$components_file" ] || rm -f "$components_file"
+  [ -z "$partial" ] || rm -f "$partial"
+  [ -z "$stage" ] || rm -rf "$stage"
+  rm -rf "$LOCK"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 active_path() {
   [ -f "$ACTIVE" ] || return 1
@@ -86,7 +105,6 @@ verify_artifact() {
 
 components_file="$STAGING/components.$$"
 stage="$STAGING/$release-$$"
-trap 'rm -f "$components_file"; [ ! -d "$stage" ] || rm -rf "$stage"' EXIT HUP INT TERM
 awk '
   /"components": \[/ { inside=1; next }
   inside && /^  \]/ { exit }
@@ -94,20 +112,24 @@ awk '
   inside && /"version":/ { version=$0; sub(/^.*"version": "/,"",version); sub(/".*$/,"",version) }
   inside && /"required":/ { required=($0 ~ /true/) ? "true" : "false" }
   inside && /"condition":/ { condition=$0; sub(/^.*"condition": "/,"",condition); sub(/".*$/,"",condition) }
+  inside && /"format":/ { format=$0; sub(/^.*"format": "/,"",format); sub(/".*$/,"",format) }
   inside && /"path":/ { path=$0; sub(/^.*"path": "/,"",path); sub(/".*$/,"",path) }
   inside && /"sha256":/ { sha=$0; sub(/^.*"sha256": "/,"",sha); sub(/".*$/,"",sha) }
   inside && /"size":/ { size=$0; sub(/^.*"size": /,"",size); sub(/,.*/,"",size) }
-  inside && /^    }/ { print name "|" version "|" required "|" condition "|" path "|" sha "|" size; name=version=required=condition=path=sha=size="" }
+  inside && /^    }/ { print name "|" version "|" required "|" condition "|" path "|" sha "|" size "|" format; name=version=required=condition=path=sha=size=format="" }
 ' "$MANIFEST" > "$components_file"
-[ "$(wc -l < "$components_file" | tr -d ' ')" -ge 4 ] || { echo 'Manifest has too few components.' >&2; exit 2; }
+awk -F'|' '{ if (seen[$1]++) bad=1; count++ } END { exit bad || count != 4 }' "$components_file" || {
+  echo 'Manifest must have exactly four unique Unix components.' >&2; exit 2;
+}
 
 rm -rf "$stage"
 mkdir -p "$stage"
-while IFS='|' read -r name version required condition relative sha size; do
+while IFS='|' read -r name version required condition relative sha size format; do
   case "$name" in app|devspace-runtime|node|cloudflared) ;; *) echo "Unexpected component: $name" >&2; exit 2 ;; esac
-  case "$sha" in ???????*) ;; *) echo "Invalid SHA-256 for $name" >&2; exit 2 ;; esac
+  [ "$format" = tar.gz ] && [ "$required" = true ] && [ -z "$condition" ] || { echo "Invalid component contract: $name" >&2; exit 2; }
+  case "$sha" in ''|*[!a-f0-9]*) echo "Invalid SHA-256 for $name" >&2; exit 2 ;; esac
   [ "${#sha}" -eq 64 ] || { echo "Invalid SHA-256 for $name" >&2; exit 2; }
-  case "$relative" in objects/sha256/"$sha"/*.tar.gz) ;; *) echo "Unsafe artifact path for $name" >&2; exit 2 ;; esac
+  [ "$relative" = "objects/sha256/$sha/$name.tar.gz" ] || { echo "Unsafe artifact path for $name" >&2; exit 2; }
   directory="$CACHE/$sha"
   artifact="$directory/${relative##*/}"
   mkdir -p "$directory"
@@ -122,6 +144,7 @@ while IFS='|' read -r name version required condition relative sha size; do
     fi
     verify_artifact "$partial" "$size" "$sha" || { echo "Artifact verification failed: $name" >&2; exit 1; }
     mv "$partial" "$artifact"
+    partial=''
   fi
   tar -tzf "$artifact" | awk '/^\// || /^[A-Za-z]:/ || /(^|\/)\.\.(\/|$)/ { bad=1 } END { exit bad }' || {
     echo "Unsafe archive paths: $name" >&2; exit 1;
@@ -132,8 +155,8 @@ done < "$components_file"
 node="$stage/runtime/bin/node"
 cloudflared="$stage/bin/cloudflared"
 [ -x "$node" ] && [ -x "$cloudflared" ] && [ -f "$stage/client/cli.mjs" ] || { echo 'Staged version is incomplete.' >&2; exit 1; }
-[ "$($node --version)" = "v$node_version" ] || { echo 'Node version verification failed.' >&2; exit 1; }
-"$node" --input-type=module -e "import{createRequire}from'node:module';const r=createRequire(import.meta.url),p=r('@waishnav/devspace/package.json');if(p.version!='$devspace_version')process.exit(1);const D=r('better-sqlite3'),d=new D(':memory:');d.prepare('SELECT 1').get();d.close()"
+[ "$("$node" --version)" = "v$node_version" ] || { echo 'Node version verification failed.' >&2; exit 1; }
+(cd "$stage" && "$node" --input-type=module -e "import{createRequire}from'node:module';const r=createRequire(import.meta.url),p=r('@waishnav/devspace/package.json');if(p.version!='$devspace_version'||r('./release.config.json').version!='$release')process.exit(1);const D=r('better-sqlite3'),d=new D(':memory:');d.prepare('SELECT 1').get();d.close();r('node-pty')")
 "$cloudflared" --version | grep -F "$cloudflared_version" >/dev/null
 cp "$MANIFEST" "$stage/install-manifest.json"
 
@@ -165,13 +188,30 @@ if [ -n "$setup_args" ]; then
 fi
 
 tmp="$ACTIVE.$$.tmp"
-printf '%s\n' "$candidate" > "$tmp"
-mv "$tmp" "$ACTIVE"
-if [ -n "$current" ]; then printf '%s\n' "$current" > "$PREVIOUS"; else rm -f "$PREVIOUS"; fi
+if ! { printf '%s\n' "$candidate" > "$tmp" && mv "$tmp" "$ACTIVE"; }; then
+  invoke_client "$candidate" stop || true
+  [ -z "$current" ] || invoke_client "$current" setup || true
+  rm -rf "$candidate"
+  rm -f "$tmp"
+  echo 'Activation failed; previous startup was restored.' >&2
+  exit 1
+fi
+# The old version is only a pre-commit recovery candidate, not a supported
+# post-upgrade rollback product. Keep repair artifacts for the current manifest.
+rm -f "$ROOT/previous-path"
 for directory in "$VERSIONS"/*; do
   [ -d "$directory" ] || continue
-  if [ "$directory" != "$candidate" ] && { [ -z "$current" ] || [ "$directory" != "$current" ]; }; then
-    rm -rf "$directory"
+  if [ "$directory" != "$candidate" ]; then
+    rm -rf "$directory" || echo 'Old version cleanup deferred until next repair.' >&2
+  fi
+done
+for directory in "$CACHE"/*; do
+  [ -d "$directory" ] || continue
+  hash=${directory##*/}
+  case "$hash" in *[!a-f0-9]*) continue ;; esac
+  [ "${#hash}" -eq 64 ] || continue
+  if ! awk -F'|' -v hash="$hash" '$6 == hash { found=1 } END { exit !found }' "$components_file"; then
+    rm -rf "$directory" || echo 'Unused artifact cache cleanup deferred until next repair.' >&2
   fi
 done
 echo "Team DevSpace $release is active ($TARGET)."

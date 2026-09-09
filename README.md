@@ -26,7 +26,7 @@ ChatGPT 工作空间 App + 员工 Access Key
 
 | 组件 | 版本 |
 | --- | --- |
-| Team DevSpace | 0.1.0 |
+| Team DevSpace | 0.1.1 |
 | 官方 DevSpace | 1.0.8 |
 | Node.js | 22.23.0 |
 | cloudflared | 2026.8.3 |
@@ -47,7 +47,7 @@ npm run deploy
 
 `configure` 使用本机终端的隐藏输入，保存到私有、Git 忽略的 `.runtime/cloudflare.json`。不要把任何令牌粘贴到聊天、Issue 或仓库。所需 Cloudflare 账号、区域与权限见 [部署说明](docs/deployment.md)。此脚本不购买套餐，也不修改现有个人域名的 DNS 或 Worker。
 
-`deploy` 自动准备 D1、应用迁移、复制官方静态 widget 资源、部署 Worker/Secret 和独立自定义域名，并检查公网健康接口。重复执行复用已存在的项目资源。管理员令牌与加密主密钥首次生成后保存在 `.runtime/admin.json`，再次部署必须保留该文件，否则现有设备密文将无法解密。
+`deploy` 自动准备 D1、应用迁移，将官方静态 widget 资源与 Gateway/Secret 部署到同一个 Worker，并检查固定版本、Admin/D1 和真实资源内容。重复执行复用已存在的项目资源；部署失败时尝试恢复已记录的 Worker 版本和旧资源路由，但不会自动回滚 D1 迁移。管理员令牌与加密主密钥首次生成后保存在 `.runtime/admin.json`，再次部署必须保留该文件，否则现有设备密文将无法解密。
 
 仅验证构建、不访问或修改 Cloudflare：
 
@@ -76,17 +76,19 @@ npm run admin -- --config .runtime/admin.json device reset "张三-Windows"
 
 ## 员工安装和使用
 
-管理员先完成云端部署，再分发对应的小型在线安装入口和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
+管理员先完成云端部署，再从 private GitHub Release 下载并分发对应的完整离线包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
 
-**Windows x64：**运行 `Team-DevSpace-0.1.0-windows-x64-setup.exe`，输入 Key、选择项目目录。该文件只携带固定版本 manifest 和 bootstrapper；Node、DevSpace runtime、cloudflared 以及必要时的 Git/Bash fallback 从不可变 release artifact 获取并校验大小与 SHA-256。应用使用 `%LOCALAPPDATA%\TDS` 下的独立 cache、staging 和 A/B version slots，Enrollment/配置仍单独保存在 `%LOCALAPPDATA%\TeamDevSpace`。失败不会切换当前可用版本。
+**Windows x64：**解压管理员提供的完整离线 ZIP，运行其中 `Team-DevSpace-0.1.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 只携带固定版本 manifest 和 bootstrapper，不能脱离同目录的 `objects` 单独分发。Node、DevSpace runtime、cloudflared 和可选 Git/Bash 均从离线介质或已校验缓存取得；Git 直接使用官方 PortableGit 自解压包，不再解压重打包。应用使用 `%LOCALAPPDATA%\TDS` 下的 cache、staging 和短版本槽，Enrollment/配置单独保存在 `%LOCALAPPDATA%\TeamDevSpace`。失败不会切换当前可用版本。
 
-**macOS：**分别使用 arm64 或 x64 的轻量 `.pkg`。包只安装 bootstrap App/命令入口，首次打开后按相同 manifest/artifact 事务获取 runtime，再显示原生 Enrollment 对话框。正式发布必须通过 Developer ID Installer 签名、notarization 和 staple。
+**macOS：**分别使用 arm64 或 x64 的自包含 `.pkg`，包内已包含离线 runtime 组件；首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime。正式发布必须通过 Developer ID Installer 签名、notarization 和 staple。
+
+**Linux：**使用对应 x64/arm64 离线 `.tar.gz`，解压后运行其中的 `install.sh`；安装和 native 依赖测试与实际 systemd 用户会话自启动验收分开记录。
 
 POC 允许未签名安装包，因此操作系统可能要求确认运行；不要为此关闭整机安全功能。
 
 安装成功后，员工在 ChatGPT 连接共享 App，输入同一个 Access Key 即可。状态检查只报告可观测到的本地/网关健康状态，不会伪造“ChatGPT 已连接”。
 
-Windows 开始菜单提供 **Status**、**Repair connection** 和卸载入口。Windows 命令位于安装目录 `app/bin/team-devspace.cmd`；macOS 使用 `team-devspace`：
+Windows 开始菜单提供 **Status**、**Repair connection** 和卸载入口。Windows 使用开始菜单的命令入口；macOS 使用 `team-devspace`：
 
 ```sh
 team-devspace status
@@ -108,10 +110,11 @@ team-devspace roots remove <绝对项目目录>
 
 ### 升级和卸载
 
-重新运行明确版本的安装入口会先下载、校验并验证候选版本，再切换 active slot；私有状态位于应用目录以外：
+重新运行明确版本的完整离线安装包，先取得并验证候选版本，再切换 active slot。失败时保留当前版本；成功激活后清理旧解压版本和当前 manifest 不再引用的缓存。没有长期保留的手动回滚槽，需要退回时由管理员重新分发旧版本安装包。私有状态位于应用目录以外：
 
 - Windows：`%LOCALAPPDATA%\TeamDevSpace`
 - macOS：`~/Library/Application Support/TeamDevSpace`
+- Linux：`${XDG_STATE_HOME:-~/.local/state}/team-devspace`
 
 修复和升级保留 Key、Device Binding、Allowed Roots。无需反复配置 Cloudflare。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
 
@@ -127,11 +130,11 @@ npm run package
 npm run test:native
 ```
 
-`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`。
+`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建后自动清理解压/组装中间文件；员工 runtime 不携带构建用 npm 和 lock/.npmrc。
 
-`test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。
+`test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试。Unix 打包还会实际启动 native PTY；托管 CI 的包安装测试不等于真实登录会话自启动验收。
 
-GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布；正式 Windows/macOS 发布强制签名。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。
+GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布；正式 Windows/macOS 发布强制签名。发布前先检查 `production` 环境签名凭据，避免完整构建后才发现缺失。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 

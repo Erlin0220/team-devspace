@@ -1,6 +1,7 @@
 import { equalSecret, seal, sha256, unseal } from './crypto.mjs';
 import { KeyStore } from './store.mjs';
 import { Cloudflare, CloudflareError } from './cloudflare.mjs';
+import assets from './assets.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/;
@@ -222,36 +223,64 @@ export async function reconcileCleanup(env, dependencies = {}) {
   console.log(JSON.stringify({ event: 'cleanup_reconciled', completed }));
 }
 
+// Return only internal enum values. Never log dynamic paths, labels or IDs.
+export function requestOperation(method, pathname) {
+  if (pathname.startsWith('/mcp-app-assets/')) return 'assets';
+  if (pathname === '/health' && method === 'GET') return 'health';
+  if (pathname === '/mcp') return 'mcp';
+  if (pathname === '/v1/enroll' && method === 'POST') return 'enroll';
+  if (pathname === '/v1/device/status' && method === 'POST') return 'device_status';
+  if (pathname === '/v1/admin/keys' && method === 'GET') return 'admin_list_keys';
+  if (pathname === '/v1/admin/keys' && method === 'POST') return 'admin_issue_key';
+  const action = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
+  if (method === 'POST' && action && UUID.test(action[1])) return `admin_${action[2]}`;
+  return 'not_found';
+}
+
 export default {
   async fetch(request, env) {
     const started = Date.now();
     const pathname = new URL(request.url).pathname;
     const requestId = crypto.randomUUID();
+    const operation = requestOperation(request.method, pathname);
     let response;
+    let errorCode;
     try {
-      if (new URL(request.url).search) throw new HttpError(400, 'query_parameters_not_supported');
-      if (pathname === '/health' && request.method === 'GET') {
-        if (!env.RELEASE_VERSION || !env.DEVSPACE_VERSION) throw new HttpError(503, 'release_not_configured');
-        return json({ service: 'team-devspace', release: env.RELEASE_VERSION, devspace: env.DEVSPACE_VERSION });
+      // Static assets retain cache-busting query support. Control/MCP routes do
+      // not accept credentials or other data in a query string.
+      if (operation === 'assets') response = await assets.fetch(request, env);
+      else {
+        if (new URL(request.url).search) throw new HttpError(400, 'query_parameters_not_supported');
+        if (operation === 'health') {
+          if (!env.RELEASE_VERSION || !env.DEVSPACE_VERSION) throw new HttpError(503, 'release_not_configured');
+          response = json({ service: 'team-devspace', release: env.RELEASE_VERSION, devspace: env.DEVSPACE_VERSION });
+        } else {
+          const store = new KeyStore(env.DB);
+          if (pathname === '/mcp') response = await proxyMcp(request, env, store);
+          else if (operation === 'enroll') response = await enroll(request, env, store);
+          else if (operation === 'device_status') response = await deviceStatus(request, store);
+          else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
+          else throw new HttpError(404, 'not_found');
+        }
       }
-      const store = new KeyStore(env.DB);
-      if (pathname === '/mcp') response = await proxyMcp(request, env, store);
-      else if (pathname === '/v1/enroll' && request.method === 'POST') response = await enroll(request, env, store);
-      else if (pathname === '/v1/device/status' && request.method === 'POST') response = await deviceStatus(request, store);
-      else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
-      else throw new HttpError(404, 'not_found');
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 503;
       const code = error instanceof HttpError || error instanceof CloudflareError ? error.code : 'service_unavailable';
+      errorCode = code;
       response = pathname === '/mcp'
         ? json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: code, data: { requestId } } }, status)
         : json({ error: code, requestId }, status);
       if (status === 401) response.headers.set('WWW-Authenticate', 'Bearer realm="Team DevSpace"');
     }
     response.headers.set('X-Request-Id', requestId);
+    if (env.RELEASE_VERSION) response.headers.set('X-Team-Release', env.RELEASE_VERSION);
+    if (!errorCode && response.status >= 400) {
+      errorCode = response.status === 503 && ['admin_revoke', 'admin_reset'].includes(operation)
+        ? 'connectivity_cleanup_pending' : 'request_rejected';
+    }
     // Deliberately no URL query, headers, credentials, input, output, or exception text.
-    console.log(JSON.stringify({ event: 'request', requestId, status: response.status,
-      kind: pathname === '/mcp' ? 'mcp' : 'control', durationMs: Date.now() - started }));
+    console.log(JSON.stringify({ event: 'request', requestId, operation, status: response.status,
+      ...(errorCode ? { code: errorCode } : {}), durationMs: Date.now() - started }));
     return response;
   },
   scheduled(controller, env, ctx) {

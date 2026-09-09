@@ -4,7 +4,7 @@ import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Miniflare, Log, LogLevel } from 'miniflare';
-import { reconcileCleanup } from '../gateway/index.mjs';
+import { reconcileCleanup, requestOperation } from '../gateway/index.mjs';
 
 const secret = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -20,6 +20,9 @@ async function fixture(t) {
   const mf = new Miniflare({
     modules: true, scriptPath: resolve('gateway/index.mjs'), compatibilityDate: '2026-06-01',
     d1Databases: { DB: 'team-devspace-test' }, log: new Log(LogLevel.ERROR),
+    serviceBindings: { ASSETS: async request => new URL(request.url).pathname === '/mcp-app-assets/test.js'
+      ? new Response('export const fixture = true;', { headers: { 'Content-Type': 'text/javascript' } })
+      : new Response('Not found', { status: 404 }) },
     bindings: { ADMIN_TOKEN: adminToken, MASTER_KEY: secret(), CF_API_TOKEN: secret(),
       CF_ACCOUNT_ID: 'a'.repeat(32), CF_ZONE_ID: 'b'.repeat(32), DEVICE_DOMAIN: 'example.test',
       PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8' },
@@ -100,6 +103,29 @@ async function fixture(t) {
   function device() { return { deviceId: randomUUID(), deviceSecret: secret(), bridgePort: 47671 }; }
   return { mf, db, request, issue, device, adminToken, tunnels, records, forwarded, apiTrace, switches };
 }
+
+test('one Worker serves health and public assets with consistent headers without weakening control routes', async t => {
+  const f = await fixture(t);
+  const health = await f.mf.dispatchFetch('https://team.example.test/health');
+  assert.equal(health.status, 200);
+  assert.ok(health.headers.get('X-Request-Id'));
+  assert.equal(health.headers.get('X-Team-Release'), '0.1.0');
+  const asset = await f.mf.dispatchFetch('https://team.example.test/mcp-app-assets/test.js?v=1');
+  assert.equal(await asset.text(), 'export const fixture = true;');
+  assert.equal(asset.headers.get('Access-Control-Allow-Origin'), '*');
+  assert.equal(asset.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin');
+  assert.equal(asset.headers.get('X-Team-Release'), '0.1.0');
+  assert.ok(asset.headers.get('X-Request-Id'));
+  for (const [method, status] of [['HEAD', 200], ['OPTIONS', 204], ['POST', 405]]) {
+    const response = await f.mf.dispatchFetch('https://team.example.test/mcp-app-assets/test.js', { method });
+    assert.equal(response.status, status);
+    if (method === 'HEAD') assert.equal(await response.text(), '');
+  }
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp?key=secret')).status, 400);
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/v1/admin/keys')).status, 401);
+  assert.equal(requestOperation('POST', `/v1/admin/keys/${randomUUID()}/revoke`), 'admin_revoke');
+  assert.equal(requestOperation('POST', '/private-user-content'), 'not_found');
+});
 
 test('gateway authorizes real D1 bindings, isolates devices and namespaces MCP sessions', async t => {
   const f = await fixture(t);

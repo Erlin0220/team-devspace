@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 const require = createRequire(import.meta.url);
@@ -6,6 +6,7 @@ const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const root = dirname(require.resolve('@waishnav/devspace/package.json'));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 if (pkg.version !== release.devspaceVersion) throw new Error('Unexpected upstream DevSpace version');
+await rm('assets/mcp-app-assets', { recursive: true, force: true });
 await mkdir('assets/mcp-app-assets', { recursive: true });
 await cp(join(root, 'dist', 'ui'), 'assets/mcp-app-assets', { recursive: true });
 console.log('Copied unchanged upstream DevSpace widgets to the shared public asset origin.');

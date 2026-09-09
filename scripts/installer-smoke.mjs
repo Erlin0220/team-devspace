@@ -54,7 +54,11 @@ const server = http.createServer(async (request, response) => {
   } else { response.statusCode = 404; response.end('{}'); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const env = { ...process.env, TEAM_DEVSPACE_HOME: home, TEAM_DEVSPACE_SETUP_NO_STARTUP: '1', NODE_OPTIONS: '' };
+// Force the clean-employee-machine path: no system Git/Bash on PATH. The real
+// installer must verify, extract and execute the official optional Git SFX.
+const env = { ...process.env, TEAM_DEVSPACE_HOME: home, TEAM_DEVSPACE_SETUP_NO_STARTUP: '1', NODE_OPTIONS: '',
+  PATH: [process.env.SystemRoot, join(process.env.SystemRoot, 'System32'),
+    join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0')].join(';') };
 async function execute(file, args, timeout = 240000) {
   return new Promise((resolve, reject) => {
     const child = spawn(file, args, { env, windowsHide: true, stdio: 'inherit' });
@@ -93,8 +97,12 @@ try {
   for (const component of manifest.components.filter(component => component.required)) {
     assert.equal(cachedHashes.has(component.sha256), true, `Required component was not cached: ${component.name}`);
   }
-  assert.ok(cachedHashes.size >= 4 && cachedHashes.size <= manifest.components.length,
-    'The optional Git/Bash fallback should only be cached when the machine needs it');
+  assert.equal(cachedHashes.size, manifest.components.length, 'A clean machine must cache the Git SFX too');
+  assert.equal(await exists(join(firstActive.path, 'git', 'cmd', 'git.exe')), true);
+  assert.equal(await exists(join(firstActive.path, 'git', 'bin', 'bash.exe')), true);
+  const staleHash = '0'.repeat(64);
+  await mkdir(join(install, 'cache', 'sha256', staleHash));
+  await writeFile(join(install, 'cache', 'sha256', staleHash, 'old-artifact'), 'stale');
 
   await writeFile(join(firstActive.path, 'obsolete-upgrade-fixture.txt'), 'must disappear from the next immutable version');
   const second = await installAttempt();
@@ -103,14 +111,17 @@ try {
   const secondActive = await readJson(join(install, 'active.json'));
   assert.notEqual(secondActive.path, firstActive.path);
   assert.equal(await exists(join(secondActive.path, 'obsolete-upgrade-fixture.txt')), false);
+  assert.equal(await exists(firstActive.path), false, 'Successful activation must retire the old extracted version');
+  assert.equal(await exists(join(install, 'cache', 'sha256', staleHash)), false, 'Unreferenced cache must be collected');
 
   await rm(join(secondActive.path, 'bin', 'cloudflared.exe'));
   assert.equal(await repair(), 0, 'Repair must reacquire a complete version through the shared cache/artifact path');
   const repairedActive = await readJson(join(install, 'active.json'));
   assert.notEqual(repairedActive.path, secondActive.path);
   assert.equal(await exists(join(repairedActive.path, 'bin', 'cloudflared.exe')), true);
-  assert.equal((await readdir(join(install, 'v'), { withFileTypes: true })).filter(entry => entry.isDirectory()).length, 2,
-    'The active version and one rollback version must be retained');
+  assert.equal((await readdir(join(install, 'v'), { withFileTypes: true })).filter(entry => entry.isDirectory()).length, 1,
+    'Keep only the current extracted version after a successful activation');
+  assert.equal(repairedActive.previous, null);
 
   const nodeComponent = manifest.components.find(component => component.name === 'node');
   await rm(join(install, 'cache', 'sha256', nodeComponent.sha256), { recursive: true, force: true });
@@ -126,7 +137,8 @@ try {
   assert.equal(await exists(project), true);
   console.log(JSON.stringify({ passed: true, actualInstaller: true, lightweightBootstrapper: true,
     offlineLayout: true, verifiedCache: true, repairReacquiresPayload: true, failedRepairRetainsActive: true,
-    upgradePreservesEnrollment: true, rollbackVersionRetained: true, uninstallPreservesProjects: true }));
+    upgradePreservesEnrollment: true, officialGitFallbackExecuted: true, retiredVersionsCollected: true,
+    cacheGarbageCollected: true, uninstallPreservesProjects: true }));
 } finally {
   if (canUninstall || await exists(join(install, 'Uninstall.exe'))) {
     await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000).catch(() => {});

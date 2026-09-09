@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildReleaseLayout, validateDistributionConfig } from '../scripts/distribution.mjs';
 import { run, sha256File } from '../scripts/build-utils.mjs';
+import { pruneRuntime } from '../scripts/runtime-profile.mjs';
 
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
@@ -36,7 +37,10 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   };
   for (const [path, contents] of Object.entries(files)) await writeFile(join(bundle, path), contents);
   const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : '/usr/bin/tar';
-  const built = await buildReleaseLayout({ bundle, target: 'win32-x64', release: baseRelease, tar, outputDirectory: output });
+  const gitFallbackArchive = join(work, 'official-PortableGit.7z.exe');
+  await writeFile(gitFallbackArchive, 'official-self-extracting-archive-fixture');
+  const build = () => buildReleaseLayout({ bundle, target: 'win32-x64', release: baseRelease, tar, outputDirectory: output, gitFallbackArchive });
+  const built = await build();
   assert.deepEqual(built.components.map(component => component.name),
     ['app', 'devspace-runtime', 'node', 'cloudflared', 'git-fallback']);
   for (const component of built.components) {
@@ -52,4 +56,43 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   assert.equal(manifest.installMode, 'offline');
   assert.equal('sourceBase' in manifest, false);
   assert.equal(await sha256File(built.manifestPath), built.manifestSha256);
+  const git = built.components.find(component => component.name === 'git-fallback');
+  assert.equal(git.format, '7z-sfx');
+  assert.equal(git.sha256, await sha256File(gitFallbackArchive), 'The official self-extractor must not be recompressed');
+  const runtime = built.components.find(component => component.name === 'devspace-runtime');
+  const runtimeListing = (await run(tar, ['-tzf', join(built.layout, runtime.path)], { capture: true })).stdout;
+  assert.doesNotMatch(runtimeListing, /^\.npmrc$|^package-lock\.json$/m);
+  await assert.rejects(access(join(built.layout, '.staging')));
+  await writeFile(join(bundle, 'package-lock.json'), '{"version":"9.9.9"}');
+  await writeFile(join(bundle, '.npmrc'), 'registry=https://registry.npmjs.org/');
+  const rebuilt = await build();
+  assert.equal(rebuilt.components.find(component => component.name === 'devspace-runtime').sha256, runtime.sha256,
+    'App/build metadata changes must not change the unchanged runtime component');
+});
+
+test('Unix profile prunes only optional Claude executables and foreign PTYs, preserving SDK and native build', async t => {
+  const work = await mkdtemp(join(tmpdir(), 'tds-profile-'));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) {
+    const bundle = join(work, target);
+    const paths = ['node_modules/@anthropic-ai/claude-agent-sdk', 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64',
+      'node_modules/node-pty/build/Release', ...['win32-x64', 'win32-arm64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']
+        .map(platform => `node_modules/node-pty/prebuilds/${platform}`)];
+    for (const path of paths) {
+      await mkdir(join(bundle, path), { recursive: true });
+      await writeFile(join(bundle, path, 'payload'), 'fixture');
+    }
+    await writeFile(join(bundle, 'package-lock.json'), JSON.stringify({ packages: {
+      'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64': { optional: true },
+    } }));
+    await pruneRuntime(bundle, target);
+    await access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk/payload'));
+    await access(join(bundle, 'node_modules/node-pty/build/Release/payload'));
+    await access(join(bundle, `node_modules/node-pty/prebuilds/${target}/payload`));
+    await assert.rejects(access(join(bundle, 'node_modules/node-pty/prebuilds/win32-x64')));
+    await assert.rejects(access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64')));
+    await mkdir(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-new-platform'));
+    await assert.rejects(pruneRuntime(bundle, target), /non-optional dependency/);
+    await access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-new-platform'));
+  }
 });

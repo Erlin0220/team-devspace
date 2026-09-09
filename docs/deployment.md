@@ -12,20 +12,26 @@
 
 | 用途 | Account 权限 | Zone 权限 | 保存位置 |
 | --- | --- | --- | --- |
-| 管理员部署 | Workers Scripts Edit、D1 Edit | DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` |
+| 管理员部署 | Workers Scripts Edit、D1 Edit | Workers Routes Edit、DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` 或 GitHub `production` 环境 |
 | Worker 运行时建 Tunnel | Cloudflare Tunnel Edit | DNS Edit | Worker Secret `CF_API_TOKEN` |
 
 这些是 Cloudflare 管理令牌，**不是员工的 Access Key**。员工安装包和 Employee 电脑只得到自己 Tunnel 的运行 token，不得到以上账号级令牌。
 
 在自己电脑的项目终端运行 `npm run configure`。输入使用密码框；不要通过聊天、环境变量截图、GitHub Issue 或提交文件传递秘密。配置文件所在目录会限制为当前用户可访问。
 
-仓库已有的 Cloudflare 账号 ID / Zone ID 只是预填元数据，不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
+Cloudflare 账号、Zone、设备域名和 Gateway 唯一读取 `release.config.json`；本机配置只保存令牌，`deployment.config.json` 只保存 D1 ID。这些公开元数据不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
 
 ## 可重复的部署动作
 
-`npm run deploy` 按以下顺序处理：校验新域名归属；查找或创建项目 D1；保存可复用的管理员密钥与主密钥；应用数据库迁移；以单次 Worker 部署安装代码和 Secret；验证公网健康接口。
+`npm run deploy` 按以下顺序处理：校验域名和 D1 归属；保存可复用的管理员密钥与主密钥；用运行时令牌执行 Tunnel/DNS 只读 preflight；记录当前 Worker 版本和旧静态资源路由；应用数据库迁移；单次部署 Gateway、静态资源和 Secret；验证固定 release/upstream 版本、Admin/D1 和真实 JS 资源字节哈希/CORS。所有探测通过才输出 `deployed: true`。
 
-管理员本机应一起备份 `.runtime/admin.json` 与 `.runtime/deployment.json`。前者的 `masterKey` 用于解密 D1 中的设备凭据，后者记录本项目明确拥有的 D1 ID；不能为了“重新部署”随手重新生成或按名称接管陌生数据库。再次部署只复用这组已记录资源。
+从双 Worker 版本升级时，先部署带 Assets binding 的主 Worker，确认 Admin/D1 后删除项目拥有的旧资源路由，再验证资源由新 Worker 提供。失败会尝试恢复原路由和原 Worker 版本，并明确报告恢复失败；不会覆盖其他 Worker 的路由。成功后删除退休的独立 assets Worker。
+
+D1 迁移不是 Worker 版本回滚的一部分。迁移必须向后兼容，破坏性 schema/data 更改需要单独设计迁移和备份计划。本脚本不承诺云端多资源强事务，也不会谎称一次 GET 验证了 Tunnel/DNS 的写权限、实际设备在线或 ChatGPT 调用。
+
+管理员本机应一起备份 `.runtime/admin.json` 与仓库的 `deployment.config.json`。前者的 `masterKey` 用于解密 D1 中的设备凭据，后者记录本项目明确拥有的 D1 ID；不能为了“重新部署”随手重新生成或按名称接管陌生数据库。再次部署只复用这组已记录资源。CI 的 `ADMIN_TOKEN`、`MASTER_KEY` 和两类 Cloudflare Token 存在 GitHub `production` Environment；不要为迁移配置而生成新主密钥。临时 `deployment-recovery.json` 仅记录非秘密资源 ID，部署临时 secrets 文件在退出时删除。
+
+请求日志仅包含 `requestId`、内部枚举 `operation`、状态码、错误码和耗时。`/health`、控制接口、MCP 与资源响应统一带 request ID；不记录凭据、动态路径、源码或 Shell 内容。
 
 不会自动修改收费套餐、迁移已有 DNS 服务、部署 VPS 或把管理员电脑当作 Gateway。即便脚本不购买套餐，仍应确认账号自身的套餐和免费用量；已有付费账号的超额用量可能产生账单，不能将“未点击升级”当作无限免费。
 

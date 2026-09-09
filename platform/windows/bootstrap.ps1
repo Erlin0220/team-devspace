@@ -98,9 +98,12 @@ function Assert-Manifest([object]$Manifest) {
     $name = [string]$component.name
     if ($names.ContainsKey($name)) { throw "Duplicate component in manifest: $name" }
     $names[$name] = $true
-    if ($component.format -ne 'tar.gz' -or [string]$component.sha256 -notmatch $shaPattern -or
+    $suffix = if ($component.format -eq '7z-sfx' -and $name -eq 'git-fallback') { '\.7z\.exe' }
+      elseif ($component.format -eq 'tar.gz') { '\.tar\.gz' } else { throw "Unsupported component format: $name" }
+    if ($name -notin @('app', 'devspace-runtime', 'node', 'cloudflared', 'git-fallback') -or
+        [string]$component.sha256 -notmatch $shaPattern -or
         [int64]$component.size -le 0 -or [int64]$component.size -gt 2147483648 -or
-        [string]$component.path -notmatch "^objects/sha256/$($component.sha256)/[A-Za-z0-9._-]+\.tar\.gz$") {
+        [string]$component.path -notmatch "^objects/sha256/$($component.sha256)/[A-Za-z0-9._-]+$suffix`$") {
       throw "Invalid artifact metadata for component: $name"
     }
   }
@@ -154,6 +157,42 @@ function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
   if ($LASTEXITCODE -ne 0) { throw "Cannot extract artifact archive: $Archive" }
 }
 
+function Expand-PortableGit([string]$Archive, [string]$Destination) {
+  # Execute only the already SHA-256-verified official SFX, in an isolated
+  # staging directory. Its fixed PortableGit/ output never pollutes the cache.
+  $temporary = Join-Path $Destination '.git-extract'
+  New-Item -ItemType Directory -Path $temporary | Out-Null
+  try {
+    $extractor = Join-Path $temporary 'PortableGit.7z.exe'
+    Copy-Item -LiteralPath $Archive -Destination $extractor
+    $process = Start-Process -FilePath $extractor -ArgumentList @('-y', '-gm2') -WorkingDirectory $temporary -Wait -PassThru -WindowStyle Hidden
+    if ($process.ExitCode -ne 0) { throw "PortableGit self-extraction failed: $($process.ExitCode)" }
+    $expanded = Join-Path $temporary 'PortableGit'
+    foreach ($file in @('cmd\git.exe', 'bin\bash.exe')) {
+      if (-not (Test-Path -LiteralPath (Join-Path $expanded $file))) { throw "PortableGit is missing $file" }
+    }
+    Move-Item -LiteralPath $expanded -Destination (Join-Path $Destination 'git')
+  } finally { Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+function Remove-UnreferencedPayload([string]$Current, [object]$Manifest) {
+  # Cleanup is post-commit and best effort. A locked old file must not report a
+  # successful activation as failed; a later repair retries the same cleanup.
+  $hashes = @($Manifest.components | ForEach-Object { [string]$_.sha256 })
+  foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory)) {
+    if ($directory.FullName -ne $Current) {
+      try { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
+      catch { Write-Warning "Old version cleanup deferred: $($directory.Name)" }
+    }
+  }
+  foreach ($directory in @(Get-ChildItem -LiteralPath $cacheRoot -Directory)) {
+    if ($directory.Name -match $shaPattern -and $hashes -notcontains $directory.Name) {
+      try { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
+      catch { Write-Warning 'Unused artifact cache cleanup deferred.' }
+    }
+  }
+}
+
 function Assert-Version([string]$Root, [object]$Manifest) {
   $node = Join-Path $Root 'runtime\node.exe'
   $cloudflared = Join-Path $Root 'bin\cloudflared.exe'
@@ -177,6 +216,7 @@ function Assert-Version([string]$Root, [object]$Manifest) {
   if ((Test-Path -LiteralPath $git) -or (Test-Path -LiteralPath $bash)) {
     if (-not (Test-Path -LiteralPath $git) -or -not (Test-Path -LiteralPath $bash)) { throw 'Git fallback is incomplete.' }
     if ((& $git --version) -notmatch [regex]::Escape([string]$Manifest.runtime.gitFallbackVersion)) { throw 'Git fallback version differs from manifest.' }
+    if ((& $bash --version | Out-String) -notmatch 'GNU bash') { throw 'Git fallback Bash did not execute.' }
   }
 }
 
@@ -209,13 +249,15 @@ try {
       $condition = if ($component.PSObject.Properties['condition']) { [string]$component.condition } else { '' }
       if ($condition -eq 'git-and-bash-unavailable' -and -not (Test-NeedGitFallback)) { continue }
       $archive = Receive-Artifact $manifest $component
-      Expand-VerifiedArchive $archive $stage
+      if ($component.format -eq '7z-sfx') { Expand-PortableGit $archive $stage }
+      else { Expand-VerifiedArchive $archive $stage }
     }
     Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $stage 'install-manifest.json')
     Assert-Version $stage $manifest
 
     # Fixed short A/B slots keep the unmodified upstream dependency tree under Windows MAX_PATH.
-    # Full release/hash identity stays in active.json; only the non-current (old rollback) slot is reused.
+    # Full release/hash identity stays in active.json. Keep current until setup
+    # succeeds; retire it only after the active pointer is committed.
     $slot0 = Join-Path $versionsRoot '0'
     $slot1 = Join-Path $versionsRoot '1'
     $candidate = if ($active -and [IO.Path]::GetFullPath([string]$active.path) -eq [IO.Path]::GetFullPath($slot0)) { $slot1 } else { $slot0 }
@@ -237,7 +279,7 @@ try {
       $next = [ordered]@{
         schema = 1; release = [string]$manifest.release; target = [string]$manifest.target
         manifestSha256 = $manifestSha; path = $candidate
-        previous = if ($active) { [ordered]@{ release = [string]$active.release; path = [string]$active.path; manifestSha256 = [string]$active.manifestSha256 } } else { $null }
+        previous = $null
       }
       Write-AtomicJson $activeFile $next
     } catch {
@@ -247,12 +289,9 @@ try {
       throw
     }
 
-    $keep = @($candidate)
-    if ($active -and (Test-ChildPath $versionsRoot ([string]$active.path))) { $keep += [string]$active.path }
-    foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -ErrorAction SilentlyContinue)) {
-      if ($keep -notcontains $directory.FullName) { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
-    }
-    Write-Host "Team DevSpace $($manifest.release) is active. Payload source: $(if ($OfflineRoot -and (Test-Path (Join-Path $OfflineRoot 'objects'))) { 'offline layout' } else { 'verified remote artifacts' })."
+    try { Remove-UnreferencedPayload $candidate $manifest }
+    catch { Write-Warning 'Post-activation cleanup deferred until next repair.' }
+    Write-Host "Team DevSpace $($manifest.release) is active. Payload source: verified offline package/cache."
   } finally {
     if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
   }

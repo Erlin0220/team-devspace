@@ -4,16 +4,17 @@ import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { buildReleaseLayout } from './distribution.mjs';
+import { pruneRuntime, RUNTIME_PROFILE } from './runtime-profile.mjs';
 
 const { values } = parseArgs({ options: {
   'prepare-only': { type: 'boolean' }, 'reuse-dependencies': { type: 'boolean' },
 } });
 const target = `${process.platform}-${process.arch}`;
 const tar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
-if (!['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'].includes(target)) {
-  throw new Error('Build release payloads on their native target host; native dependencies must not be cross-copied');
-}
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
+if (!release.distribution.targets.includes(target)) {
+  throw new Error('Build release payloads on an enabled native target host; native dependencies must not be cross-copied');
+}
 const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
 if (packageJson.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
@@ -31,20 +32,28 @@ async function maximumRelativePathLength(directory, base = directory) {
   }
   return maximum;
 }
+// Only the fingerprint-verified dependency tree is reusable. Generated files are
+// rebuilt even with --reuse-dependencies; an existing directory is not a cache key.
 await mkdir(bundle, { recursive: true });
+for (const entry of await readdir(bundle)) {
+  if (values['reuse-dependencies'] && ['node_modules', '.dependency-fingerprint'].includes(entry)) continue;
+  await rm(join(bundle, entry), { recursive: true, force: true });
+}
+await rm(join(cache, 'PortableGit'), { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
 await mkdir(join(bundle, 'bin'), { recursive: true });
 const downloadKinds = ['node', 'cloudflared', ...(process.platform === 'win32' ? ['git'] : [])];
 const downloads = Object.fromEntries(await Promise.all(downloadKinds.map(async kind => [kind, await downloadPinned(binaries[kind][target], cache)])));
 const runtime = join(bundle, 'runtime');
-try { await access(runtime); } catch {
-  const extracted = resolve(`build/node-${target}`);
-  await mkdir(extracted, { recursive: true });
+const extracted = resolve(`build/node-${target}`);
+await rm(extracted, { recursive: true, force: true });
+await mkdir(extracted, { recursive: true });
+try {
   await run(tar, ['-xf', downloads.node, '-C', extracted]);
   const directories = (await readdir(extracted, { withFileTypes: true })).filter(entry => entry.isDirectory());
   if (directories.length !== 1) throw new Error('Unexpected Node archive layout');
   await cp(join(extracted, directories[0].name), runtime, { recursive: true });
-}
+} finally { await rm(extracted, { recursive: true, force: true }); }
 // Employees need the Node executable, not a second bundled npm/corepack toolchain.
 // The builder uses its own pinned npm below; preserve upstream runtime licenses.
 const unusedRuntimePaths = process.platform === 'win32'
@@ -53,23 +62,8 @@ const unusedRuntimePaths = process.platform === 'win32'
 for (const path of unusedRuntimePaths) await rm(join(runtime, path), { recursive: true, force: true });
 if (process.platform === 'win32') {
   await cp(downloads.cloudflared, join(bundle, 'bin', 'cloudflared.exe'));
-  const git = join(bundle, 'git');
-  try { await access(join(git, 'cmd', 'git.exe')); await access(join(git, 'bin', 'bash.exe')); } catch {
-    // Git for Windows PortableGit is a self-extractor whose pinned release expands beside itself
-    // into PortableGit/. Copy that verified payload instead of relying on an undocumented -o switch.
-    const extractedGit = join(cache, 'PortableGit');
-    await rm(extractedGit, { recursive: true, force: true });
-    await run(downloads.git, ['-y', '-gm2'], { timeout: 300000 });
-    await access(join(extractedGit, 'cmd', 'git.exe'));
-    await access(join(extractedGit, 'bin', 'bash.exe'));
-    await rm(git, { recursive: true, force: true });
-    await cp(extractedGit, git, { recursive: true });
-  }
-  const bundledGit = await run(join(git, 'cmd', 'git.exe'), ['--version'], { capture: true });
-  const bundledBash = await run(join(git, 'bin', 'bash.exe'), ['--version'], { capture: true });
-  if (!bundledGit.stdout.includes('git version 2.55.0.windows.5') || !bundledBash.stdout.includes('GNU bash')) {
-    throw new Error('Bundled Git/Bash fallback failed release verification');
-  }
+  // Keep the pinned official PortableGit SFX intact. The isolated installer test
+  // extracts and executes it using the same code path employees use.
   await cp('platform/windows/command.cmd', join(bundle, 'bin', 'team-devspace.cmd'));
 } else if (process.platform === 'darwin') {
   await run(tar, ['-xzf', downloads.cloudflared, '-C', join(bundle, 'bin')]);
@@ -89,7 +83,8 @@ const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(run
 // It is a build-time devDependency, not another employee runtime service.
 const npmCli = resolve('node_modules/npm/bin/npm-cli.js');
 const npmVersion = JSON.parse(await readFile(resolve('node_modules/npm/package.json'), 'utf8')).version;
-if (npmVersion !== '11.19.1') throw new Error('Build requires the pinned npm 11.19.1; bootstrap with npx --yes npm@11.19.1 ci');
+const expectedNpm = packageJson.packageManager.replace(/^npm@/, '');
+if (npmVersion !== expectedNpm) throw new Error(`Build requires ${packageJson.packageManager}; bootstrap with npx --yes ${packageJson.packageManager} ci`);
 const version = (await run(node, ['--version'], { capture: true })).stdout.trim();
 if (version !== `v${release.nodeVersion}`) throw new Error('Bundled Node version differs from release manifest');
 const buildEnvironment = { PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: '', npm_config_fund: 'false', npm_config_audit: 'false' };
@@ -97,7 +92,7 @@ const lockSha256 = createHash('sha256').update(await readFile('package-lock.json
 // DevSpace uses node-pty for Unix TTY sessions, but its Windows shell path always uses pipes.
 // Windows also disables subagents, so the platform Claude binary and Pi clipboard helpers are unused.
 const omitOptionalDependencies = process.platform === 'win32';
-const dependencyInstallProfile = omitOptionalDependencies ? 'omit-dev-optional-v1' : 'omit-dev-v1';
+const dependencyInstallProfile = `${RUNTIME_PROFILE}:${omitOptionalDependencies ? 'omit-dev-optional' : 'omit-dev'}`;
 const dependencyOmissions = ['--omit=dev', ...(omitOptionalDependencies ? ['--omit=optional'] : [])];
 const fingerprint = createHash('sha256').update(lockSha256).update(target).update(version).update(npmVersion)
   .update(dependencyInstallProfile).digest('hex');
@@ -105,10 +100,11 @@ const dependencyMarker = join(bundle, '.dependency-fingerprint');
 let previousFingerprint;
 try { previousFingerprint = (await readFile(dependencyMarker, 'utf8')).trim(); } catch {}
 if (!values['reuse-dependencies'] || previousFingerprint !== fingerprint) {
+  await rm(dependencyMarker, { force: true });
   await run(node, [npmCli, 'ci', ...dependencyOmissions, '--no-fund', '--no-audit'],
     { cwd: bundle, env: buildEnvironment, timeout: 600000 });
-  await writeFile(dependencyMarker, fingerprint);
 }
+await pruneRuntime(bundle, target);
 const installed = JSON.parse(await readFile(join(bundle, 'node_modules', '@waishnav', 'devspace', 'package.json'), 'utf8'));
 if (installed.version !== release.devspaceVersion) throw new Error('Installed upstream package differs from release pin');
 if (omitOptionalDependencies) {
@@ -132,13 +128,35 @@ if (omitOptionalDependencies) {
 await run(node, ['--input-type=module', '-e',
   "import {createRequire} from 'node:module'; const require=createRequire(import.meta.url); const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.prepare('SELECT 1').get(); db.close(); console.log('Bundled native SQLite loaded.');"],
 { cwd: bundle, env: buildEnvironment });
+if (process.platform !== 'win32') {
+  // Loading is insufficient: exercise a real native PTY after target pruning.
+  await run(node, ['--input-type=module', '-e', `
+    import {createRequire} from 'node:module';
+    const require=createRequire(import.meta.url), pty=require('node-pty');
+    const child=pty.spawn('/bin/sh',['-c','printf team-devspace-pty'],{name:'xterm',cols:80,rows:24,env:process.env});
+    let output=''; child.onData(data=>{output+=data});
+    const timer=setTimeout(()=>{child.kill();process.exit(1)},10000);
+    child.onExit(({exitCode})=>{clearTimeout(timer);setTimeout(()=>{
+      if(exitCode!==0||!output.includes('team-devspace-pty'))process.exit(1);
+      console.log('Bundled native PTY executed.');
+    },50)});
+  `], { cwd: bundle, env: buildEnvironment, timeout: 15000 });
+}
+await writeFile(dependencyMarker, fingerprint);
 const cloudflared = join(bundle, 'bin', process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
 const cfVersion = (await run(cloudflared, ['--version'], { capture: true })).stdout;
 if (!cfVersion.includes(release.cloudflaredVersion)) throw new Error('Bundled cloudflared version differs from release pin');
-const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...dependencyOmissions, '--package-lock-only'],
+// The employee manifest describes installed runtime dependencies, not this
+// repository's build tools. This also lets npm inspect the real tree for SBOM
+// generation without reporting deliberately omitted devDependencies as missing.
+const { devDependencies: buildDependencies, ...runtimePackage } = packageJson;
+await writeFile(join(bundle, 'package.json'), `${JSON.stringify(runtimePackage, null, 2)}\n`);
+const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...dependencyOmissions],
   { cwd: bundle, env: buildEnvironment, capture: true });
 JSON.parse(sbom.stdout);
 await writeFile(join(bundle, 'sbom.cdx.json'), sbom.stdout);
+// npm's hidden install metadata is not runtime code and carries app-level data.
+await rm(join(bundle, 'node_modules', '.package-lock.json'), { force: true });
 await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
   `Team DevSpace includes unmodified @waishnav/devspace ${release.devspaceVersion} and its locked npm dependencies.`,
   'Each dependency retains its own copyright and license files in node_modules. The SBOM lists package licenses.',
@@ -162,11 +180,12 @@ await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
 }, null, 2));
 console.log(JSON.stringify({ prepared: true, target, bundle, devspace: installed.version, node: version }));
 if (!values['prepare-only']) {
-  const distribution = await buildReleaseLayout({ bundle, target, release, tar, outputDirectory });
+  const distribution = await buildReleaseLayout({ bundle, target, release, tar, outputDirectory, gitFallbackArchive: downloads.git });
   let artifact;
   if (process.platform === 'win32') {
     const nsisZip = await downloadPinned(binaries.nsis, cache);
     const compilerRoot = resolve('build/nsis');
+    await rm(compilerRoot, { recursive: true, force: true });
     await mkdir(compilerRoot, { recursive: true });
     await run(tar, ['-xf', nsisZip, '-C', compilerRoot]);
     const entries = await readdir(compilerRoot, { withFileTypes: true });
@@ -230,5 +249,11 @@ if (!values['prepare-only']) {
   const checksum = await sha256File(artifact);
   await writeFile(`${artifact}.sha256`, `${checksum}  ${artifact.split(/[\\/]/).pop()}\n`);
   await cp(`${artifact}.sha256`, join(distribution.layout, `${artifact.split(/[\\/]/).pop()}.sha256`));
+  // Native smoke tests still use bundle/ and the small NSIS compiler; expanded
+  // packaging intermediates are neither caches nor release outputs.
+  for (const path of [`build/distribution-${target}`, `build/pkg-root-${target}`, `build/pkg-scripts-${target}`,
+    `build/pkg-components-${target}.plist`, `build/bootstrap-${target}`]) {
+    await rm(resolve(path), { recursive: true, force: true });
+  }
   console.log(JSON.stringify({ artifact, sha256: checksum, signed: false }));
 }

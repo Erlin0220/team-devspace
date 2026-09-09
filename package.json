@@ -1,6 +1,6 @@
 {
   "name": "team-devspace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Pinned DevSpace distribution with per-device Cloudflare connectivity for a shared ChatGPT app",
@@ -13,6 +13,7 @@
     "test:runtime": "node --test --test-concurrency=1 test/runtime.test.mjs",
     "test:native": "node scripts/native-smoke.mjs",
     "test:installer": "node scripts/installer-smoke.mjs",
+    "test:installer:unix": "node scripts/unix-installer-smoke.mjs",
     "test:distribution": "node --test --test-concurrency=1 test/distribution.test.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "assets": "node scripts/assets.mjs",

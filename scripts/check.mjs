@@ -24,9 +24,15 @@ if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
 }
 if (manifest.version !== release.version) throw new Error('Package and release versions differ');
 validateDistributionConfig(release);
-if (deployment.accountId !== release.cloudflare.accountId || deployment.zoneId !== release.cloudflare.zoneId ||
-    deployment.gateway !== release.gateway) {
-  throw new Error('Declarative deployment resources differ from canonical gateway metadata');
+if (Object.keys(deployment).some(key => key !== 'databaseId') ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.databaseId ?? '')) {
+  throw new Error('deployment.config.json stores only the non-derivable D1 database ID');
+}
+if (wrangler.assets?.binding !== 'ASSETS' || wrangler.assets?.run_worker_first !== true) {
+  throw new Error('The single gateway Worker must serve static assets through its ASSETS binding');
+}
+if (manifest.packageManager !== `npm@${manifest.devDependencies.npm}`) {
+  throw new Error('Build npm must match packageManager');
 }
 if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string) {
   throw new Error('Gateway must keep privacy-aware Workers Logs enabled');

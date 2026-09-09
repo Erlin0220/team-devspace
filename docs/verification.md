@@ -2,7 +2,15 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
-## Automated local evidence
+## Optimization verification: 0.1.1
+
+- [x] Local `check`, 23 tests and unified Worker dry-run passed after the optimization. New tests cover canonical deployment versions, Admin/D1/assets readiness, recovery route ownership, public assets routing and targeted optional/native pruning.
+- [x] Actual Windows NSIS transaction exercised the official PortableGit SFX with system Git/Bash deliberately absent from PATH, successful upgrade/repair, old-version and stale-cache collection, and corrupt-artifact rejection preserving the current installation.
+- [ ] Five-target 0.1.1 native build and installer transaction evidence (record CI run after completion).
+- [ ] Unified 0.1.1 production deployment/readiness (record CI run after completion).
+- [ ] Signed fixed-version GitHub Release. Production Windows/Apple signing credentials were absent when this optimization started; build success cannot close this gate.
+
+## Earlier baseline local evidence
 
 - [x] `npm run check`: syntax, upstream DevSpace version pin and whitespace checks.
 - [x] `npm test`: gateway/device isolation, concurrent enrollment, revoke/reset, local OAuth, Allowed Roots and real upstream DevSpace MCP read/write/shell tests.
@@ -13,13 +21,13 @@ This file records evidence that has actually been produced. A checked item means
 - [x] `npm run test:installer`: an actual test-isolated NSIS build was exercised against a controlled loopback Enrollment endpoint with production startup deliberately disabled; the distribution transaction and native startup are verified separately so the test never claims a real Tunnel is online.
 - [x] `npm run test:distribution`: fixed target/version metadata, component separation, exact size/SHA-256 and content-addressed offline layout are verified.
 - [x] The actual Windows bootstrap installer is 88 KB class and contains no Node, DevSpace `node_modules`, cloudflared or Git Payload; those exist only as manifest-addressed artifacts.
-- [x] The Windows production graph omits unused optional dependencies: the real bundle contains neither `node-pty` nor the 219 MB-class platform Claude executable. `node_modules` fell from 540,693,792 to 254,205,718 bytes and the compressed `devspace-runtime` artifact from 165,975,610 to 51,041,979 bytes; the required component archives total 102,670,830 bytes. macOS/Linux keep optional dependencies for upstream Unix TTY support.
-- [x] Isolated NSIS smoke verifies offline acquisition, shared cache, A/B activation, repeated-install Enrollment preservation, Repair reacquisition, failed-repair active-version retention, rollback retention and uninstall preservation.
-- [x] Gateway and static MCP assets compile as separate Workers; privacy-aware Workers Logs are enabled and scheduled cleanup has a deterministic reconciler test.
+- [x] The Windows production graph omits unused optional dependencies: the real bundle contains neither `node-pty` nor the 219 MB-class platform Claude executable. `node_modules` fell from 540,693,792 to 254,205,718 bytes and the compressed `devspace-runtime` artifact from 165,975,610 to 51,041,979 bytes; the required component archives total 102,670,830 bytes. These measurements predate 0.1.1's targeted Unix pruning and official PortableGit SFX packaging.
+- [x] Isolated NSIS smoke verifies offline acquisition, shared cache, A/B activation, repeated-install Enrollment preservation, Repair reacquisition, failed-repair active-version retention, pre-commit recovery and uninstall preservation. In 0.1.1, successful activation now retires the old version instead of retaining an unusable manual-rollback slot.
+- [x] Gateway and static MCP assets now compile as a single Worker with an Assets binding; privacy-aware Workers Logs are enabled and scheduled cleanup has a deterministic reconciler test.
 
 ## External evidence still required before production handoff
 
-- [ ] Cloudflare Worker + D1 deployed at the dedicated Team DevSpace hostname.
+- [x] Baseline Cloudflare Worker + D1 deployment succeeded in GitHub Actions run `34356504598` at commit `9ee875c`; the 0.1.1 unified deployment is tracked separately above.
 - [ ] Real remotely managed Tunnel provisioned automatically through Enrollment and connected from an employee device.
 - [ ] Real HTTPS MCP call reaches the correct Windows device through Worker -> Tunnel -> local bridge -> official DevSpace.
 - [ ] macOS arm64 package built natively and installed/tested.
