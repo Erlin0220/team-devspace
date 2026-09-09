@@ -31,6 +31,7 @@
     "@waishnav/devspace@1.0.8": true,
     "better-sqlite3@12.11.1": true,
     "esbuild@0.28.1": true,
+    "fsevents@2.3.3": false,
     "node-pty@1.1.0": true,
     "protobufjs@7.6.5": true,
     "sharp@0.35.4": true,
