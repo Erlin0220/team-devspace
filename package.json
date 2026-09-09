@@ -1,0 +1,58 @@
+{
+  "name": "team-devspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinned DevSpace distribution with per-device Cloudflare connectivity for a shared ChatGPT app",
+  "engines": { "node": "^22.22.2 || ^24.15.0 || >=26.0.0", "npm": ">=11.19.1 <12" },
+  "packageManager": "npm@11.19.1",
+  "bin": { "team-devspace": "client/cli.mjs" },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:runtime": "node --test --test-concurrency=1 test/runtime.test.mjs",
+    "test:native": "node scripts/native-smoke.mjs",
+    "test:installer": "node scripts/installer-smoke.mjs",
+    "test:distribution": "node --test --test-concurrency=1 test/distribution.test.mjs",
+    "verify:release": "node scripts/verify-remote-release.mjs",
+    "assets": "node scripts/assets.mjs",
+    "configure": "node scripts/configure.mjs",
+    "dev:gateway": "wrangler dev --local",
+    "deploy": "node scripts/deploy.mjs",
+    "package": "node scripts/package.mjs",
+    "acceptance": "node scripts/acceptance.mjs",
+    "admin": "node client/admin.mjs"
+  },
+  "dependencies": {
+    "@waishnav/devspace": "1.0.8"
+  },
+  "allowScripts": {
+    "@google/genai@1.52.0": false,
+    "@waishnav/devspace@1.0.8": true,
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.1": true,
+    "node-pty@1.1.0": true,
+    "protobufjs@7.6.5": true,
+    "sharp@0.35.4": true,
+    "workerd@1.20260730.1": true,
+    "workerd@1.20260908.1": true
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent": {
+      "undici": "8.10.2",
+      "brace-expansion": "5.0.9",
+      "protobufjs": "7.6.5"
+    },
+    "miniflare": {
+      "sharp": "0.35.4",
+      "undici": "7.29.0"
+    }
+  },
+  "devDependencies": {
+    "@clack/prompts": "1.5.1",
+    "npm": "11.19.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.130.0"
+  }
+}

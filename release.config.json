@@ -1,0 +1,20 @@
+{
+  "version": "0.1.0",
+  "gateway": "https://team-devspace.568920429.xyz",
+  "cloudflare": {
+    "accountId": "4498bbe09d0c6dc868f53aff6391ca6e",
+    "zoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
+    "deviceDomain": "568920429.xyz"
+  },
+  "devspaceVersion": "1.0.8",
+  "nodeVersion": "22.23.0",
+  "cloudflaredVersion": "2026.8.3",
+  "gitFallbackVersion": "2.55.0.windows.5",
+  "distribution": {
+    "bucket": "team-devspace-releases",
+    "baseUrl": "https://releases.568920429.xyz/releases",
+    "hostname": "releases.568920429.xyz",
+    "visibility": "public",
+    "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
+  }
+}
