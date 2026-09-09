@@ -1,0 +1,14 @@
+body > main { padding-block: 2rem; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+header h1 { margin-bottom: .25rem; }
+header p { margin: 0; }
+.table-wrap { overflow-x: auto; }
+.actions { white-space: nowrap; }
+.actions button { width: auto; margin: 0 .25rem .25rem 0; padding: .4rem .65rem; }
+.state { font-weight: 600; }
+.state-active { color: #18864b; }
+.state-suspended, .state-revoked, .state-resetting { color: #b4233a; }
+.state-issued, .state-provisioning { color: #9a6700; }
+#create-panel, #credential-panel, #notice { margin-block: 1rem; padding: 1rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); }
+#credential { display: block; overflow-wrap: anywhere; margin-block: .75rem; user-select: all; }
+@media (max-width: 576px) { header { align-items: stretch; flex-direction: column; } }

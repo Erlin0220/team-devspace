@@ -2,6 +2,16 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
+## Team control and Admin Web verification: 0.2.0
+
+- [x] Local `npm run check`, all 40 tests, `npm run deploy -- --dry-run` and `npm run test:distribution` passed on 2026-09-10. Tests cover the shared Admin Service, HTML escaping/CSP/CSRF, browser-only credential generation and same-credential retry, Access resource ownership, fail-closed protection probes, suspended Gateway routing, tray controller state/action delegation and optional macOS signing configuration.
+- [x] Rust 1.85.1 built `tray-icon` 0.24.2 with `cargo build --release --locked`. The Windows artifact was checked as a native x64 GUI-subsystem PE, then actually created its tray/menu event loop in the logged-in Windows desktop, accepted ready/partial/suspended/stopped JSON-lines updates and exited cleanly on protocol EOF. The final bundle copy passed the same smoke test.
+- [x] The local 0.2.0 Windows offline layout and NSIS installer were rebuilt from an isolated worktree without unrelated WIP; installer SHA-256 is `19bed9b65cb650ed4c6593e6cd95b79cd863c79570113bf15ac7f69c205659eb`. Provenance records the Cargo.lock SHA-256 and 36 target-resolved Rust components are present in CycloneDX SBOM output.
+- [x] `npm run test:native` passed against the 0.2.0 bundle using real current-user Task Scheduler entries, authenticated MCP, restart/cleanup and a process-tree check proving no long-lived PowerShell/cmd supervisor. `npm run test:installer` passed real offline install, upgrade/repair, corrupt-payload retention and uninstall-preservation transactions.
+- [ ] Production Cloudflare Access Application/policy and Worker deployment. This checkout has no local protected Cloudflare configuration, so no live mutation was attempted before review. The deployment path is simulated and dry-run compiled, but the live `/admin` challenge, authenticated page actions and D1/Tunnel/DNS lifecycle still require the protected production workflow.
+- [ ] Native macOS arm64/x64 build and logged-in menu-bar acceptance for 0.2.0. The release matrix builds both architectures from the exact Cargo lock and can use protected credentials for codesign, signed PKG, notarization and staple verification, but no such run has completed yet; a hosted package build must not be reported as real-device menu-bar acceptance.
+- [ ] Human-visible Windows tray menu click acceptance across login, suspend/resume and Quit Tray. Automated evidence proves native tray creation, state updates and independent exit; it does not substitute for observing Explorer’s notification area and clicking the real menu.
+
 ## Optimization verification: 0.1.1
 
 - [x] Local `check`, 24 tests and unified Worker dry-run passed after the optimization. New tests cover canonical deployment versions, Admin/D1/assets readiness, recovery route ownership, public assets routing and targeted optional/native pruning.
@@ -39,7 +49,7 @@ This file records evidence that has actually been produced. A checked item means
 - [ ] macOS logged-in LaunchAgent and Linux logged-in systemd user-session lifecycle acceptance on employee machines.
 - [ ] Windows internal Authenticode release exercised with the fixed self-signed publisher identity and the bundled current-user trust helper on an employee machine. macOS Developer ID/notarization is intentionally not a gate in `internal-free`; real macOS acceptance must instead exercise the administrator-approved Gatekeeper exception without disabling Gatekeeper globally.
 - [x] All five native layouts aggregated and SHA-256 verified, with administrator handoff archives successfully assembled in run `34360282017`.
-- [ ] Internal handoff assets published once to a private fixed-version GitHub Release; Windows must be internally signed and macOS must be explicitly documented as unsigned/unnotarized.
+- [ ] Internal handoff assets published once to a private fixed-version GitHub Release; Windows must be internally signed and the actual macOS signed/notarized or unsigned/unnotarized trust mode must be explicitly documented.
 - [x] Product owner selected private GitHub Releases for administrator handoff; employee installers are offline-only and contain no GitHub credential or remote artifact origin.
 - [ ] Two real Workspace users prove ChatGPT OAuth identity A/B routes to Device A/B, and the same two identities enroll their own devices; Access Key IAM is retained until then.
 - [ ] Linked App Token is proven through wildcard per-device Access before considering removal of Device Secret / MASTER_KEY.

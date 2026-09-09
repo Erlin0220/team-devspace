@@ -80,8 +80,35 @@ jobs:
         run: npm test
       - name: Validate unified gateway and static assets without deploying
         run: npm run deploy -- --dry-run
+      - name: Prepare optional protected macOS signing identity
+        if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
+        env:
+          MACOS_SIGNING_P12_BASE64: ${{ secrets.MACOS_SIGNING_P12_BASE64 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          MACOS_APPLICATION_IDENTITY: ${{ secrets.MACOS_APPLICATION_IDENTITY }}
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          MACOS_NOTARY_KEY_P8_BASE64: ${{ secrets.MACOS_NOTARY_KEY_P8_BASE64 }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: node scripts/macos-signing.mjs prepare
       - name: Build native component artifacts, offline layout and bootstrapper
         run: npm run package
+      - name: Record macOS package trust mode
+        if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test "${TEAM_DEVSPACE_MACOS_SIGNING:-}" = 1; then
+            echo "Developer ID app/installer signatures, notarization and staple verification completed."
+          else
+            echo "internal-free: macOS PKG remains unsigned/unnotarized because no Apple credentials were configured."
+          fi
+      - name: Remove temporary macOS signing material
+        if: ${{ always() && inputs.publish && startsWith(matrix.target, 'darwin-') }}
+        run: node scripts/macos-signing.mjs cleanup
+      - name: Start and exercise the native Windows tray protocol
+        if: ${{ matrix.target == 'win32-x64' }}
+        run: npm run test:tray
       - name: Verify native user-session runtime
         # GitHub-hosted macOS jobs do not provide a durable employee login session for LaunchAgent lifecycle E2E.
         # macOS native startup is verified later on a real logged-in Mac; hosted CI still builds both native PKGs here.
@@ -103,17 +130,6 @@ jobs:
           WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD }}
           TEAM_DEVSPACE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: ./scripts/sign-internal-windows.ps1
-
-      - name: Keep macOS package explicitly unsigned for internal handoff
-        if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          PKG="release/Team-DevSpace-$RELEASE_VERSION-macos-${{ matrix.target == 'darwin-arm64' && 'arm64' || 'x64' }}.pkg"
-          test -s "$PKG"
-          echo "internal-free: macOS PKG intentionally remains unsigned and unnotarized; administrator handoff instructions are published with the release."
 
       - name: Upload complete native layout and entrypoint
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -181,4 +197,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Team DevSpace $VERSION" \
-            --notes "Private internal administrator handoff. Windows uses the bundled Team DevSpace self-signed publisher certificate and current-user trust helper. macOS packages are intentionally unsigned/unnotarized in the internal-free profile; follow INTERNAL-DISTRIBUTION.md and verify SHA256SUMS. Employees install only administrator-supplied complete offline packages."
+            --notes "Private internal administrator handoff. Windows uses the bundled Team DevSpace self-signed publisher certificate and current-user trust helper. macOS packages use Developer ID/notarization only when protected Apple credentials were supplied; otherwise they are explicitly unsigned/unnotarized. Follow INTERNAL-DISTRIBUTION.md and verify SHA256SUMS. Employees install only administrator-supplied complete offline packages."

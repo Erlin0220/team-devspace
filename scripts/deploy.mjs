@@ -4,6 +4,7 @@ import { restoreDeployment, waitForReadiness } from './deploy-checks.mjs';
 import { resolve, join, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { atomicJson, normalizeGateway, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
+import { ensureAdminAccess, verifyAdminProtection } from './access.mjs';
 
 const { values } = parseArgs({ options: { 'dry-run': { type: 'boolean' }, ci: { type: 'boolean' }, provision: { type: 'boolean' }, config: { type: 'string' } } });
 const directory = values.ci ? resolve(process.env.RUNNER_TEMP ?? 'build/deploy-ci') : resolve('.runtime');
@@ -14,6 +15,7 @@ let deployment = await readJson('deployment.config.json');
 const credentials = values['dry-run'] ? null : values.ci ? {
   deployToken: process.env.CLOUDFLARE_API_TOKEN,
   runtimeToken: process.env.CF_RUNTIME_API_TOKEN,
+  adminEmails: process.env.ADMIN_ACCESS_EMAILS?.split(','),
 } : await readJson(values.config ?? join(directory, 'cloudflare.json'));
 const config = credentials && { ...credentials, accountId: release.cloudflare.accountId,
   zoneId: release.cloudflare.zoneId, deviceDomain: release.cloudflare.deviceDomain, gateway: release.gateway };
@@ -74,12 +76,21 @@ if (values['dry-run']) {
       throw new Error('A same-named D1 database already exists but is not recorded by this checkout. Restore the private deployment/admin backup instead of adopting an unknown database.');
     }
     database = await api(`/accounts/${config.accountId}/d1/database`, 'POST', { name: workerName });
-    deployment = { databaseId: database.uuid };
+    deployment = { ...deployment, databaseId: database.uuid };
     await atomicJson('deployment.config.json', deployment);
     console.log(`Recorded non-secret D1 database ID in deployment.config.json: ${database.uuid}`);
   }
+  const access = await ensureAdminAccess({
+    api, accountId: config.accountId, hostname, administratorEmails: config.adminEmails,
+    applicationId: deployment.accessApplicationId,
+    onApplicationCreated: async applicationId => {
+      deployment = { ...deployment, accessApplicationId: applicationId };
+      await atomicJson('deployment.config.json', deployment);
+    },
+  });
   if (values.provision) {
-    console.log(JSON.stringify({ provisioned: true, gateway, databaseId: database.uuid, paidPlanChanges: false }, null, 2));
+    console.log(JSON.stringify({ provisioned: true, gateway, databaseId: database.uuid,
+      accessApplicationId: access.applicationId, accessPolicyId: access.policyId, paidPlanChanges: false }, null, 2));
     process.exit(0);
   }
   const generated = { ...base, account_id: config.accountId, name: workerName,
@@ -135,6 +146,7 @@ if (values['dry-run']) {
     uploadAttempted = true;
     await run(wrangler, ['deploy', '--config', generatedFile, '--secrets-file', secretsFile, '--minify', '--autoconfig=false']);
     await waitForReadiness(probes);
+    await verifyAdminProtection(gateway);
     for (const route of oldRoutes) {
       await api(`${routesPath}/${route.id}`, 'DELETE');
     }
@@ -155,7 +167,8 @@ if (values['dry-run']) {
       await api(`/accounts/${config.accountId}/workers/scripts/${workerName}-assets`, 'DELETE', undefined, { missingOk: true });
     }
   } catch { console.warn('Gateway is healthy; retired asset Worker cleanup will be retried on the next deploy.'); }
-  console.log(JSON.stringify({ deployed: true, gateway, databaseId: database.uuid, readiness,
+  console.log(JSON.stringify({ deployed: true, gateway, databaseId: database.uuid,
+    accessApplicationId: access.applicationId, accessPolicyId: access.policyId, readiness,
     runtimeTokenReadPreflight: true, administratorConfig: adminFile ?? 'protected CI environment',
     paidPlanChanges: false }, null, 2));
 }

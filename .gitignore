@@ -3,6 +3,10 @@ dist/
 build/
 coverage/
 assets/
+!assets/
+assets/*
+!assets/admin/
+!assets/admin/**
 release/
 .runtime/
 .artifacts/

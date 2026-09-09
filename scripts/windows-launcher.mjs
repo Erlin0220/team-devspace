@@ -25,7 +25,7 @@ export async function peDetails(path) {
 
 export async function peSubsystem(path) { return (await peDetails(path)).subsystem; }
 
-async function zigCompiler() {
+export async function zigCompiler() {
   const target = 'win32-x64';
   const binaries = JSON.parse(await readFile(new URL('./binaries.json', import.meta.url), 'utf8'));
   const cache = resolve('build/cache');

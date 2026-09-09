@@ -22,6 +22,7 @@ jobs:
       CF_RUNTIME_API_TOKEN: ${{ secrets.CF_RUNTIME_API_TOKEN }}
       ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
       MASTER_KEY: ${{ secrets.MASTER_KEY }}
+      ADMIN_ACCESS_EMAILS: ${{ vars.ADMIN_ACCESS_EMAILS }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -47,7 +48,7 @@ jobs:
           sha="$(git rev-parse HEAD:deployment.config.json)"
           content="$(base64 -w0 deployment.config.json)"
           gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/deployment.config.json" \
-            -f message='chore(deploy): 记录生产 D1 标识' \
+            -f message='chore(deploy): 记录生产 D1 与 Access 标识' \
             -f content="$content" \
             -f sha="$sha" \
             -f branch="$GITHUB_REF_NAME" >/dev/null

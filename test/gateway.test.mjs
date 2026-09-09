@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import { reconcileCleanup, requestOperation } from '../gateway/index.mjs';
@@ -20,9 +20,16 @@ async function fixture(t) {
   const mf = new Miniflare({
     modules: true, scriptPath: resolve('gateway/index.mjs'), compatibilityDate: '2026-06-01',
     d1Databases: { DB: 'team-devspace-test' }, log: new Log(LogLevel.ERROR),
-    serviceBindings: { ASSETS: async request => new URL(request.url).pathname === '/mcp-app-assets/test.js'
-      ? new Response('export const fixture = true;', { headers: { 'Content-Type': 'text/javascript' } })
-      : new Response('Not found', { status: 404 }) },
+    serviceBindings: { ASSETS: async request => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === '/mcp-app-assets/test.js') {
+        return new Response('export const fixture = true;', { headers: { 'Content-Type': 'text/javascript' } });
+      }
+      if (pathname === '/admin/assets/admin.js') {
+        return new Response('export const admin = true;', { headers: { 'Content-Type': 'text/javascript' } });
+      }
+      return new Response('Not found', { status: 404 });
+    } },
     bindings: { ADMIN_TOKEN: adminToken, MASTER_KEY: secret(), CF_API_TOKEN: secret(),
       CF_ACCOUNT_ID: 'a'.repeat(32), CF_ZONE_ID: 'b'.repeat(32), DEVICE_DOMAIN: 'example.test',
       PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8' },
@@ -85,7 +92,9 @@ async function fixture(t) {
   });
   t.after(() => mf.dispose());
   const db = await mf.getD1Database('DB');
-  await db.exec((await readFile('migrations/0001_access_keys.sql', 'utf8')).replaceAll('\n', ' '));
+  for (const migration of (await readdir('migrations')).filter(name => name.endsWith('.sql')).sort()) {
+    await db.exec((await readFile(`migrations/${migration}`, 'utf8')).replaceAll('\n', ' '));
+  }
   async function request(path, token, body, extra = {}) {
     return mf.dispatchFetch(`https://team.example.test${path}`, {
       method: body === undefined ? 'GET' : 'POST',
@@ -164,6 +173,45 @@ test('gateway authorizes real D1 bindings, isolates devices and namespaces MCP s
   assert.equal(stored.key_hash, hash(a.accessKey));
   assert.ok(!JSON.stringify(stored).includes(a.accessKey));
   assert.ok(!JSON.stringify(stored).includes(da.deviceSecret));
+});
+
+test('Device suspend is fail-closed before local stop and resume waits for the existing Tunnel health', async t => {
+  const f = await fixture(t);
+  const key = await f.issue('Suspend Device');
+  const device = f.device();
+  const enrollment = await f.request('/v1/enroll', key.accessKey, device).then(response => response.json());
+  const identity = { keyId: key.id, bindingId: enrollment.bindingId };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const suspended = await f.request('/v1/device/suspend', device.deviceSecret, identity);
+    assert.equal(suspended.status, 200);
+    assert.equal((await suspended.json()).state, 'suspended');
+  }
+  const denied = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'initialize' });
+  assert.equal(denied.status, 403);
+  assert.equal((await denied.json()).error.message, 'remote_access_suspended');
+  const status = await f.request('/v1/device/status', device.deviceSecret, identity);
+  assert.equal((await status.json()).state, 'suspended');
+  assert.equal((await f.request('/v1/device/resume', secret(), identity)).status, 403);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resumed = await f.request('/v1/device/resume', device.deviceSecret, identity);
+    assert.equal(resumed.status, 200);
+    assert.equal((await resumed.json()).state, 'active');
+  }
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 2, method: 'initialize' })).status, 200);
+});
+
+test('Admin Web is Access-gated and its assets stay inside /admin/assets/*', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin')).status, 403);
+  const access = { 'Cf-Access-Authenticated-User-Email': 'admin@example.test',
+    'Cf-Access-Jwt-Assertion': 'signed-access-assertion' };
+  const page = await f.mf.dispatchFetch('https://team.example.test/admin', { headers: access });
+  assert.equal(page.status, 200);
+  assert.ok((await page.text()).includes('Team DevSpace Admin'));
+  const asset = await f.mf.dispatchFetch('https://team.example.test/admin/assets/admin.js', { headers: access });
+  assert.equal(asset.status, 200);
+  assert.equal(await asset.text(), 'export const admin = true;');
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin.js', { headers: access })).status, 404);
 });
 
 test('simultaneous enrollment binds a key once; repeat setup is idempotent', async t => {

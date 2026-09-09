@@ -2,6 +2,8 @@ import { equalSecret, seal, sha256, unseal } from './crypto.mjs';
 import { KeyStore } from './store.mjs';
 import { Cloudflare, CloudflareError } from './cloudflare.mjs';
 import assets from './assets.mjs';
+import { AdminService, AdminServiceError } from './admin-service.mjs';
+import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/;
@@ -46,11 +48,6 @@ async function smallJson(request) {
   return value;
 }
 
-function publicKey(row) {
-  return { id: row.id, label: row.label, state: row.state, deviceId: row.device_id,
-    bindingId: row.binding_id, cleanupPending: Boolean(row.cleanup_pending) };
-}
-
 async function employeeKey(request, store) {
   const key = bearer(request);
   if (!/^tds_[A-Za-z0-9_-]{43}$/.test(key)) throw new HttpError(401, 'invalid_access_key');
@@ -77,7 +74,7 @@ async function enroll(request, env, store) {
     });
   }
   // Knowing only the employee key cannot recover tunnel credentials from an existing binding.
-  if (!row || !['provisioning', 'active'].includes(row.state) ||
+  if (!row || !['provisioning', 'active', 'suspended'].includes(row.state) ||
       row.device_id !== body.deviceId || !equalSecret(row.device_secret_hash, deviceHash) ||
       row.bridge_port !== body.bridgePort) throw new HttpError(409, 'access_key_already_bound');
 
@@ -95,7 +92,8 @@ async function enroll(request, env, store) {
   }
   return json({ keyId: row.id, deviceId: row.device_id, bindingId: row.binding_id,
     hostname: row.hostname, tunnelToken: configured.tunnelToken,
-    endpoint: `${publicOrigin(env)}/mcp`, devspaceVersion: env.DEVSPACE_VERSION });
+    endpoint: `${publicOrigin(env)}/mcp`, devspaceVersion: env.DEVSPACE_VERSION,
+    state: row.state === 'suspended' ? 'suspended' : 'active' });
 }
 
 function publicOrigin(env) {
@@ -106,42 +104,67 @@ function publicOrigin(env) {
   return url.origin;
 }
 
-async function deviceStatus(request, store) {
+async function deviceIdentity(request, store) {
   const secret = bearer(request);
   const body = await smallJson(request);
   if (!UUID.test(body.keyId ?? '') || !UUID.test(body.bindingId ?? '')) throw new HttpError(400, 'invalid_device');
   const row = await store.byId(body.keyId);
-  if (!row || row.state !== 'active' || row.binding_id !== body.bindingId ||
+  if (!row || !['active', 'suspended'].includes(row.state) || row.binding_id !== body.bindingId ||
       !equalSecret(row.device_secret_hash, await sha256(secret))) throw new HttpError(403, 'device_disabled');
+  return { row, secret };
+}
+
+async function deviceStatus(request, store) {
+  const { row } = await deviceIdentity(request, store);
+  return json({ state: row.state, deviceId: row.device_id, bindingId: row.binding_id });
+}
+
+async function suspendDevice(request, store) {
+  const { row } = await deviceIdentity(request, store);
+  if (!await store.suspend(row.id, row.binding_id)) throw new HttpError(409, 'access_lifecycle_changed');
+  return json({ state: 'suspended', deviceId: row.device_id, bindingId: row.binding_id });
+}
+
+async function resumeDevice(request, store) {
+  const { row, secret } = await deviceIdentity(request, store);
+  if (row.state === 'suspended') {
+    if (!row.hostname || !row.tunnel_id) throw new HttpError(503, 'device_not_ready');
+    let health;
+    try {
+      health = await fetch(`https://${row.hostname}/healthz`, {
+        headers: { Authorization: `Bearer ${secret}`, 'X-Team-Binding-Id': row.binding_id },
+        redirect: 'manual', signal: AbortSignal.timeout(10000),
+      });
+    } catch { throw new HttpError(503, 'device_offline'); }
+    if (health.status !== 200) {
+      await health.body?.cancel();
+      throw new HttpError(503, 'device_not_ready');
+    }
+    await health.body?.cancel();
+  }
+  if (!await store.resume(row.id, row.binding_id)) throw new HttpError(409, 'access_lifecycle_changed');
   return json({ state: 'active', deviceId: row.device_id, bindingId: row.binding_id });
 }
 
 async function admin(request, env, store, pathname) {
   if (!env.ADMIN_TOKEN || env.ADMIN_TOKEN.length < 32) throw new HttpError(503, 'admin_not_configured');
   if (!equalSecret(bearer(request), env.ADMIN_TOKEN)) throw new HttpError(401, 'invalid_admin_credential');
-  if (pathname === '/v1/admin/keys' && request.method === 'GET') return json({ keys: await store.list() });
+  const service = new AdminService(store, { remove: row => new Cloudflare(env).remove(row) });
+  if (pathname === '/v1/admin/keys' && request.method === 'GET') return json({ keys: await service.listKeys() });
   if (pathname === '/v1/admin/keys' && request.method === 'POST') {
     const body = await smallJson(request);
     if (!UUID.test(body.id ?? '') || !HASH.test(body.keyHash ?? '') ||
         typeof body.label !== 'string' || !body.label.trim() || body.label.length > 100 || /[\x00-\x1f]/.test(body.label)) {
       throw new HttpError(400, 'invalid_key_request');
     }
-    const row = await store.issue({ ...body, label: body.label.trim() });
-    if (!row) throw new HttpError(409, 'key_label_or_id_conflict');
-    return json(publicKey(row), 201);
+    return json(await service.issueKey({ ...body, label: body.label.trim() }), 201);
   }
   const match = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
   if (!match || request.method !== 'POST' || !UUID.test(match[1])) throw new HttpError(404, 'not_found');
   const [, id, operation] = match;
-  if (!await store.byId(id)) throw new HttpError(404, 'key_not_found');
-  // This is committed before Cloudflare cleanup. Failure stays denied and is safe to retry.
-  const row = await store.disable(id, operation);
-  if (!row) throw new HttpError(409, 'revoked_key_cannot_be_reset');
-  try { await new Cloudflare(env).remove(row); } catch {
-    return json({ ...publicKey(row), cleanup: 'pending', error: 'connectivity_cleanup_pending', retryable: true }, 503);
-  }
-  if (!await store.finishCleanup(id, row.binding_id, operation)) throw new HttpError(409, 'access_lifecycle_changed');
-  return json({ ...publicKey(await store.byId(id)), cleanup: 'complete' });
+  const result = operation === 'revoke' ? await service.revokeKey(id) : await service.resetDevice(id);
+  return json({ ...result.key, cleanup: result.cleanup,
+    ...(result.error ? { error: result.error, retryable: result.retryable } : {}) }, result.error ? 503 : 200);
 }
 
 function boundedBody(body) {
@@ -159,6 +182,7 @@ function boundedBody(body) {
 async function proxyMcp(request, env, store) {
   if (!['GET', 'POST', 'DELETE'].includes(request.method)) throw new HttpError(405, 'method_not_allowed');
   const row = await employeeKey(request, store);
+  if (row.state === 'suspended') throw new HttpError(403, 'remote_access_suspended');
   if (row.state !== 'active' || !row.hostname || !row.tunnel_id) throw new HttpError(503, 'device_not_ready');
   if (Number(request.headers.get('Content-Length') ?? 0) > MCP_LIMIT) throw new HttpError(413, 'body_too_large');
   const headers = new Headers();
@@ -225,11 +249,18 @@ export async function reconcileCleanup(env, dependencies = {}) {
 
 // Return only internal enum values. Never log dynamic paths, labels or IDs.
 export function requestOperation(method, pathname) {
+  if (pathname.startsWith('/admin/assets/')) return 'admin_web_asset';
+  if ((pathname === '/admin' || pathname === '/admin/') && method === 'GET') return 'admin_web_list';
+  if (pathname === '/admin/keys' && method === 'POST') return 'admin_web_issue';
+  const webAction = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
+  if (method === 'POST' && webAction && UUID.test(webAction[1])) return `admin_web_${webAction[2]}`;
   if (pathname.startsWith('/mcp-app-assets/')) return 'assets';
   if (pathname === '/health' && method === 'GET') return 'health';
   if (pathname === '/mcp') return 'mcp';
   if (pathname === '/v1/enroll' && method === 'POST') return 'enroll';
   if (pathname === '/v1/device/status' && method === 'POST') return 'device_status';
+  if (pathname === '/v1/device/suspend' && method === 'POST') return 'device_suspend';
+  if (pathname === '/v1/device/resume' && method === 'POST') return 'device_resume';
   if (pathname === '/v1/admin/keys' && method === 'GET') return 'admin_list_keys';
   if (pathname === '/v1/admin/keys' && method === 'POST') return 'admin_issue_key';
   const action = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
@@ -259,15 +290,22 @@ export default {
           if (pathname === '/mcp') response = await proxyMcp(request, env, store);
           else if (operation === 'enroll') response = await enroll(request, env, store);
           else if (operation === 'device_status') response = await deviceStatus(request, store);
+          else if (operation === 'device_suspend') response = await suspendDevice(request, store);
+          else if (operation === 'device_resume') response = await resumeDevice(request, store);
           else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
+          else if (pathname.startsWith('/admin')) response = await adminWeb(request, env,
+            new AdminService(store, { remove: row => new Cloudflare(env).remove(row) }));
           else throw new HttpError(404, 'not_found');
         }
       }
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 503;
-      const code = error instanceof HttpError || error instanceof CloudflareError ? error.code : 'service_unavailable';
+      const status = error instanceof HttpError || error instanceof AdminServiceError || error instanceof AdminWebError
+        ? error.status : 503;
+      const code = error instanceof HttpError || error instanceof AdminServiceError ||
+        error instanceof AdminWebError || error instanceof CloudflareError
+        ? error.code : 'service_unavailable';
       errorCode = code;
-      response = pathname === '/mcp'
+      response = pathname.startsWith('/admin') ? adminWebError(error, requestId) : pathname === '/mcp'
         ? json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: code, data: { requestId } } }, status)
         : json({ error: code, requestId }, status);
       if (status === 401) response.headers.set('WWW-Authenticate', 'Bearer realm="Team DevSpace"');

@@ -12,18 +12,20 @@
 
 | 用途 | Account 权限 | Zone 权限 | 保存位置 |
 | --- | --- | --- | --- |
-| 管理员部署 | Workers Scripts Edit、D1 Edit | Workers Routes Edit、DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` 或 GitHub `production` 环境 |
+| 管理员部署 | Workers Scripts Edit、D1 Edit、Access: Apps and Policies Write | Workers Routes Edit、DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` 或 GitHub `production` 环境 |
 | Worker 运行时建 Tunnel | Cloudflare Tunnel Edit | DNS Edit | Worker Secret `CF_API_TOKEN` |
 
 这些是 Cloudflare 管理令牌，**不是员工的 Access Key**。员工安装包和 Employee 电脑只得到自己 Tunnel 的运行 token，不得到以上账号级令牌。
 
 在自己电脑的项目终端运行 `npm run configure`。输入使用密码框；不要通过聊天、环境变量截图、GitHub Issue 或提交文件传递秘密。配置文件所在目录会限制为当前用户可访问。
 
-Cloudflare 账号、Zone、设备域名和 Gateway 唯一读取 `release.config.json`；本机配置只保存令牌，`deployment.config.json` 只保存 D1 ID。这些公开元数据不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
+Cloudflare 账号、Zone、设备域名和 Gateway 唯一读取 `release.config.json`；本机配置保存令牌和允许登录 Admin 的邮箱列表，CI 使用 `ADMIN_ACCESS_EMAILS`（逗号分隔）变量。`deployment.config.json` 只保存项目明确拥有的 D1 ID 与 Access Application ID。这些公开元数据不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
 
 ## 可重复的部署动作
 
-`npm run deploy` 按以下顺序处理：校验域名和 D1 归属；保存可复用的管理员密钥与主密钥；用运行时令牌执行 Tunnel/DNS 只读 preflight；记录当前 Worker 版本和旧静态资源路由；应用数据库迁移；单次部署 Gateway、静态资源和 Secret；验证固定 release/upstream 版本、Admin/D1 和真实 JS 资源字节哈希/CORS。所有探测通过才输出 `deployed: true`。
+`npm run deploy` 按以下顺序处理：校验域名和 D1 归属；按 `deployment.config.json` 确认或创建唯一的 `Team DevSpace Admin` Access Application（精确覆盖 `<gateway-host>/admin*`），确认管理员邮箱 allow policy；保存可复用的管理员密钥与主密钥；用运行时令牌执行 Tunnel/DNS 只读 preflight；记录当前 Worker 版本和旧静态资源路由；应用数据库迁移；单次部署 Gateway、静态资源和 Secret；验证固定 release/upstream 版本、Admin/D1 和真实资源，最后从无 Access 会话的请求确认 `/admin` 只会 redirect/challenge/deny。所有探测通过才输出 `deployed: true`。
+
+部署脚本不会按名称接管现有 Access Application，也不会删除未知 policy。首次创建后立即记录 Application ID；策略失败会使新 Application 保持无 allow policy，并在 Worker 上传前停止。`workers.dev` 和 preview URL 均关闭，防止绕过 custom domain 上的 Access。管理员在 Access 登录后打开 `<gateway>/admin`；浏览器页面从不接收 `ADMIN_TOKEN`，CLI `/v1/admin/*` 仍继续使用它。
 
 从双 Worker 版本升级时，先部署带 Assets binding 的主 Worker，确认 Admin/D1 后删除项目拥有的旧资源路由，再验证资源由新 Worker 提供。失败会尝试恢复原路由和原 Worker 版本，并明确报告恢复失败；不会覆盖其他 Worker 的路由。成功后删除退休的独立 assets Worker。
 
@@ -34,6 +36,8 @@ D1 迁移不是 Worker 版本回滚的一部分。迁移必须向后兼容，破
 请求日志仅包含 `requestId`、内部枚举 `operation`、状态码、错误码和耗时。`/health`、控制接口、MCP 与资源响应统一带 request ID；不记录凭据、动态路径、源码或 Shell 内容。
 
 不会自动修改收费套餐、迁移已有 DNS 服务、部署 VPS 或把管理员电脑当作 Gateway。即便脚本不购买套餐，仍应确认账号自身的套餐和免费用量；已有付费账号的超额用量可能产生账单，不能将“未点击升级”当作无限免费。
+
+`internal-free` 发布不把 Apple 付费凭据作为发布 gate。若 GitHub `production` 环境完整配置 Developer ID Application/Installer P12 与 App Store Connect API Key，macOS job 会在临时 keychain 中依次 codesign 内层 Tray.app 和安装 App、签名 PKG、提交 `notarytool --wait`、staple 并验证，然后无论成功失败都删除临时材料；只配置一部分字段会失败而不会生成身份不明的发布物。完全未配置时仍明确产出 unsigned/unnotarized 内部包，不能把它描述为已完成签名或公证。
 
 ## 设备网络条件
 

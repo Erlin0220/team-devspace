@@ -7,6 +7,9 @@ import { approvedRoots, atomicJson, loadState, stateHome, writeUpstreamConfig } 
 import { configureDevice, deviceStatus, macSetupDialog, requestFromFile } from './setup.mjs';
 import { installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
+import { diagnosticReport, openLogs, restartTeamDevSpace,
+  resumeRemoteAccess, suspendRemoteAccess } from './control.mjs';
+import { runTray } from './tray.mjs';
 
 const HELP = `Team DevSpace
   setup --credential-file <file.json> --root <project-directory> [--root <another-directory>]
@@ -14,10 +17,13 @@ const HELP = `Team DevSpace
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
   start | stop | restart            Control your user-session runtime
+  suspend | resume                  Fail-closed remote access safety switch
+  diagnostics                       Print stable redacted diagnostics
+  logs                              Open the existing log directory
   roots list | add <path> | remove <path>
   startup install | remove          Manage native user-login startup
   uninstall                         Stop/remove startup; retain Enrollment for repair
-  run runtime                       Foreground DevSpace + bridge (native startup uses this)
+  run runtime | tray                Foreground native startup component
   --home <directory>                Isolated local state (advanced)
 
 Use the same Access Key when connecting the Team DevSpace workspace app.
@@ -34,7 +40,11 @@ export async function main(argv = process.argv.slice(2)) {
   const home = stateHome();
   const [command, action, argument] = positionals;
   if (values.help || !command) { console.log(HELP); return; }
-  if (command === 'run') { await runComponent(action, home); return; }
+  if (command === 'run') {
+    if (action === 'tray') await runTray(home);
+    else await runComponent(action, home);
+    return;
+  }
   let result;
   if (command === 'setup') {
     const input = values['request-file'] ? await requestFromFile(values['request-file'], true)
@@ -44,10 +54,15 @@ export async function main(argv = process.argv.slice(2)) {
     result = await configureDevice(input, { home, startup: !values['no-startup'] });
   } else if (command === 'setup-gui') result = await macSetupDialog(home);
   else if (command === 'status') result = await deviceStatus(home);
+  else if (command === 'suspend') result = await suspendRemoteAccess(home);
+  else if (command === 'resume') result = await resumeRemoteAccess(home);
+  else if (command === 'diagnostics') result = await diagnosticReport(home);
+  else if (command === 'logs') result = { logs: await openLogs(home) };
   else {
     const state = await loadState(home);
     if (['start', 'stop', 'restart'].includes(command)) {
-      await serviceAction(command, state, home); result = { action: command, deviceId: state.deviceId };
+      if (command === 'restart') result = await restartTeamDevSpace(home);
+      else { await serviceAction(command, state, home); result = { action: command, deviceId: state.deviceId }; }
     } else if (command === 'startup') {
       if (action === 'install') { await installServices(state, home); await serviceAction('start', state, home); }
       else if (action === 'remove') await serviceAction('remove', state, home);

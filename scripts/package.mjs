@@ -6,6 +6,8 @@ import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { buildReleaseLayout } from './distribution.mjs';
 import { dependencyFingerprint, pruneRuntime, RUNTIME_PROFILE } from './runtime-profile.mjs';
 import { buildWindowsLauncher } from './windows-launcher.mjs';
+import { buildTray } from './tray-build.mjs';
+import { macosSigningConfiguration, notarizeMacPackage, signMacApplication } from './macos-signing.mjs';
 
 const { values } = parseArgs({ options: {
   'prepare-only': { type: 'boolean' }, 'reuse-dependencies': { type: 'boolean' },
@@ -13,6 +15,7 @@ const { values } = parseArgs({ options: {
 const target = `${process.platform}-${process.arch}`;
 const tar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
+const macosSigning = process.platform === 'darwin' ? macosSigningConfiguration() : null;
 if (!release.distribution.targets.includes(target)) {
   throw new Error('Build release payloads on an enabled native target host; native dependencies must not be cross-copied');
 }
@@ -46,6 +49,7 @@ await mkdir(join(bundle, 'bin'), { recursive: true });
 const downloadKinds = ['node', 'cloudflared', ...(process.platform === 'win32' ? ['git'] : [])];
 const downloads = Object.fromEntries(await Promise.all(downloadKinds.map(async kind => [kind, await downloadPinned(binaries[kind][target], cache)])));
 const runtime = join(bundle, 'runtime');
+let trayBuild;
 const extracted = resolve(`build/node-${target}`);
 await rm(extracted, { recursive: true, force: true });
 await mkdir(extracted, { recursive: true });
@@ -80,7 +84,21 @@ for (const directory of ['client', 'platform']) {
 }
 if (process.platform === 'win32') {
   await buildWindowsLauncher(join(bundle, 'platform', 'windows', 'tds-launcher.exe'));
+  trayBuild = await buildTray(join(bundle, 'platform', 'windows', 'team-devspace-tray.exe'));
   await rm(join(bundle, 'platform', 'windows', 'tds-launcher.c'));
+} else if (process.platform === 'darwin') {
+  const trayContents = join(bundle, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents');
+  await mkdir(join(trayContents, 'MacOS'), { recursive: true });
+  trayBuild = await buildTray(join(trayContents, 'MacOS', 'TeamDevSpaceTray'));
+  await chmod(join(trayContents, 'MacOS', 'TeamDevSpaceTray'), 0o755);
+  await writeFile(join(trayContents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.teamdevspace.tray</string>
+<key>CFBundleName</key><string>Team DevSpace Tray</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
+<key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
+<key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
+<key>LSMinimumSystemVersion</key><string>13.5</string></dict></plist>\n`);
+  await signMacApplication(dirname(trayContents), macosSigning);
 }
 for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
 const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(runtime, 'bin', 'node');
@@ -166,8 +184,15 @@ const { devDependencies: buildDependencies, ...runtimePackage } = packageJson;
 await writeFile(join(bundle, 'package.json'), `${JSON.stringify(runtimePackage, null, 2)}\n`);
 const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...dependencyOmissions],
   { cwd: bundle, env: buildEnvironment, capture: true });
-JSON.parse(sbom.stdout);
-await writeFile(join(bundle, 'sbom.cdx.json'), sbom.stdout);
+const sbomDocument = JSON.parse(sbom.stdout);
+if (trayBuild) {
+  const rustPackages = trayBuild.metadata.packages.filter(package_ =>
+    trayBuild.metadata.resolve.nodes.some(node => node.id === package_.id));
+  sbomDocument.components.push(...rustPackages.map(package_ => ({ type: 'library', name: package_.name,
+    version: package_.version, ...(package_.license ? { licenses: [{ expression: package_.license }] } : {}),
+    purl: `pkg:cargo/${encodeURIComponent(package_.name)}@${package_.version}` })));
+}
+await writeFile(join(bundle, 'sbom.cdx.json'), `${JSON.stringify(sbomDocument, null, 2)}\n`);
 // npm's hidden install metadata is not runtime code and carries app-level data.
 await rm(join(bundle, 'node_modules', '.package-lock.json'), { force: true });
 await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
@@ -175,6 +200,8 @@ await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
   'Each dependency retains its own copyright and license files in node_modules. The SBOM lists package licenses.',
   `Node.js ${release.nodeVersion}: https://nodejs.org/ (license and notices in runtime/LICENSE)`,
   `cloudflared ${release.cloudflaredVersion}: Apache-2.0, https://github.com/cloudflare/cloudflared`,
+  ...(trayBuild ? ['The native tray and its exact Rust dependency graph are recorded in Cargo.lock and sbom.cdx.json.',
+    'tray-icon 0.24.2: MIT OR Apache-2.0, https://github.com/tauri-apps/tray-icon'] : []),
   ...(process.platform === 'win32' ? [`Git for Windows ${release.gitFallbackVersion}: GPL-2.0 and bundled component licenses retained under git/.`,
     `Corresponding sources and redistribution notices: https://github.com/git-for-windows/git/releases/tag/v${release.gitFallbackVersion}`] : []),
   'This distribution does not grant a license to employee project files or credentials.', '',
@@ -190,6 +217,8 @@ await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
   release: release.version, target, upstream: { package: '@waishnav/devspace', version: installed.version },
   binaries: Object.fromEntries(downloadKinds.map(kind => [kind, binaries[kind][target]])), lockSha256,
   dependencyFingerprint: fingerprint, dependencyInstallProfile, npmVersion,
+  ...(trayBuild ? { tray: { crate: 'tray-icon', version: '0.24.2', rustVersion: trayBuild.rustVersion,
+    lockSha256: createHash('sha256').update(await readFile('native/tray/Cargo.lock')).digest('hex') } } : {}),
 }, null, 2));
 console.log(JSON.stringify({ prepared: true, target, bundle, devspace: installed.version, node: version }));
 if (!values['prepare-only']) {
@@ -229,6 +258,7 @@ if (!values['prepare-only']) {
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>13.5</string></dict></plist>\n`);
+    await signMacApplication(dirname(contents), macosSigning);
     await mkdir(join(pkgRoot, 'usr', 'local', 'bin'), { recursive: true });
     await cp('platform/macos/command.sh', join(pkgRoot, 'usr', 'local', 'bin', 'team-devspace'));
     await chmod(join(pkgRoot, 'usr', 'local', 'bin', 'team-devspace'), 0o755);
@@ -246,7 +276,9 @@ if (!values['prepare-only']) {
     artifact = join(outputDirectory, `Team-DevSpace-${release.version}-macos-${process.arch}.pkg`);
     await run('/usr/bin/pkgbuild', ['--root', pkgRoot, '--identifier', 'com.teamdevspace.installer',
       '--version', release.version, '--install-location', '/', '--component-plist', components,
-      '--scripts', packageScripts, artifact], { timeout: 600000 });
+      '--scripts', packageScripts, ...(macosSigning ? ['--sign', macosSigning.installerIdentity] : []), artifact],
+    { timeout: 600000 });
+    await notarizeMacPackage(artifact, macosSigning);
   } else {
     const bootstrapRoot = resolve(`build/bootstrap-${target}`);
     await rm(bootstrapRoot, { recursive: true, force: true });

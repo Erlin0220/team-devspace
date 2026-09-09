@@ -39,16 +39,17 @@ export class KeyStore {
   async saveTunnel(id, bindingId, tunnelId, hostname) {
     const result = await this.db.prepare(`UPDATE access_keys SET tunnel_id = ?, hostname = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND binding_id = ? AND state IN ('provisioning', 'active')
+      WHERE id = ? AND binding_id = ? AND state IN ('provisioning', 'active', 'suspended')
       AND (tunnel_id IS NULL OR tunnel_id = ?)`)
       .bind(tunnelId, hostname, id, bindingId, tunnelId).run();
     return result.meta.changes === 1;
   }
 
   async activate(id, bindingId, dnsId) {
-    const result = await this.db.prepare(`UPDATE access_keys SET state = 'active', dns_id = ?,
+    const result = await this.db.prepare(`UPDATE access_keys SET
+      state = CASE WHEN state = 'suspended' THEN 'suspended' ELSE 'active' END, dns_id = ?,
       cleanup_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND binding_id = ? AND state IN ('provisioning', 'active')`)
+      WHERE id = ? AND binding_id = ? AND state IN ('provisioning', 'active', 'suspended')`)
       .bind(dnsId, id, bindingId).run();
     return result.meta.changes === 1;
   }
@@ -60,6 +61,22 @@ export class KeyStore {
       WHERE id = ? AND (? = 'revoked' OR state != 'revoked')`)
       .bind(next, id, next).run();
     return result.meta.changes === 1 ? this.byId(id) : null;
+  }
+
+  async suspend(id, bindingId) {
+    const result = await this.db.prepare(`UPDATE access_keys SET state = 'suspended',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND binding_id = ? AND state IN ('active', 'suspended')`)
+      .bind(id, bindingId).run();
+    return result.meta.changes === 1;
+  }
+
+  async resume(id, bindingId) {
+    const result = await this.db.prepare(`UPDATE access_keys SET state = 'active',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND binding_id = ? AND state IN ('active', 'suspended')`)
+      .bind(id, bindingId).run();
+    return result.meta.changes === 1;
   }
 
   async finishCleanup(id, bindingId, operation) {

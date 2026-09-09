@@ -46,11 +46,11 @@ Self-signed trust is suitable only for devices whose users explicitly trust this
 
 ## macOS
 
-The private macOS `.pkg` is intentionally unsigned and unnotarized in `internal-free` mode. Administrators must distribute it only from the private GitHub Release and verify the published SHA-256 checksum before handoff.
+The private macOS `.pkg` defaults to unsigned and unnotarized in `internal-free` mode. When all protected Developer ID and App Store Connect credentials are configured, CI instead signs the apps and PKG, notarizes and staples it. Administrators must still distribute it only from the private GitHub Release and verify the published SHA-256 checksum before handoff.
 
 If Gatekeeper blocks the package, do not disable Gatekeeper globally. On the employee Mac, attempt to open the package once, then use **System Settings → Privacy & Security → Open Anyway** for that administrator-supplied package and complete the normal macOS confirmation flow.
 
-This is an explicit internal exception, not Developer ID trust or Apple notarization.
+For an unsigned package this is an explicit internal exception, not Developer ID trust or Apple notarization. Never apply that exception to a job reported as signed/notarized without separately verifying its signature.
 
 ## Linux
 
@@ -62,5 +62,5 @@ Linux handoff remains the fixed-version offline `.tar.gz` plus SHA-256 verificat
 - Fixed `v<version>` releases are immutable by policy and are never overwritten.
 - CI validates all component sizes and SHA-256 digests before creating the Release.
 - Windows publication requires the fixed internal signing PFX in GitHub `production` secrets.
-- macOS publication has no Apple signing/notarization credential requirement in this profile.
+- macOS publication has no Apple signing/notarization credential requirement in this profile; complete optional credentials activate the normal signing/notarization path.
 - Moving to public distribution later is a separate trust-profile change and must introduce an appropriate public Windows signing service and Apple Developer ID application/installer signing plus notarization; do not silently reuse the internal-free contract.

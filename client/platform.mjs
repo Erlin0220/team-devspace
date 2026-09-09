@@ -9,6 +9,8 @@ import { installRoot, privateDirectory, stateHome } from './state.mjs';
 
 const exec = promisify(execFile);
 export const COMPONENTS = ['runtime', 'tunnel'];
+export const STARTUP_COMPONENTS = process.platform === 'win32' || process.platform === 'darwin'
+  ? [...COMPONENTS, 'tray'] : COMPONENTS;
 export const xml = value => String(value).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
 const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 const systemdQuoted = value => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
@@ -27,7 +29,7 @@ export function componentArguments(component, home, state, root = installRoot) {
 }
 
 export function serviceLabel(state, component) {
-  if (!COMPONENTS.includes(component)) throw new Error('Unknown component');
+  if (!STARTUP_COMPONENTS.includes(component)) throw new Error('Unknown component');
   return `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.${component}`;
 }
 
@@ -42,7 +44,9 @@ export function launchAgentXml(state, component, home, paths, root = installRoot
 <key>ProgramArguments</key><array>${[program, ...componentArguments(component, home, state, root)].map(arg => `<string>${xml(arg)}</string>`).join('')}</array>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string><key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string><key>NODE_OPTIONS</key><string></string></dict>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer>
+<key>RunAtLoad</key><true/>${component === 'tray'
+    ? '<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>'
+    : '<key>KeepAlive</key><true/>'}<key>ThrottleInterval</key><integer>15</integer>
 <key>ProcessType</key><string>Background</string>
 <key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string>
 <key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string>
@@ -50,7 +54,7 @@ export function launchAgentXml(state, component, home, paths, root = installRoot
 }
 
 export function windowsTaskXml(state, component, home, sid, root = installRoot) {
-  if (!COMPONENTS.includes(component)) throw new Error('Unknown component');
+  if (!STARTUP_COMPONENTS.includes(component)) throw new Error('Unknown component');
   const launcher = join(root, 'platform', 'windows', 'tds-launcher.exe');
   const program = component === 'tunnel' ? join(root, 'bin', 'cloudflared.exe') : join(root, 'runtime', 'node.exe');
   const args = ['--cwd', root, '--stdout', join(home, 'logs', `${component}.log`),
@@ -104,7 +108,8 @@ export async function installServices(state, home = stateHome()) {
   if (process.platform === 'win32') {
     await access(join(installRoot, 'platform', 'windows', 'tds-launcher.exe'));
     const sid = await windowsSid();
-    for (const component of COMPONENTS) {
+    await access(join(installRoot, 'platform', 'windows', 'team-devspace-tray.exe'));
+    for (const component of STARTUP_COMPONENTS) {
       const task = join(home, 'startup', `${component}.xml`);
       await writeFile(task, `\uFEFF${windowsTaskXml(state, component, home, sid)}`, 'utf16le');
       await native('schtasks.exe', ['/Create', '/TN', serviceLabel(state, component), '/XML', task, '/F']);
@@ -113,7 +118,8 @@ export async function installServices(state, home = stateHome()) {
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
     const directory = join(homedir(), 'Library', 'LaunchAgents');
     await mkdir(directory, { recursive: true });
-    for (const component of COMPONENTS) {
+    await access(join(installRoot, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
+    for (const component of STARTUP_COMPONENTS) {
       const label = serviceLabel(state, component);
       const target = join(directory, `${label}.plist`);
       await writeFile(target, launchAgentXml(state, component, home, paths), { mode: 0o600 });
@@ -133,7 +139,8 @@ export async function installServices(state, home = stateHome()) {
 
 async function waitForStopped(state, components) {
   const ports = components.flatMap(component => component === 'runtime'
-    ? [state.ports.devspace, state.ports.bridge] : [state.ports.metrics]);
+    ? [state.ports.devspace, state.ports.bridge] : component === 'tunnel' ? [state.ports.metrics] : []);
+  if (ports.length === 0) return;
   const isOpen = port => new Promise(resolve => {
     const socket = net.connect({ host: '127.0.0.1', port });
     const finish = value => { socket.destroy(); resolve(value); };
@@ -149,7 +156,7 @@ async function waitForStopped(state, components) {
   throw new Error('An owned service port is still open after stop. Upgrade/uninstall was halted instead of replacing running binaries.');
 }
 
-export async function serviceAction(action, state, home = stateHome(), components = COMPONENTS) {
+export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS) {
   if (!['start', 'stop', 'restart', 'remove'].includes(action)) throw new Error('Unknown service action');
   if (action === 'restart') {
     await serviceAction('stop', state, home, components);

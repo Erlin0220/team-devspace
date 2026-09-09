@@ -22,14 +22,22 @@ const releaseWorkflow = await readFile('.github/workflows/build-installers.yml',
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
 const windowsPlatformFiles = await readdir('platform/windows');
+const trayCargo = await readFile('native/tray/Cargo.toml', 'utf8');
+const trayLock = await readFile('native/tray/Cargo.lock', 'utf8');
+const trayToolchain = await readFile('native/tray/rust-toolchain.toml', 'utf8');
+const trayBuild = await readFile('scripts/tray-build.mjs', 'utf8');
+const adminWeb = await readFile('gateway/admin-web.mjs', 'utf8');
+const picoLicense = await readFile('assets/admin/PICO-LICENSE.md', 'utf8');
 if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
   throw new Error('Unexpected upstream DevSpace version pin');
 }
 if (manifest.version !== release.version) throw new Error('Package and release versions differ');
 validateDistributionConfig(release);
-if (Object.keys(deployment).some(key => key !== 'databaseId') ||
-    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.databaseId ?? '')) {
-  throw new Error('deployment.config.json stores only the non-derivable D1 database ID');
+if (Object.keys(deployment).some(key => !['databaseId', 'accessApplicationId'].includes(key)) ||
+    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.databaseId ?? '') ||
+    (deployment.accessApplicationId !== null &&
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.accessApplicationId ?? ''))) {
+  throw new Error('deployment.config.json stores only owned D1 and Access Application resource IDs');
 }
 if (wrangler.assets?.binding !== 'ASSETS' || wrangler.assets?.run_worker_first !== true) {
   throw new Error('The single gateway Worker must serve static assets through its ASSETS binding');
@@ -51,11 +59,22 @@ if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
   throw new Error('Windows background startup must use only the precompiled no-console launcher');
 }
+if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.includes('winit = "=0.30.12"') ||
+    !trayToolchain.includes('channel = "1.85.1"') || !trayLock.includes('name = "tray-icon"') ||
+    !trayBuild.includes("'--release', '--locked'") || !releaseWorkflow.includes('npm run package')) {
+  throw new Error('Native tray must use exact Rust/crate locks and enter the existing native package matrix');
+}
+if (wrangler.workers_dev !== false || wrangler.preview_urls !== false ||
+    !adminWeb.includes("default-src 'none'") || !adminWeb.includes('/admin/assets/admin.js') ||
+    !picoLicense.includes('MIT License')) {
+  throw new Error('Admin Web must remain Access-only, CSP-protected and carry the vendored Pico license');
+}
 if (release.distribution.trustProfile === 'internal-free' &&
     (!releaseWorkflow.includes('WINDOWS_INTERNAL_SIGNING_PFX_BASE64') ||
       !releaseWorkflow.includes('sign-internal-windows.ps1') ||
-      /MACOS_INSTALLER_CERT|APPLE_APP_SPECIFIC_PASSWORD|\bnotarytool\b|\bproductsign\b/.test(releaseWorkflow))) {
-  throw new Error('Internal-free publication must use the fixed Windows internal signing identity and no Apple paid signing/notarization gate');
+      !releaseWorkflow.includes('macos-signing.mjs prepare') ||
+      !releaseWorkflow.includes('macos-signing.mjs cleanup'))) {
+  throw new Error('Internal-free publication must keep fixed Windows signing and an optional, non-gating protected macOS signing path');
 }
 if (manifest.dependencies['@clack/prompts']) throw new Error('Administrator-only prompts must not ship as an employee runtime dependency');
 if (!/^[a-f0-9]{32}$/.test(release.cloudflare?.accountId ?? '') || !/^[a-f0-9]{32}$/.test(release.cloudflare?.zoneId ?? '') ||

@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { approvedRoots, atomicJson, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
   readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
-import { installServices, serviceAction } from './platform.mjs';
+import { installServices, serviceAction, STARTUP_COMPONENTS } from './platform.mjs';
 
 const exec = promisify(execFile);
 
@@ -55,7 +55,8 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
       binding.devspaceVersion !== DEVSPACE_VERSION) throw new Error('Gateway returned an incompatible Enrollment');
   if (previous?.bindingId && startup) await serviceAction('stop', previous, home);
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
-    endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION };
+    endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
+    remoteAccess: binding.state === 'suspended' ? 'suspended' : 'active' };
   const temporary = join(home, `tunnel.${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, binding.tunnelToken, { flag: 'wx', mode: 0o600 });
@@ -65,7 +66,14 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   await atomicJson(join(home, 'state.json'), state);
   if (startup) {
     await installServices(state, home);
-    await serviceAction('start', state, home);
+    const startComponents = state.remoteAccess === 'suspended'
+      ? STARTUP_COMPONENTS.filter(component => component === 'tray') : STARTUP_COMPONENTS;
+    if (startComponents.length) await serviceAction('start', state, home, startComponents);
+    if (state.remoteAccess === 'suspended') {
+      return { enrolled: true, ready: false, remoteAccess: 'suspended', deviceId: state.deviceId,
+        bindingId: state.bindingId, endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION,
+        roots: state.roots, startup: 'installed' };
+    }
     let health;
     const deadline = Date.now() + 60000;
     do {
@@ -76,7 +84,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     } while (Date.now() < deadline);
     if (!health.ready) throw new Error(`Enrollment is saved, but runtime is not ready (DevSpace=${health.devspace}, Bridge=${health.bridge}, Tunnel=${health.tunnel}, Gateway=${health.gateway}). Use status and repair; do not reconnect with a different key.`);
   }
-  return { enrolled: true, ready: startup, deviceId: state.deviceId, bindingId: state.bindingId,
+  return { enrolled: true, ready: startup, remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
     endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,
     startup: startup ? 'installed' : 'not-installed' };
 }
@@ -93,11 +101,13 @@ export async function deviceStatus(home = stateHome()) {
     local(state.ports.metrics, '/ready'),
     state.bindingId ? control(state.gateway, '/v1/device/status', state.deviceSecret, {
       body: { keyId: state.keyId, bindingId: state.bindingId }, timeout: 5000,
-    }).then(result => result.state === 'active' && result.bindingId === state.bindingId ? 'active' : 'invalid-response',
+    }).then(result => ['active', 'suspended'].includes(result.state) && result.bindingId === state.bindingId
+      ? result.state : 'invalid-response',
       error => error.status === 403 ? 'disabled' : 'unreachable') : Promise.resolve('not-enrolled'),
   ]);
   return { deviceId: state.deviceId, devspaceVersion: DEVSPACE_VERSION, releaseVersion: state.releaseVersion,
     devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, roots: state.roots,
+    localReady: devspace && bridge && tunnel, remoteAccess: gateway === 'suspended' ? 'suspended' : 'active',
     ready: devspace && bridge && tunnel && gateway === 'active' };
 }
 
