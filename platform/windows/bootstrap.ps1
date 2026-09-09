@@ -22,6 +22,10 @@ $activeFile = Join-Path $InstallPath 'active.json'
 $legacyRoot = Join-Path $InstallPath 'a'
 $shaPattern = '^[a-f0-9]{64}$'
 
+function Write-Step([string]$Message) {
+  Write-Host "[Team DevSpace] $Message"
+}
+
 function Read-Json([string]$Path) {
   return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
@@ -69,7 +73,8 @@ function Invoke-Client([string]$Root, [string[]]$Arguments, [switch]$AllowFailur
     if ($AllowFailure) { return 1 }
     throw "Installed client is incomplete: $Root"
   }
-  & $node $cli @Arguments | Out-Host
+  $clientArguments = @($Arguments) + '--installer-progress'
+  & $node $cli @clientArguments | Out-Host
   $code = $LASTEXITCODE
   if ($code -ne 0 -and -not $AllowFailure) { throw "Team DevSpace client exited $code" }
   return $code
@@ -240,12 +245,16 @@ $lockPath = Join-Path $InstallPath 'distribution.lock'
 $lock = $null
 try {
   $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+  Write-Step 'Checking the current installation and protected Enrollment state...'
   $active = Get-Active
   if ($Mode -eq 'Uninstall') {
+    Write-Step 'Stopping Team DevSpace and removing current-user startup entries...'
     if ($active) { [void](Invoke-Client ([string]$active.path) @('uninstall')) }
+    Write-Step 'Startup entries removed. Enrollment and project files are retained.'
     exit 0
   }
 
+  Write-Step 'Verifying the installer manifest...'
   $manifest = Read-Json $ManifestPath
   Assert-Manifest $manifest
   $OfflineRoot = Resolve-OfflineRoot $OfflineRoot $manifest
@@ -258,11 +267,22 @@ try {
     foreach ($component in @($manifest.components)) {
       $condition = if ($component.PSObject.Properties['condition']) { [string]$component.condition } else { '' }
       if ($condition -eq 'git-and-bash-unavailable' -and -not (Test-NeedGitFallback)) { continue }
+      $componentName = switch ([string]$component.name) {
+        'app' { 'Team DevSpace application' }
+        'devspace-runtime' { 'DevSpace runtime dependency set' }
+        'node' { 'Node.js runtime' }
+        'cloudflared' { 'Cloudflare connection helper' }
+        'git-fallback' { 'Git and Bash fallback' }
+        default { [string]$component.name }
+      }
+      Write-Step "Verifying and unpacking $componentName..."
       $archive = Receive-Artifact $manifest $component
       if ($component.format -eq '7z-sfx') { Expand-PortableGit $archive $stage }
       else { Expand-VerifiedArchive $archive $stage }
+      Write-Step "$componentName is ready."
     }
     Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $stage 'install-manifest.json')
+    Write-Step 'Checking executable and native dependency versions...'
     Assert-Version $stage $manifest
 
     # Fixed short A/B slots keep the unmodified upstream dependency tree under Windows MAX_PATH.
@@ -276,6 +296,7 @@ try {
     $stage = $null
 
     if ($active) {
+      Write-Step 'Stopping the active version before the atomic upgrade switch...'
       if ((Invoke-Client ([string]$active.path) @('stop') -AllowFailure) -ne 0) {
         Remove-Item -LiteralPath $candidate -Recurse -Force
         throw 'Could not stop the current Team DevSpace version; it remains active.'
@@ -285,6 +306,7 @@ try {
     if ($RequestFile) { $setup += @('--request-file', $RequestFile) }
     if ($NoStartup) { $setup += '--no-startup' }
     try {
+      Write-Step 'Configuring Enrollment and current-user background startup...'
       [void](Invoke-Client $candidate $setup)
       $next = [ordered]@{
         schema = 1; release = [string]$manifest.release; target = [string]$manifest.target
@@ -292,6 +314,7 @@ try {
         previous = $null
       }
       Write-AtomicJson $activeFile $next
+      Write-Step "Team DevSpace $($manifest.release) is now active."
     } catch {
       [void](Invoke-Client $candidate @('stop') -AllowFailure)
       Restore-Previous $active
@@ -299,9 +322,10 @@ try {
       throw
     }
 
+    Write-Step 'Removing the previous version and unused verified cache; this can take a moment...'
     try { Remove-UnreferencedPayload $candidate $manifest }
     catch { Write-Warning 'Post-activation cleanup deferred until next repair.' }
-    Write-Host "Team DevSpace $($manifest.release) is active. Payload source: verified offline package/cache."
+    Write-Step 'Installation complete. Payload source: verified offline package/cache.'
   } finally {
     if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
   }

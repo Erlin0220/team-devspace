@@ -24,7 +24,8 @@ async function availablePort(preferred) {
   throw new Error('No free loopback port available for Team DevSpace');
 }
 
-export async function configureDevice(input, { home = stateHome(), startup = true } = {}) {
+export async function configureDevice(input, { home = stateHome(), startup = true, onProgress = () => {} } = {}) {
+  onProgress('Preparing private device state...');
   await secureStateDirectory(home);
   const release = await readJson(join(installRoot, 'release.config.json'));
   const previous = await readJson(join(home, 'state.json'), null);
@@ -46,6 +47,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     state = await loadState(home);
     if (state.gateway !== gateway || state.accessKey !== accessKey) throw new Error('Another setup already enrolled this installation with different credentials');
   }
+  onProgress('Contacting the Team Gateway and confirming Enrollment...');
   const binding = await control(gateway, '/v1/enroll', accessKey, {
     body: { deviceId: state.deviceId, deviceSecret: state.deviceSecret, bridgePort: state.ports.bridge },
   });
@@ -53,6 +55,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   if (binding.deviceId !== state.deviceId || !uuid.test(binding.bindingId ?? '') || !uuid.test(binding.keyId ?? '') ||
       typeof binding.tunnelToken !== 'string' || !binding.tunnelToken || binding.endpoint !== `${gateway}/mcp` ||
       binding.devspaceVersion !== DEVSPACE_VERSION) throw new Error('Gateway returned an incompatible Enrollment');
+  onProgress('Enrollment confirmed. Preparing the local runtime...');
   if (previous?.bindingId && startup) await serviceAction('stop', previous, home);
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
@@ -65,24 +68,33 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   await writeUpstreamConfig(state, home);
   await atomicJson(join(home, 'state.json'), state);
   if (startup) {
+    onProgress('Installing current-user login startup entries...');
     await installServices(state, home);
     const startComponents = state.remoteAccess === 'suspended'
       ? STARTUP_COMPONENTS.filter(component => component === 'tray') : STARTUP_COMPONENTS;
     if (startComponents.length) await serviceAction('start', state, home, startComponents);
     if (state.remoteAccess === 'suspended') {
+      onProgress('Upgrade complete. Remote access remains safely suspended.');
       return { enrolled: true, ready: false, remoteAccess: 'suspended', deviceId: state.deviceId,
         bindingId: state.bindingId, endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION,
         roots: state.roots, startup: 'installed' };
     }
+    onProgress('Starting Team DevSpace and waiting for connection health...');
     let health;
+    let lastProgress = 0;
     const deadline = Date.now() + 60000;
     do {
       health = await deviceStatus(home);
       if (health.ready) break;
       if (health.gateway === 'disabled') throw new Error('This Device Binding was disabled during startup');
+      if (Date.now() - lastProgress >= 5000) {
+        onProgress(`Still starting: DevSpace=${health.devspace}, Bridge=${health.bridge}, Tunnel=${health.tunnel}, Gateway=${health.gateway}`);
+        lastProgress = Date.now();
+      }
       await sleep(1000);
     } while (Date.now() < deadline);
     if (!health.ready) throw new Error(`Enrollment is saved, but runtime is not ready (DevSpace=${health.devspace}, Bridge=${health.bridge}, Tunnel=${health.tunnel}, Gateway=${health.gateway}). Use status and repair; do not reconnect with a different key.`);
+    onProgress('Runtime, Tunnel and Gateway are ready.');
   }
   return { enrolled: true, ready: startup, remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
     endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,

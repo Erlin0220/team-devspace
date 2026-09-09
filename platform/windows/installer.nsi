@@ -61,6 +61,50 @@ Var PreviousEnrollment
 Var ResultCode
 Var Arguments
 Var NoStartup
+Var ProgressControl
+Var ProgressStyle
+
+!define PBS_MARQUEE 0x08
+
+Function StartBootstrapProgress
+  GetDlgItem $ProgressControl $HWNDPARENT 1004
+  ${If} $ProgressControl != 0
+    System::Call 'user32::GetWindowLongW(p $ProgressControl, i ${GWL_STYLE}) i .r0'
+    StrCpy $ProgressStyle $0
+    IntOp $0 $0 | ${PBS_MARQUEE}
+    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i r0)'
+    SendMessage $ProgressControl ${PBM_SETPOS} 10 0
+    SendMessage $ProgressControl ${PBM_SETMARQUEE} 1 45
+  ${EndIf}
+FunctionEnd
+
+Function StopBootstrapProgress
+  ${If} $ProgressControl != 0
+    SendMessage $ProgressControl ${PBM_SETMARQUEE} 0 0
+    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i $ProgressStyle)'
+    SendMessage $ProgressControl ${PBM_SETPOS} 95 0
+  ${EndIf}
+FunctionEnd
+
+Function un.StartBootstrapProgress
+  GetDlgItem $ProgressControl $HWNDPARENT 1004
+  ${If} $ProgressControl != 0
+    System::Call 'user32::GetWindowLongW(p $ProgressControl, i ${GWL_STYLE}) i .r0'
+    StrCpy $ProgressStyle $0
+    IntOp $0 $0 | ${PBS_MARQUEE}
+    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i r0)'
+    SendMessage $ProgressControl ${PBM_SETPOS} 10 0
+    SendMessage $ProgressControl ${PBM_SETMARQUEE} 1 45
+  ${EndIf}
+FunctionEnd
+
+Function un.StopBootstrapProgress
+  ${If} $ProgressControl != 0
+    SendMessage $ProgressControl ${PBM_SETMARQUEE} 0 0
+    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i $ProgressStyle)'
+    SendMessage $ProgressControl ${PBM_SETPOS} 95 0
+  ${EndIf}
+FunctionEnd
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -168,8 +212,11 @@ Section "Install"
   ${If} $NoStartup == "1"
     StrCpy $Arguments '$Arguments -NoStartup'
   ${EndIf}
+  DetailPrint "Verifying and installing the offline Team DevSpace components..."
+  Call StartBootstrapProgress
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" $Arguments'
   Pop $ResultCode
+  Call StopBootstrapProgress
   StrCpy $AccessKey ""
   ${If} $ResultCode != 0
     SetErrorLevel 4
@@ -185,16 +232,21 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 0
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  DetailPrint "Creating current-user shortcuts..."
   CreateDirectory "$SMPROGRAMS\${START_MENU_FOLDER}"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Status.lnk" "$INSTDIR\status.cmd" "" "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Repair connection.lnk" "$INSTDIR\repair.cmd"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+  DetailPrint "Team DevSpace installation is complete."
 SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+  DetailPrint "Stopping Team DevSpace and removing current-user startup entries..."
+  Call un.StartBootstrapProgress
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\bootstrap.ps1" -Mode Uninstall -InstallPath "$INSTDIR"'
   Pop $ResultCode
+  Call un.StopBootstrapProgress
   ${If} $ResultCode != 0
     SetErrorLevel 5
     Abort "Could not remove user-login startup. Application versions were retained for repair."

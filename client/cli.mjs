@@ -34,7 +34,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, gateway: { type: 'string' }, root: { type: 'string', multiple: true },
     'credential-file': { type: 'string' }, 'request-file': { type: 'string' },
-    'no-startup': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    'no-startup': { type: 'boolean' }, 'installer-progress': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
   } });
   if (values.home) process.env.TEAM_DEVSPACE_HOME = resolve(values.home);
   const home = stateHome();
@@ -51,7 +51,8 @@ export async function main(argv = process.argv.slice(2)) {
       : values['credential-file'] ? await requestFromFile(values['credential-file']) : {};
     if (values.root) input.roots = values.root;
     if (values.gateway) input.gateway = values.gateway;
-    result = await configureDevice(input, { home, startup: !values['no-startup'] });
+    result = await configureDevice(input, { home, startup: !values['no-startup'],
+      onProgress: values['installer-progress'] ? message => console.log(`[Team DevSpace] ${message}`) : undefined });
   } else if (command === 'setup-gui') result = await macSetupDialog(home);
   else if (command === 'status') result = await deviceStatus(home);
   else if (command === 'suspend') result = await suspendRemoteAccess(home);
@@ -94,7 +95,13 @@ export async function main(argv = process.argv.slice(2)) {
       }
     } else throw new Error('Unknown command; run team-devspace --help');
   }
-  console.log(JSON.stringify(result, null, 2));
+  if (values['installer-progress']) {
+    const message = command === 'setup' ? (result.ready ? 'Device setup is complete.'
+      : result.remoteAccess === 'suspended' ? 'Upgrade complete; remote access remains suspended.' : 'Device setup is saved.')
+      : command === 'uninstall' ? 'Current-user startup entries were removed.'
+      : `${command[0].toUpperCase()}${command.slice(1)} complete.`;
+    console.log(`[Team DevSpace] ${message}`);
+  } else console.log(JSON.stringify(result, null, 2));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -55,6 +55,11 @@ if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes(
 if (!windowsInstaller.includes('nsExec::ExecToLog') || /ExecWait[^\r\n]*powershell/i.test(windowsInstaller)) {
   throw new Error('Windows install/uninstall bootstrap must use no-console NSIS execution');
 }
+if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('StartBootstrapProgress') ||
+    !windowsInstaller.includes('StopBootstrapProgress') ||
+    !(await readFile('platform/windows/bootstrap.ps1', 'utf8')).includes('function Write-Step')) {
+  throw new Error('Windows bootstrap must show indeterminate progress and readable installation stages');
+}
 if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
   throw new Error('Windows background startup must use only the precompiled no-console launcher');
