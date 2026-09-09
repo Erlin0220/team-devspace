@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: team-devspace-production-deploy
@@ -34,4 +34,21 @@ jobs:
           cache: npm
       - run: npx --yes npm@11.19.1 ci --no-fund --no-audit
       - run: npm run check && npm test
+      - name: Provision canonical D1 identity
+        run: npm run deploy -- --ci --provision
+      - name: Persist provisioned D1 identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if git diff --quiet -- deployment.config.json; then
+            exit 0
+          fi
+          sha="$(git rev-parse HEAD:deployment.config.json)"
+          content="$(base64 -w0 deployment.config.json)"
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/deployment.config.json" \
+            -f message='chore(deploy): 记录生产 D1 标识' \
+            -f content="$content" \
+            -f sha="$sha" \
+            -f branch="$GITHUB_REF_NAME" >/dev/null
       - run: npm run deploy -- --ci

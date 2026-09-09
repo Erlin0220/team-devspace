@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { atomicJson, normalizeGateway, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
 
-const { values } = parseArgs({ options: { 'dry-run': { type: 'boolean' }, ci: { type: 'boolean' }, config: { type: 'string' } } });
+const { values } = parseArgs({ options: { 'dry-run': { type: 'boolean' }, ci: { type: 'boolean' }, provision: { type: 'boolean' }, config: { type: 'string' } } });
 const directory = values.ci ? resolve(process.env.RUNNER_TEMP ?? 'build/deploy-ci') : resolve('.runtime');
 await secureStateDirectory(directory);
 const base = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
@@ -74,7 +74,7 @@ if (values['dry-run']) {
     database = await api(`/accounts/${config.accountId}/d1/database/${deployment.databaseId}`);
     if (database.name !== workerName) throw new Error('Recorded D1 database no longer belongs to Team DevSpace');
   } else {
-    if (values.ci) throw new Error('Commit the provisioned D1 database ID to deployment.config.json before CI deployment');
+    if (values.ci && !values.provision) throw new Error('Run the CI provisioning step before deployment so deployment.config.json records the canonical D1 database ID');
     const databases = await api(`/accounts/${config.accountId}/d1/database?name=${workerName}`);
     if (databases.some(db => db.name === workerName)) {
       throw new Error('A same-named D1 database already exists but is not recorded by this checkout. Restore the private deployment/admin backup instead of adopting an unknown database.');
@@ -83,6 +83,10 @@ if (values['dry-run']) {
     deployment = { ...deployment, databaseId: database.uuid };
     await atomicJson('deployment.config.json', deployment);
     console.log(`Recorded non-secret D1 database ID in deployment.config.json: ${database.uuid}`);
+  }
+  if (values.provision) {
+    console.log(JSON.stringify({ provisioned: true, gateway, databaseId: database.uuid, paidPlanChanges: false }, null, 2));
+    process.exit(0);
   }
   const generated = { ...base, account_id: config.accountId, name: workerName,
     main: resolve('gateway/index.mjs'), workers_dev: false, preview_urls: false,
