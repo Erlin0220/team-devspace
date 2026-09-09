@@ -30,11 +30,12 @@ function run(file, args, env = environment) {
     child.once('exit', code => code === 0 ? resolve() : reject(new Error(`Command failed with exit code ${code}`)));
   });
 }
-async function api(path, method = 'GET', body) {
+async function api(path, method = 'GET', body, { missingOk = false } = {}) {
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
     method, headers: { Authorization: `Bearer ${config.deployToken}`, 'Content-Type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(30000),
   });
+  if (missingOk && response.status === 404) return null;
   const value = await response.json();
   if (!response.ok || !value.success) throw new Error(`Cloudflare operation failed (${response.status}); check the scoped deployment token permissions.`);
   return value.result;
@@ -57,6 +58,13 @@ if (values['dry-run']) {
   const zone = await api(`/zones/${config.zoneId}`);
   if (zone.account.id !== config.accountId || zone.name !== config.deviceDomain || !hostname.endsWith(`.${zone.name}`)) {
     throw new Error('Account, zone, device domain and gateway hostname do not match');
+  }
+  let workersSubdomain = await api(`/accounts/${config.accountId}/workers/subdomain`, 'GET', undefined, { missingOk: true });
+  if (!workersSubdomain?.subdomain) {
+    workersSubdomain = await api(`/accounts/${config.accountId}/workers/subdomain`, 'PUT', {
+      subdomain: `tds-${config.accountId}`,
+    });
+    console.log(`Configured account Workers subdomain prerequisite: ${workersSubdomain.subdomain}.workers.dev`);
   }
   const domains = await api(`/accounts/${config.accountId}/workers/domains`);
   const owned = domains.find(domain => domain.hostname === hostname);
