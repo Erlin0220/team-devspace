@@ -1,0 +1,74 @@
+import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { Transform } from 'node:stream';
+import { LocalOAuth } from './oauth.mjs';
+
+const REQUEST_LIMIT = 16 * 1024 * 1024;
+
+function matchesSecret(value, expected) {
+  const a = Buffer.from(value ?? '');
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function fail(res, status, message) {
+  if (res.headersSent) { res.destroy(); return; }
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message } }));
+}
+
+export function createBridge(state, home) {
+  const oauth = new LocalOAuth(state, home);
+  return http.createServer(async (req, res) => {
+    if (!matchesSecret(req.headers.authorization, `Bearer ${state.deviceSecret}`)) {
+      fail(res, 401, 'device_credential_required'); return;
+    }
+    if (req.headers['x-team-binding-id'] !== state.bindingId) {
+      fail(res, 403, 'device_binding_mismatch'); return;
+    }
+    if (req.url === '/healthz' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ service: 'team-devspace-bridge', deviceId: state.deviceId, bindingId: state.bindingId }));
+      return;
+    }
+    if (req.url !== '/mcp' || !['GET', 'POST', 'DELETE'].includes(req.method)) {
+      fail(res, 404, 'not_found'); return;
+    }
+    if (Number(req.headers['content-length'] ?? 0) > REQUEST_LIMIT) {
+      fail(res, 413, 'body_too_large'); return;
+    }
+    let token;
+    try { token = await oauth.token(); } catch { fail(res, 503, 'local_devspace_unavailable'); return; }
+    if (req.destroyed || res.destroyed) return;
+    const headers = { Authorization: `Bearer ${token}` };
+    for (const name of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) {
+      if (typeof req.headers[name] === 'string') headers[name] = req.headers[name];
+    }
+    // Stream the MCP transport. No JSON parsing, re-serialization, buffering, or write retries.
+    const upstream = http.request({ hostname: '127.0.0.1', port: state.ports.devspace,
+      path: '/mcp', method: req.method, headers }, response => {
+      const output = { 'Cache-Control': 'no-store' };
+      for (const name of ['content-type', 'mcp-session-id', 'mcp-protocol-version', 'retry-after']) {
+        if (typeof response.headers[name] === 'string') output[name] = response.headers[name];
+      }
+      res.writeHead(response.statusCode, output);
+      response.on('error', () => res.destroy());
+      response.pipe(res);
+    });
+    upstream.setTimeout(370000, () => upstream.destroy(new Error('Local MCP timeout')));
+    upstream.on('error', () => fail(res, 503, 'local_devspace_unavailable'));
+    req.on('aborted', () => upstream.destroy());
+    res.on('close', () => { if (!res.writableEnded) upstream.destroy(); });
+    let bytes = 0;
+    const limit = new Transform({
+      transform(chunk, encoding, callback) {
+        bytes += chunk.length;
+        if (bytes > REQUEST_LIMIT) { fail(res, 413, 'body_too_large'); upstream.destroy(); callback(new Error('Request too large')); }
+        else callback(null, chunk);
+      },
+    });
+    limit.on('error', () => upstream.destroy());
+    req.on('error', () => upstream.destroy());
+    req.pipe(limit).pipe(upstream);
+  });
+}

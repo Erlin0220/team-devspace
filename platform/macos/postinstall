@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+if [ "${3:-/}" != "/" ] || [ "${TEAM_DEVSPACE_SKIP_OPEN:-0}" = "1" ]; then exit 0; fi
+USER_NAME=$(/usr/bin/stat -f %Su /dev/console)
+if [ "$USER_NAME" = root ] || [ "$USER_NAME" = loginwindow ]; then
+  echo 'Open Team DevSpace from Applications after signing in to complete Enrollment.'
+  exit 0
+fi
+USER_ID=$(/usr/bin/id -u "$USER_NAME")
+/bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/open '/Applications/Team DevSpace.app'

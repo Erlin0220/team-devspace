@@ -1,0 +1,74 @@
+#!/usr/bin/env node
+import { createHash, randomUUID } from 'node:crypto';
+import { parseArgs } from 'node:util';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
+import { atomicJson, normalizeGateway, randomSecret, readJson, secureStateDirectory } from './state.mjs';
+import { control } from './http.mjs';
+
+export async function administrator(configPath) {
+  const path = resolve(configPath ?? process.env.TEAM_DEVSPACE_ADMIN_CONFIG ?? join(homedir(), '.team-devspace-admin', 'config.json'));
+  const config = await readJson(path);
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(config.adminToken ?? '')) throw new Error('Invalid administrator credential file');
+  return { ...config, gateway: normalizeGateway(config.gateway), directory: dirname(path) };
+}
+
+export async function createAccessKey(config, label, output) {
+  if (typeof label !== 'string' || !label.trim() || label.length > 100 || /[\x00-\x1f]/.test(label)) throw new Error('Provide a nonempty employee label (up to 100 characters)');
+  label = label.trim();
+  const directory = join(config.directory, 'issued-keys');
+  await secureStateDirectory(directory);
+  const file = join(directory, `${createHash('sha256').update(label).digest('hex')}.json`);
+  let record = await readJson(file, null);
+  if (record && (record.gateway !== config.gateway || record.label !== label)) throw new Error('Existing issuance belongs to another gateway');
+  if (!record) {
+    record = { id: randomUUID(), label, accessKey: `tds_${randomSecret()}`, gateway: config.gateway };
+    // Save before POST: a timeout can be retried without creating an inaccessible orphan key.
+    const created = await atomicJson(file, record, { createOnly: true });
+    if (!created) record = await readJson(file);
+    if (record.gateway !== config.gateway || record.label !== label) throw new Error('Concurrent issuance belongs to another gateway');
+  }
+  const row = await control(config.gateway, '/v1/admin/keys', config.adminToken, {
+    body: { id: record.id, label, keyHash: createHash('sha256').update(record.accessKey).digest('hex') },
+  });
+  if (row.state === 'revoked') throw new Error('This label belongs to a revoked key; use a new employee/device label');
+  if (output) {
+    const target = resolve(output);
+    const rel = relative(resolve(config.directory), target);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new Error('Credential exports must stay inside the private administrator configuration directory');
+    }
+    await atomicJson(target, { ...record, endpoint: `${config.gateway}/mcp` });
+    return { id: record.id, label, credentialFile: target, state: row.state };
+  }
+  return { ...record, endpoint: `${config.gateway}/mcp`, state: row.state };
+}
+
+export async function adminMain(argv = process.argv.slice(2)) {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: {
+    config: { type: 'string' }, output: { type: 'string' }, help: { type: 'boolean', short: 'h' },
+  } });
+  const [group, action, argument] = positionals;
+  if (values.help || !group) {
+    console.log('Team DevSpace administrator\n  key create <employee-label> [--output private-file.json]\n  key list\n  key revoke <id-or-label>\n  device reset <id-or-label>\n  --config <private-admin-config.json>\n\nNever give administrator credentials to employees. Access Key is a bearer credential.');
+    return;
+  }
+  const config = await administrator(values.config);
+  let result;
+  if (group === 'key' && action === 'create') result = await createAccessKey(config, argument, values.output);
+  else {
+    const listed = await control(config.gateway, '/v1/admin/keys', config.adminToken, { method: 'GET' });
+    if (group === 'key' && action === 'list') result = listed;
+    else if ((group === 'key' && action === 'revoke') || (group === 'device' && action === 'reset')) {
+      const key = listed.keys.find(item => item.id === argument || item.label === argument);
+      if (!key) throw new Error('No Access Key has that id or employee label');
+      result = await control(config.gateway, `/v1/admin/keys/${key.id}/${action}`, config.adminToken, { body: {} });
+    } else throw new Error('Unknown administrator command; run with --help');
+  }
+  console.log(JSON.stringify(result, null, 2));
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  adminMain().catch(error => { console.error(`Team DevSpace administrator: ${error.message}`); process.exitCode = 1; });
+}
