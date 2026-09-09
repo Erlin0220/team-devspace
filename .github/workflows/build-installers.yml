@@ -25,19 +25,19 @@ jobs:
         include:
           - runner: windows-2022
             target: win32-x64
-            stable: true
+            native_startup: true
           - runner: macos-15
             target: darwin-arm64
-            stable: true
+            native_startup: false
           - runner: macos-15-intel
             target: darwin-x64
-            stable: true
+            native_startup: false
           - runner: ubuntu-24.04
             target: linux-x64
-            stable: false
+            native_startup: false
           - runner: ubuntu-24.04-arm
             target: linux-arm64
-            stable: false
+            native_startup: false
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -70,7 +70,9 @@ jobs:
       - name: Build native component artifacts, offline layout and bootstrapper
         run: npm run package
       - name: Verify native user-session runtime
-        if: ${{ matrix.stable }}
+        # GitHub-hosted macOS jobs do not provide a durable employee login session for LaunchAgent lifecycle E2E.
+        # macOS native startup is verified later on a real logged-in Mac; hosted CI still builds both native PKGs here.
+        if: ${{ matrix.native_startup }}
         run: npm run test:native
       - name: Verify actual isolated Windows installer transaction
         if: ${{ matrix.target == 'win32-x64' }}
