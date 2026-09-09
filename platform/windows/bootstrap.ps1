@@ -237,7 +237,7 @@ function Assert-Version([string]$Root, [object]$Manifest) {
 function Restore-Previous([object]$Previous) {
   if (-not $Previous) { return }
   Write-Warning 'New version did not start successfully; restoring the previous startup entries.'
-  [void](Invoke-Client ([string]$Previous.path) @('setup') -AllowFailure)
+  [void](Invoke-Client ([string]$Previous.path) @('startup', 'install'))
 }
 
 New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
@@ -298,8 +298,12 @@ try {
     if ($active) {
       Write-Step 'Stopping the active version before the atomic upgrade switch...'
       if ((Invoke-Client ([string]$active.path) @('stop') -AllowFailure) -ne 0) {
+        $restartCode = Invoke-Client ([string]$active.path) @('start') -AllowFailure
         Remove-Item -LiteralPath $candidate -Recurse -Force
-        throw 'Could not stop the current Team DevSpace version; it remains active.'
+        if ($restartCode -eq 0) {
+          throw 'Could not fully stop the current Team DevSpace version; its startup entries were restarted and the upgrade was cancelled.'
+        }
+        throw 'Could not fully stop or restart the current Team DevSpace version; the upgrade was cancelled before activation.'
       }
     }
     $setup = @('setup')
@@ -316,10 +320,16 @@ try {
       Write-AtomicJson $activeFile $next
       Write-Step "Team DevSpace $($manifest.release) is now active."
     } catch {
-      [void](Invoke-Client $candidate @('stop') -AllowFailure)
-      Restore-Previous $active
+      $setupFailure = $_.Exception.Message
+      $cleanupCode = Invoke-Client $candidate @('uninstall') -AllowFailure
       Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
-      throw
+      if ($active) {
+        try { Restore-Previous $active }
+        catch { throw "$setupFailure Previous startup restoration also failed: $($_.Exception.Message)" }
+      } elseif ($cleanupCode -ne 0) {
+        throw "$setupFailure Candidate startup cleanup also failed; run Uninstall from this package before retrying."
+      }
+      throw $setupFailure
     }
 
     Write-Step 'Removing the previous version and unused verified cache; this can take a moment...'

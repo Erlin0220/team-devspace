@@ -30,5 +30,12 @@ else
 fi
 if [ ! -x "$APP/runtime/bin/node" ]; then exit 0; fi
 if [ -f "$USER_HOME/Library/Application Support/TeamDevSpace/state.json" ]; then
-  /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/env HOME="$USER_HOME" "$APP/runtime/bin/node" "$APP/client/cli.mjs" stop
+  if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/env HOME="$USER_HOME" "$APP/runtime/bin/node" "$APP/client/cli.mjs" stop; then
+    if /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/env HOME="$USER_HOME" "$APP/runtime/bin/node" "$APP/client/cli.mjs" start; then
+      echo 'The active user services could not be fully stopped; they were restarted and the package upgrade was cancelled.' >&2
+    else
+      echo 'The active user services could not be fully stopped or restarted; the package upgrade was cancelled.' >&2
+    fi
+    exit 1
+  fi
 fi

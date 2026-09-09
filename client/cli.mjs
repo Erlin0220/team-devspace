@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
-import { approvedRoots, atomicJson, loadState, stateHome, writeUpstreamConfig } from './state.mjs';
+import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, RELEASE_VERSION, stateHome,
+  writeUpstreamConfig } from './state.mjs';
 import { configureDevice, deviceStatus, macSetupDialog, requestFromFile } from './setup.mjs';
 import { installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
@@ -65,7 +66,12 @@ export async function main(argv = process.argv.slice(2)) {
       if (command === 'restart') result = await restartTeamDevSpace(home);
       else { await serviceAction(command, state, home); result = { action: command, deviceId: state.deviceId }; }
     } else if (command === 'startup') {
-      if (action === 'install') { await installServices(state, home); await serviceAction('start', state, home); }
+      if (action === 'install') {
+        const startupState = { ...state, releaseVersion: RELEASE_VERSION, devspaceVersion: DEVSPACE_VERSION };
+        await atomicJson(join(home, 'state.json'), startupState);
+        await installServices(startupState, home);
+        await serviceAction('start', startupState, home);
+      }
       else if (action === 'remove') await serviceAction('remove', state, home);
       else throw new Error('Use startup install or startup remove');
       result = { startup: action };

@@ -165,7 +165,15 @@ candidate="$VERSIONS/$release-$(printf '%s' "$manifest_hash" | cut -c1-12)-$$"
 mv "$stage" "$candidate"
 stage=''
 current=$(active_path || true)
-if [ -n "$current" ]; then invoke_client "$current" stop || { rm -rf "$candidate"; echo 'Current version could not be stopped.' >&2; exit 1; }; fi
+if [ -n "$current" ] && ! invoke_client "$current" stop; then
+  rm -rf "$candidate"
+  if invoke_client "$current" start; then
+    echo 'Current version could not be fully stopped; it was restarted and the upgrade was cancelled.' >&2
+  else
+    echo 'Current version could not be fully stopped or restarted; the upgrade was cancelled before activation.' >&2
+  fi
+  exit 1
+fi
 
 case "$SETUP" in
   gui) setup_args='setup-gui' ;;
@@ -179,21 +187,33 @@ if [ -n "$setup_args" ]; then
   elif ! invoke_client "$candidate" "$setup_args"; then setup_failed=1
   else setup_failed=0; fi
   if [ "$setup_failed" = 1 ]; then
-    invoke_client "$candidate" stop || true
-    [ -z "$current" ] || invoke_client "$current" setup || true
+    cleanup_failed=0
+    invoke_client "$candidate" uninstall || cleanup_failed=1
     rm -rf "$candidate"
-    echo 'New version failed setup; previous version was restored.' >&2
+    if [ -n "$current" ] && ! invoke_client "$current" startup install; then
+      echo 'New version failed setup, and previous startup restoration also failed.' >&2
+    elif [ "$cleanup_failed" = 1 ] && [ -z "$current" ]; then
+      echo 'New version failed setup, and candidate startup cleanup also failed.' >&2
+    else
+      echo 'New version failed setup; previous startup state was restored.' >&2
+    fi
     exit 1
   fi
 fi
 
 tmp="$ACTIVE.$$.tmp"
 if ! { printf '%s\n' "$candidate" > "$tmp" && mv "$tmp" "$ACTIVE"; }; then
-  invoke_client "$candidate" stop || true
-  [ -z "$current" ] || invoke_client "$current" setup || true
+  cleanup_failed=0
+  invoke_client "$candidate" uninstall || cleanup_failed=1
   rm -rf "$candidate"
   rm -f "$tmp"
-  echo 'Activation failed; previous startup was restored.' >&2
+  if [ -n "$current" ] && ! invoke_client "$current" startup install; then
+    echo 'Activation failed, and previous startup restoration also failed.' >&2
+  elif [ "$cleanup_failed" = 1 ] && [ -z "$current" ]; then
+    echo 'Activation failed, and candidate startup cleanup also failed.' >&2
+  else
+    echo 'Activation failed; previous startup state was restored.' >&2
+  fi
   exit 1
 fi
 # The old version is only a pre-commit recovery candidate, not a supported

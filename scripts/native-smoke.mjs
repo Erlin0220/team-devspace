@@ -85,6 +85,9 @@ try {
   await writeFile(join(home, 'tunnel.token'), 'not-a-live-tunnel-credential', { mode: 0o600 });
   await platform.installServices(state, home);
   installed = true;
+  // Stopping freshly installed but idle startup entries must be safe. Upgrade
+  // performs this before replacing any active payload.
+  await platform.serviceAction('stop', state, home);
   // Native process supervision is real. No tunnel is started and no private files are exposed.
   await platform.serviceAction('start', state, home, ['runtime']);
   await waitForPorts(true);

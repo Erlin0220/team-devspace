@@ -61,50 +61,30 @@ Var PreviousEnrollment
 Var ResultCode
 Var Arguments
 Var NoStartup
-Var ProgressControl
 Var ProgressStyle
 
 !define PBS_MARQUEE 0x08
 
-Function StartBootstrapProgress
-  GetDlgItem $ProgressControl $HWNDPARENT 1004
-  ${If} $ProgressControl != 0
-    System::Call 'user32::GetWindowLongW(p $ProgressControl, i ${GWL_STYLE}) i .r0'
+!macro BootstrapProgressFunctions Prefix
+Function ${Prefix}StartBootstrapProgress
+  ${If} $mui.InstFilesPage.ProgressBar != 0
+    System::Call 'user32::GetWindowLongW(p $mui.InstFilesPage.ProgressBar, i ${GWL_STYLE}) i .r0'
     StrCpy $ProgressStyle $0
     IntOp $0 $0 | ${PBS_MARQUEE}
-    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i r0)'
-    SendMessage $ProgressControl ${PBM_SETPOS} 10 0
-    SendMessage $ProgressControl ${PBM_SETMARQUEE} 1 45
+    System::Call 'user32::SetWindowLongW(p $mui.InstFilesPage.ProgressBar, i ${GWL_STYLE}, i r0)'
+    SendMessage $mui.InstFilesPage.ProgressBar ${PBM_SETPOS} 10 0
+    SendMessage $mui.InstFilesPage.ProgressBar ${PBM_SETMARQUEE} 1 45
   ${EndIf}
 FunctionEnd
 
-Function StopBootstrapProgress
-  ${If} $ProgressControl != 0
-    SendMessage $ProgressControl ${PBM_SETMARQUEE} 0 0
-    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i $ProgressStyle)'
-    SendMessage $ProgressControl ${PBM_SETPOS} 95 0
+Function ${Prefix}StopBootstrapProgress
+  ${If} $mui.InstFilesPage.ProgressBar != 0
+    SendMessage $mui.InstFilesPage.ProgressBar ${PBM_SETMARQUEE} 0 0
+    System::Call 'user32::SetWindowLongW(p $mui.InstFilesPage.ProgressBar, i ${GWL_STYLE}, i $ProgressStyle)'
+    SendMessage $mui.InstFilesPage.ProgressBar ${PBM_SETPOS} 95 0
   ${EndIf}
 FunctionEnd
-
-Function un.StartBootstrapProgress
-  GetDlgItem $ProgressControl $HWNDPARENT 1004
-  ${If} $ProgressControl != 0
-    System::Call 'user32::GetWindowLongW(p $ProgressControl, i ${GWL_STYLE}) i .r0'
-    StrCpy $ProgressStyle $0
-    IntOp $0 $0 | ${PBS_MARQUEE}
-    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i r0)'
-    SendMessage $ProgressControl ${PBM_SETPOS} 10 0
-    SendMessage $ProgressControl ${PBM_SETMARQUEE} 1 45
-  ${EndIf}
-FunctionEnd
-
-Function un.StopBootstrapProgress
-  ${If} $ProgressControl != 0
-    SendMessage $ProgressControl ${PBM_SETMARQUEE} 0 0
-    System::Call 'user32::SetWindowLongW(p $ProgressControl, i ${GWL_STYLE}, i $ProgressStyle)'
-    SendMessage $ProgressControl ${PBM_SETPOS} 95 0
-  ${EndIf}
-FunctionEnd
+!macroend
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
@@ -114,6 +94,9 @@ Page custom EnrollmentPage EnrollmentLeave
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
+
+!insertmacro BootstrapProgressFunctions ""
+!insertmacro BootstrapProgressFunctions "un."
 
 Function .onInit
   SetShellVarContext current

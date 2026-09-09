@@ -20,6 +20,8 @@ const deployment = JSON.parse(await readFile('deployment.config.json', 'utf8'));
 const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
+const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
+const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
 const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
 const windowsPlatformFiles = await readdir('platform/windows');
 const trayCargo = await readFile('native/tray/Cargo.toml', 'utf8');
@@ -57,8 +59,14 @@ if (!windowsInstaller.includes('nsExec::ExecToLog') || /ExecWait[^\r\n]*powershe
 }
 if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('StartBootstrapProgress') ||
     !windowsInstaller.includes('StopBootstrapProgress') ||
-    !(await readFile('platform/windows/bootstrap.ps1', 'utf8')).includes('function Write-Step')) {
+    !windowsInstaller.includes('$mui.InstFilesPage.ProgressBar') || windowsInstaller.includes('GetDlgItem $ProgressControl') ||
+    windowsInstaller.includes('Var ProgressControl') || !windowsBootstrap.includes('function Write-Step')) {
   throw new Error('Windows bootstrap must show indeterminate progress and readable installation stages');
+}
+if (!windowsBootstrap.includes("@('uninstall')") || !windowsBootstrap.includes("@('startup', 'install')") ||
+    !unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
+    !unixBootstrap.includes('invoke_client "$current" startup install')) {
+  throw new Error('Failed candidate activation must remove partial startup entries and restore the previous version offline');
 }
 if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
