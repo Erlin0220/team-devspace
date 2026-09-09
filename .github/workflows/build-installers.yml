@@ -53,8 +53,10 @@ jobs:
           cache: npm
       - name: Read canonical release metadata
         id: release
-        shell: bash
-        run: echo "version=$(node -p \"require('./release.config.json').version\")" >> "$GITHUB_OUTPUT"
+        shell: pwsh
+        run: |
+          $version = node -p "require('./release.config.json').version"
+          "version=$version" >> $env:GITHUB_OUTPUT
       - name: Install locked build dependencies
         run: npx --yes npm@11.19.1 ci --no-fund --no-audit
       - name: Verify source and distribution contracts
