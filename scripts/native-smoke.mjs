@@ -15,7 +15,6 @@ const { values } = parseArgs({ options: { bundle: { type: 'string' } } });
 const bundle = resolve(values.bundle ?? `build/bundle-${process.platform}-${process.arch}`);
 const stateModule = await import(pathToFileURL(join(bundle, 'client', 'state.mjs')));
 const platform = await import(pathToFileURL(join(bundle, 'client', 'platform.mjs')));
-const { loopbackRequest } = await import(pathToFileURL(join(bundle, 'client', 'http.mjs')));
 const home = await mkdtemp(join(tmpdir(), 'team-devspace-native-'));
 const project = join(home, 'project');
 await mkdir(project);
@@ -28,7 +27,19 @@ async function freePort() {
   return port;
 }
 async function checkPort(port) {
-  try { await loopbackRequest(port, '/healthz', { timeout: 500 }); return true; } catch { return false; }
+  return new Promise(resolvePort => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolvePort(value);
+    };
+    socket.setTimeout(1000, () => finish(false));
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
 }
 async function waitForPorts(expected) {
   const deadline = Date.now() + (expected ? 90000 : 30000);
@@ -97,6 +108,15 @@ try {
     }
     if (process.platform === 'win32') {
       try { console.error(execFileSync(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), ['/Query', '/TN', platform.serviceLabel(state, component), '/V', '/FO', 'LIST'], {encoding:'utf8',windowsHide:true})); } catch {}
+    } else if (process.platform === 'darwin') {
+      const label = platform.serviceLabel(state, component);
+      try { console.error(execFileSync('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' })); } catch (diagnostic) {
+        console.error(`launchctl diagnostic failed: ${diagnostic.message}`);
+      }
+      for (const port of [state.ports.devspace, state.ports.bridge]) {
+        try { console.error(execFileSync('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' })); }
+        catch { console.error(`No TCP listener reported by lsof on port ${port}`); }
+      }
     }
   }
   throw error;
