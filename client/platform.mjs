@@ -101,43 +101,47 @@ async function windowsSid() {
   return sid;
 }
 
-export async function installServices(state, home = stateHome()) {
+export async function installServices(state, home = stateHome(), root = installRoot) {
   if (!state.bindingId) throw new Error('Enrollment is required before installing startup entries');
   const components = enabledStartupComponents(state);
   await privateDirectory(join(home, 'logs'));
   await privateDirectory(join(home, 'startup'));
-  const paths = await executablePaths();
+  await access(join(root, 'client', 'cli.mjs'));
+  const paths = await executablePaths(root);
   await access(paths.cloudflared);
   const disabled = STARTUP_COMPONENTS.filter(component => !components.includes(component));
   if (process.platform === 'win32') {
-    await access(join(installRoot, 'platform', 'windows', 'tds-launcher.exe'));
+    await access(join(root, 'runtime', 'node.exe'));
+    await access(join(root, 'platform', 'windows', 'tds-launcher.exe'));
     const sid = await windowsSid();
-    await access(join(installRoot, 'platform', 'windows', 'team-devspace-tray.exe'));
+    await access(join(root, 'platform', 'windows', 'team-devspace-tray.exe'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const task = join(home, 'startup', `${component}.xml`);
-      await writeFile(task, `\uFEFF${windowsTaskXml(state, component, home, sid)}`, 'utf16le');
+      await writeFile(task, `\uFEFF${windowsTaskXml(state, component, home, sid, root)}`, 'utf16le');
       await native('schtasks.exe', ['/Create', '/TN', serviceLabel(state, component), '/XML', task, '/F']);
     }
   } else if (process.platform === 'darwin') {
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
     const directory = join(homedir(), 'Library', 'LaunchAgents');
     await mkdir(directory, { recursive: true });
-    await access(join(installRoot, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
+    await access(join(root, 'runtime', 'bin', 'node'));
+    await access(join(root, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const label = serviceLabel(state, component);
       const target = join(directory, `${label}.plist`);
-      await writeFile(target, launchAgentXml(state, component, home, paths), { mode: 0o600 });
+      await writeFile(target, launchAgentXml(state, component, home, paths, root), { mode: 0o600 });
     }
   } else if (process.platform === 'linux') {
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
     const directory = join(homedir(), '.config', 'systemd', 'user');
     await mkdir(directory, { recursive: true });
+    await access(join(root, 'runtime', 'bin', 'node'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const unit = `${serviceLabel(state, component)}.service`;
-      await writeFile(join(directory, unit), systemdUserUnit(state, component, home, paths), { mode: 0o600 });
+      await writeFile(join(directory, unit), systemdUserUnit(state, component, home, paths, root), { mode: 0o600 });
       await native('systemctl', ['--user', 'enable', unit]);
     }
     await native('systemctl', ['--user', 'daemon-reload']);

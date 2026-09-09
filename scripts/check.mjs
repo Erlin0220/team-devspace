@@ -64,9 +64,10 @@ if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('
     windowsInstaller.includes('Var ProgressControl') || !windowsBootstrap.includes('function Write-Step')) {
   throw new Error('Windows bootstrap must show indeterminate progress and readable installation stages');
 }
-if (!windowsBootstrap.includes("@('uninstall')") || !windowsBootstrap.includes("@('startup', 'install')") ||
+if (!windowsBootstrap.includes("@('uninstall')") ||
+    !windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [string]$Previous.path)") ||
     !unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
-    !unixBootstrap.includes('invoke_client "$current" startup install') ||
+    !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
     !windowsBootstrap.includes('Candidate startup cleanup also failed') ||
     !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
   throw new Error('Failed candidate activation must remove partial startup entries and restore the previous version offline');

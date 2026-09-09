@@ -71,8 +71,8 @@ rollback_candidate() {
   cleanup_failed=0
   restore_failed=0
   invoke_client "$candidate" uninstall || cleanup_failed=1
+  if [ -n "$current" ] && ! invoke_client "$candidate" startup install --runtime-root "$current"; then restore_failed=1; fi
   rm -rf "$candidate"
-  if [ -n "$current" ] && ! invoke_client "$current" startup install; then restore_failed=1; fi
   if [ "$cleanup_failed" = 1 ] && [ "$restore_failed" = 1 ]; then
     echo "$failure; candidate startup cleanup and previous startup restoration both failed." >&2
   elif [ "$restore_failed" = 1 ]; then

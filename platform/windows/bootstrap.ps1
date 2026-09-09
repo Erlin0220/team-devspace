@@ -234,10 +234,10 @@ function Assert-Version([string]$Root, [object]$Manifest) {
   }
 }
 
-function Restore-Previous([object]$Previous) {
+function Restore-Previous([object]$Previous, [string]$InstallerRoot) {
   if (-not $Previous) { return }
   Write-Warning 'New version did not start successfully; restoring the previous startup entries.'
-  [void](Invoke-Client ([string]$Previous.path) @('startup', 'install'))
+  [void](Invoke-Client $InstallerRoot @('startup', 'install', '--runtime-root', [string]$Previous.path))
 }
 
 New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
@@ -322,16 +322,16 @@ try {
     } catch {
       $setupFailure = $_.Exception.Message
       $cleanupCode = Invoke-Client $candidate @('uninstall') -AllowFailure
-      Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
+      $restoreFailure = $null
       if ($active) {
-        try { Restore-Previous $active }
-        catch {
-          if ($cleanupCode -ne 0) {
-            throw "$setupFailure Candidate startup cleanup also failed. Previous startup restoration also failed: $($_.Exception.Message)"
-          }
-          throw "$setupFailure Previous startup restoration also failed: $($_.Exception.Message)"
-        }
+        try { Restore-Previous $active $candidate }
+        catch { $restoreFailure = $_.Exception.Message }
       }
+      Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
+      if ($restoreFailure -and $cleanupCode -ne 0) {
+        throw "$setupFailure Candidate startup cleanup also failed. Previous startup restoration also failed: $restoreFailure"
+      }
+      if ($restoreFailure) { throw "$setupFailure Previous startup restoration also failed: $restoreFailure" }
       if ($cleanupCode -ne 0) {
         if ($active) {
           throw "$setupFailure Candidate startup cleanup also failed. Previous startup entries were reinstalled, but running state is not confirmed."

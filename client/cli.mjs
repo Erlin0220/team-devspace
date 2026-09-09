@@ -3,8 +3,8 @@ import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
-import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, RELEASE_VERSION, stateHome,
-  writeUpstreamConfig } from './state.mjs';
+import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, readJson, RELEASE_VERSION,
+  stateHome, writeUpstreamConfig } from './state.mjs';
 import { configureDevice, deviceStatus, macSetupDialog, requestFromFile } from './setup.mjs';
 import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
@@ -35,6 +35,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: {
     home: { type: 'string' }, gateway: { type: 'string' }, root: { type: 'string', multiple: true },
     'credential-file': { type: 'string' }, 'request-file': { type: 'string' },
+    'runtime-root': { type: 'string' },
     'no-startup': { type: 'boolean' }, 'installer-progress': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
   } });
   if (values.home) process.env.TEAM_DEVSPACE_HOME = resolve(values.home);
@@ -67,9 +68,15 @@ export async function main(argv = process.argv.slice(2)) {
       else { await serviceAction(command, state, home); result = { action: command, deviceId: state.deviceId }; }
     } else if (command === 'startup') {
       if (action === 'install') {
-        const startupState = { ...state, releaseVersion: RELEASE_VERSION, devspaceVersion: DEVSPACE_VERSION };
+        const runtimeRoot = values['runtime-root'] ? await realpath(resolve(values['runtime-root'])) : undefined;
+        const runtimeRelease = runtimeRoot ? await readJson(join(runtimeRoot, 'release.config.json')) : undefined;
+        if (runtimeRelease && (typeof runtimeRelease.version !== 'string' || typeof runtimeRelease.devspaceVersion !== 'string')) {
+          throw new Error('The requested startup runtime has invalid release metadata');
+        }
+        const startupState = { ...state, releaseVersion: runtimeRelease?.version ?? RELEASE_VERSION,
+          devspaceVersion: runtimeRelease?.devspaceVersion ?? DEVSPACE_VERSION };
+        await installServices(startupState, home, runtimeRoot);
         await atomicJson(join(home, 'state.json'), startupState);
-        await installServices(startupState, home);
         const startComponents = enabledStartupComponents(startupState);
         if (startComponents.length) await serviceAction('start', startupState, home, startComponents);
       }
