@@ -1,6 +1,31 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Invoke-SignTool([string]$Executable, [string[]]$Arguments, [string]$Stage, [int]$TimeoutSeconds = 60) {
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $Executable
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+  foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+  $process = [Diagnostics.Process]::Start($startInfo)
+  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+  $stderrTask = $process.StandardError.ReadToEndAsync()
+  try {
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      try { $process.Kill($true) } catch {}
+      throw "signtool $Stage exceeded ${TimeoutSeconds}s"
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    if ($stdout) { Write-Host $stdout.TrimEnd() }
+    if ($stderr) { Write-Host $stderr.TrimEnd() }
+    if ($process.ExitCode -ne 0) { throw "signtool $Stage failed with exit code $($process.ExitCode)" }
+  }
+  finally { $process.Dispose() }
+}
+
 function Add-CurrentUserCertificate([string]$StoreName, [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
   $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
     $StoreName,
@@ -56,6 +81,7 @@ if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer 
 if (-not (Test-Path -LiteralPath $layout -PathType Container)) { throw "Offline layout not found: $layout" }
 if (-not (Test-Path -LiteralPath $trustScript -PathType Leaf)) { throw "Trust helper not found: $trustScript" }
 
+Write-Host '::notice::Internal signing: loading and validating fixed publisher PFX'
 [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_INTERNAL_SIGNING_PFX_BASE64))
 $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor
   [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
@@ -107,23 +133,32 @@ try {
     Sort-Object FullName | Select-Object -Last 1
   if (-not $signtool) { throw 'signtool.exe is unavailable' }
 
-  & $signtool.FullName sign /fd SHA256 /f $pfxPath /p $env:WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD $installer
-  if ($LASTEXITCODE -ne 0) { throw 'Internal Authenticode signing failed' }
+  Write-Host '::notice::Internal signing: signing Windows installer'
+  Invoke-SignTool -Executable $signtool.FullName -Arguments @(
+    'sign', '/fd', 'SHA256', '/f', $pfxPath, '/p', $env:WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD, $installer
+  ) -Stage 'sign'
 
-  $signature = Get-AuthenticodeSignature -LiteralPath $installer
-  if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint.ToUpperInvariant() -ne $thumbprint) {
-    throw 'Signed installer does not contain the expected internal publisher certificate'
+  Write-Host '::notice::Internal signing: reading embedded signer certificate without chain validation'
+  $embeddedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($installer)
+  $embeddedSigner = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($embeddedCertificate)
+  try {
+    if ($embeddedSigner.Thumbprint.ToUpperInvariant() -ne $thumbprint) {
+      throw 'Signed installer does not contain the expected internal publisher certificate'
+    }
+  }
+  finally {
+    $embeddedSigner.Dispose()
+    $embeddedCertificate.Dispose()
   }
 
+  Write-Host '::notice::Internal signing: temporarily trusting publisher certificate for policy verification'
   Add-CurrentUserCertificate -StoreName 'Root' -Certificate $publicCertificate
   $importedRoot = $true
   Add-CurrentUserCertificate -StoreName 'TrustedPublisher' -Certificate $publicCertificate
   $importedPublisher = $true
 
-  & $signtool.FullName verify /pa /all $installer
-  if ($LASTEXITCODE -ne 0) { throw 'Internal Authenticode verification failed after trusting the publisher certificate' }
-  $signature = Get-AuthenticodeSignature -LiteralPath $installer
-  if ($signature.Status -ne 'Valid') { throw "Authenticode status is $($signature.Status), expected Valid" }
+  Write-Host '::notice::Internal signing: verifying Authenticode policy'
+  Invoke-SignTool -Executable $signtool.FullName -Arguments @('verify', '/pa', '/all', $installer) -Stage 'verify'
 
   Copy-Item -LiteralPath $installer -Destination $layout -Force
   $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
