@@ -1,0 +1,10 @@
+{
+  "accountId": "4498bbe09d0c6dc868f53aff6391ca6e",
+  "zoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
+  "gateway": "https://team-devspace.568920429.xyz",
+  "databaseName": "team-devspace",
+  "databaseId": "00000000-0000-0000-0000-000000000000",
+  "releaseBucket": "team-devspace-releases",
+  "releaseHostname": "releases.568920429.xyz",
+  "releaseVisibility": "public"
+}

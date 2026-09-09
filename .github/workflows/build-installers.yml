@@ -1,0 +1,203 @@
+name: Build, verify and publish fixed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      free_budget_confirmed:
+        description: 'I verified runner/storage allowance and a stop-usage budget'
+        type: boolean
+        required: true
+        default: false
+      publish:
+        description: 'Sign and publish this fixed release after all native jobs pass'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: team-devspace-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: ${{ inputs.free_budget_confirmed }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - runner: windows-2022
+            target: win32-x64
+            stable: true
+          - runner: macos-15
+            target: darwin-arm64
+            stable: true
+          - runner: macos-15-intel
+            target: darwin-x64
+            stable: true
+          - runner: ubuntu-24.04
+            target: linux-x64
+            stable: false
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            stable: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.0'
+          cache: npm
+      - name: Read canonical release metadata
+        id: release
+        shell: bash
+        run: echo "version=$(node -p \"require('./release.config.json').version\")" >> "$GITHUB_OUTPUT"
+      - name: Install locked build dependencies
+        run: npx --yes npm@11.19.1 ci --no-fund --no-audit
+      - name: Verify source and distribution contracts
+        run: npm run check && npm run test:distribution
+      - name: Check locked dependency security
+        run: node node_modules/npm/bin/npm-cli.js audit
+      - name: Test gateway and actual upstream runtime
+        run: npm test
+      - name: Validate both Worker bundles without deploying
+        run: npm run deploy -- --dry-run
+      - name: Build native component artifacts, offline layout and bootstrapper
+        run: npm run package
+      - name: Verify native user-session runtime
+        if: ${{ matrix.stable }}
+        run: npm run test:native
+      - name: Verify actual isolated Windows installer transaction
+        if: ${{ matrix.target == 'win32-x64' }}
+        run: npm run test:installer
+
+      - name: Require Windows signing material for publication
+        if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
+        shell: pwsh
+        env:
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if (-not $env:SIGNING_PFX -or -not $env:SIGNING_PASSWORD) { throw 'Windows Authenticode secrets are required to publish' }
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\signing.pfx", [Convert]::FromBase64String($env:SIGNING_PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw 'signtool.exe is unavailable' }
+          $installer = "release\Team-DevSpace-$env:RELEASE_VERSION-windows-x64-setup.exe"
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f "$env:RUNNER_TEMP\signing.pfx" /p $env:SIGNING_PASSWORD $installer
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticode signing failed' }
+          & $signtool.FullName verify /pa /all $installer
+          Copy-Item $installer "release\offline\$env:RELEASE_VERSION\win32-x64" -Force
+          $file = Get-Item $installer
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($file.Name)" | Set-Content "$($file.FullName).sha256" -Encoding ascii
+          Copy-Item "$($file.FullName).sha256" "release\offline\$env:RELEASE_VERSION\win32-x64" -Force
+
+      - name: Require Apple signing and notarization for publication
+        if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        env:
+          INSTALLER_CERTIFICATE: ${{ secrets.MACOS_INSTALLER_CERT_P12_BASE64 }}
+          INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERT_P12_PASSWORD }}
+          INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          for name in INSTALLER_CERTIFICATE INSTALLER_CERTIFICATE_PASSWORD INSTALLER_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            test -n "${!name:-}" || { echo "$name is required to publish" >&2; exit 1; }
+          done
+          KEYCHAIN="$RUNNER_TEMP/team-devspace.keychain-db"
+          security create-keychain -p temporary "$KEYCHAIN"
+          security unlock-keychain -p temporary "$KEYCHAIN"
+          printf '%s' "$INSTALLER_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/installer.p12"
+          security import "$RUNNER_TEMP/installer.p12" -k "$KEYCHAIN" -P "$INSTALLER_CERTIFICATE_PASSWORD" -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s -k temporary "$KEYCHAIN"
+          PKG="release/Team-DevSpace-$RELEASE_VERSION-macos-${{ matrix.target == 'darwin-arm64' && 'arm64' || 'x64' }}.pkg"
+          productsign --sign "$INSTALLER_IDENTITY" "$PKG" "$PKG.signed"
+          mv "$PKG.signed" "$PKG"
+          xcrun notarytool submit "$PKG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$PKG"
+          pkgutil --check-signature "$PKG"
+          xcrun stapler validate "$PKG"
+          cp "$PKG" "release/offline/$RELEASE_VERSION/${{ matrix.target }}/"
+          shasum -a 256 "$PKG" > "$PKG.sha256"
+          cp "$PKG.sha256" "release/offline/$RELEASE_VERSION/${{ matrix.target }}/"
+
+      - name: Upload complete native layout and entrypoint
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: team-devspace-${{ matrix.target }}
+          path: |
+            release/offline/**
+            release/*.exe
+            release/*.pkg
+            release/*.tar.gz
+            release/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish:
+    if: ${{ inputs.free_budget_confirmed && inputs.publish }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    env:
+      RELEASE_VISIBILITY: public
+      RCLONE_CONFIG_RELEASES_TYPE: s3
+      RCLONE_CONFIG_RELEASES_PROVIDER: Cloudflare
+      RCLONE_CONFIG_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_RELEASES_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      RELEASE_BUCKET: team-devspace-releases
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.23.0'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: team-devspace-*
+          path: release
+          merge-multiple: true
+      - name: Enforce explicit release exposure decision
+        run: |
+          test "$RELEASE_VISIBILITY" = "$(node -p "require('./release.config.json').distribution.visibility")"
+      - name: Install mature immutable transfer tool
+        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Upload content-addressed objects without overwrite
+        run: |
+          VERSION=$(node -p "require('./release.config.json').version")
+          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
+            --immutable --checksum --include '*/objects/**' --transfers 8 --checkers 16
+      - name: Verify every remote object byte and SHA-256
+        run: node scripts/verify-remote-release.mjs
+      - name: Publish signed fixed-version entrypoints without overwrite
+        run: |
+          VERSION=$(node -p "require('./release.config.json').version")
+          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
+            --immutable --checksum --include '*/Team-DevSpace-*' --transfers 4 --checkers 8
+      - name: Verify remote signed entrypoints
+        run: node scripts/verify-remote-release.mjs --entrypoints
+      - name: Publish immutable manifests last
+        run: |
+          VERSION=$(node -p "require('./release.config.json').version")
+          rclone copy "release/offline/$VERSION" "releases:$RELEASE_BUCKET/releases/$VERSION" \
+            --immutable --checksum --include '*/manifest.json*' --transfers 4 --checkers 8
+      - name: Verify published manifests
+        run: node scripts/verify-remote-release.mjs --manifests
