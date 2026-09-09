@@ -94,23 +94,49 @@ const version = (await run(node, ['--version'], { capture: true })).stdout.trim(
 if (version !== `v${release.nodeVersion}`) throw new Error('Bundled Node version differs from release manifest');
 const buildEnvironment = { PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: '', npm_config_fund: 'false', npm_config_audit: 'false' };
 const lockSha256 = createHash('sha256').update(await readFile('package-lock.json')).digest('hex');
-const fingerprint = createHash('sha256').update(lockSha256).update(target).update(version).update(npmVersion).digest('hex');
+// DevSpace uses node-pty for Unix TTY sessions, but its Windows shell path always uses pipes.
+// Windows also disables subagents, so the platform Claude binary and Pi clipboard helpers are unused.
+const omitOptionalDependencies = process.platform === 'win32';
+const dependencyInstallProfile = omitOptionalDependencies ? 'omit-dev-optional-v1' : 'omit-dev-v1';
+const dependencyOmissions = ['--omit=dev', ...(omitOptionalDependencies ? ['--omit=optional'] : [])];
+const fingerprint = createHash('sha256').update(lockSha256).update(target).update(version).update(npmVersion)
+  .update(dependencyInstallProfile).digest('hex');
 const dependencyMarker = join(bundle, '.dependency-fingerprint');
 let previousFingerprint;
 try { previousFingerprint = (await readFile(dependencyMarker, 'utf8')).trim(); } catch {}
 if (!values['reuse-dependencies'] || previousFingerprint !== fingerprint) {
-  await run(node, [npmCli, 'ci', '--omit=dev', '--no-fund', '--no-audit'], { cwd: bundle, env: buildEnvironment, timeout: 600000 });
+  await run(node, [npmCli, 'ci', ...dependencyOmissions, '--no-fund', '--no-audit'],
+    { cwd: bundle, env: buildEnvironment, timeout: 600000 });
   await writeFile(dependencyMarker, fingerprint);
 }
 const installed = JSON.parse(await readFile(join(bundle, 'node_modules', '@waishnav', 'devspace', 'package.json'), 'utf8'));
 if (installed.version !== release.devspaceVersion) throw new Error('Installed upstream package differs from release pin');
+if (omitOptionalDependencies) {
+  // These optional packages are large enough that accidentally restoring them would materially
+  // regress every Windows release artifact. The real package build is the enforcement gate.
+  const excludedOptionalPayloads = [
+    join(bundle, 'node_modules', 'node-pty'),
+    ...((await readdir(join(bundle, 'node_modules', '@anthropic-ai'), { withFileTypes: true }))
+      .filter(entry => entry.name.startsWith('claude-agent-sdk-'))
+      .map(entry => join(bundle, 'node_modules', '@anthropic-ai', entry.name))),
+  ];
+  for (const path of excludedOptionalPayloads) {
+    try {
+      await access(path);
+      throw new Error(`Optional runtime payload must not ship: ${path.slice(bundle.length + 1)}`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+}
 await run(node, ['--input-type=module', '-e',
   "import {createRequire} from 'node:module'; const require=createRequire(import.meta.url); const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.prepare('SELECT 1').get(); db.close(); console.log('Bundled native SQLite loaded.');"],
 { cwd: bundle, env: buildEnvironment });
 const cloudflared = join(bundle, 'bin', process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
 const cfVersion = (await run(cloudflared, ['--version'], { capture: true })).stdout;
 if (!cfVersion.includes(release.cloudflaredVersion)) throw new Error('Bundled cloudflared version differs from release pin');
-const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', '--omit=dev', '--package-lock-only'], { cwd: bundle, env: buildEnvironment, capture: true });
+const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...dependencyOmissions, '--package-lock-only'],
+  { cwd: bundle, env: buildEnvironment, capture: true });
 JSON.parse(sbom.stdout);
 await writeFile(join(bundle, 'sbom.cdx.json'), sbom.stdout);
 await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
@@ -131,7 +157,8 @@ if (process.platform === 'win32') {
 }
 await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
   release: release.version, target, upstream: { package: '@waishnav/devspace', version: installed.version },
-  binaries: Object.fromEntries(downloadKinds.map(kind => [kind, binaries[kind][target]])), lockSha256, dependencyFingerprint: fingerprint, npmVersion,
+  binaries: Object.fromEntries(downloadKinds.map(kind => [kind, binaries[kind][target]])), lockSha256,
+  dependencyFingerprint: fingerprint, dependencyInstallProfile, npmVersion,
 }, null, 2));
 console.log(JSON.stringify({ prepared: true, target, bundle, devspace: installed.version, node: version }));
 if (!values['prepare-only']) {

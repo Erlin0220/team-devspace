@@ -14,6 +14,8 @@ release/offline/<release>/<target>/
 
 The normal Windows installer embeds only `bootstrap.ps1`, the fixed-version manifest and small command wrappers. The macOS package embeds the same target manifest and the shared Unix bootstrap. Linux publishes the same manifest/component model as a bootstrap archive, but Linux is a candidate target until native CI and signing policy are accepted for stable distribution.
 
+Windows production dependencies are installed from the lockfile with `npm ci --omit=dev --omit=optional`. Team DevSpace disables upstream subagents and DevSpace uses its pipe implementation on Windows, so the optional platform Claude executable, Pi clipboard binding and `node-pty` are not part of that target artifact. The package build rejects `node-pty` or any platform `claude-agent-sdk-*` payload if either reappears, and records the install profile in both the cache fingerprint and release provenance. macOS/Linux deliberately retain optional dependencies because upstream DevSpace uses `node-pty` for Unix TTY sessions.
+
 ## Install transaction
 
 The bootstrapper validates target, version, artifact path, exact byte size and SHA-256. It uses the offline object when present beside the installer; otherwise it downloads the same content-addressed object from the fixed R2 Custom Domain URL. It never resolves `latest`.

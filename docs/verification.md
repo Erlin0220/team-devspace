@@ -13,6 +13,7 @@ This file records evidence that has actually been produced. A checked item means
 - [x] `npm run test:installer`: an actual test-isolated NSIS build was exercised against a controlled loopback Enrollment endpoint with production startup deliberately disabled; the distribution transaction and native startup are verified separately so the test never claims a real Tunnel is online.
 - [x] `npm run test:distribution`: fixed target/version metadata, component separation, exact size/SHA-256 and content-addressed offline layout are verified.
 - [x] The actual Windows bootstrap installer is 88 KB class and contains no Node, DevSpace `node_modules`, cloudflared or Git Payload; those exist only as manifest-addressed artifacts.
+- [x] The Windows production graph omits unused optional dependencies: the real bundle contains neither `node-pty` nor the 219 MB-class platform Claude executable. `node_modules` fell from 540,693,792 to 254,205,718 bytes and the compressed `devspace-runtime` artifact from 165,975,610 to 51,041,979 bytes; the required online components total 102,670,830 bytes. macOS/Linux keep optional dependencies for upstream Unix TTY support.
 - [x] Isolated NSIS smoke verifies offline acquisition, shared cache, A/B activation, repeated-install Enrollment preservation, Repair reacquisition, failed-repair active-version retention, rollback retention and uninstall preservation.
 - [x] Gateway and static MCP assets compile as separate Workers; privacy-aware Workers Logs are enabled and scheduled cleanup has a deterministic reconciler test.
 
