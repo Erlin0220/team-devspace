@@ -325,7 +325,12 @@ try {
       Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
       if ($active) {
         try { Restore-Previous $active }
-        catch { throw "$setupFailure Previous startup restoration also failed: $($_.Exception.Message)" }
+        catch {
+          if ($cleanupCode -ne 0) {
+            throw "$setupFailure Candidate startup cleanup also failed. Previous startup restoration also failed: $($_.Exception.Message)"
+          }
+          throw "$setupFailure Previous startup restoration also failed: $($_.Exception.Message)"
+        }
       }
       if ($cleanupCode -ne 0) {
         if ($active) {

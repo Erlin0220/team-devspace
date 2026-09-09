@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
-import { serviceAction } from './platform.mjs';
+import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
 import { atomicJson, loadState, stateHome } from './state.mjs';
 
@@ -23,37 +23,44 @@ async function saveRemoteAccess(state, home, remoteAccess) {
 }
 
 export async function suspendRemoteAccess(home = stateHome()) {
-  const state = await loadState(home);
+  let state = await loadState(home);
   await control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
-  await saveRemoteAccess(state, home, 'suspended');
-  try { await serviceAction('stop', state, home, SERVICE_COMPONENTS); }
+  state = await saveRemoteAccess(state, home, 'suspended');
+  try { await serviceAction('remove', state, home, SERVICE_COMPONENTS); }
   catch (error) {
-    throw new Error(`Remote access is suspended at the Gateway, but local services did not fully stop: ${error.message}`);
+    throw new Error(`Remote access is suspended at the Gateway, but local services or login startup were not fully removed: ${error.message}`);
   }
   return deviceStatus(home);
 }
 
 export async function resumeRemoteAccess(home = stateHome()) {
   let state = await loadState(home);
-  await serviceAction('start', state, home, SERVICE_COMPONENTS);
-  const deadline = Date.now() + 60000;
-  let status;
-  do {
-    status = await deviceStatus(home);
-    if (status.localReady && ['suspended', 'active'].includes(status.gateway)) break;
-    await sleep(1000);
-  } while (Date.now() < deadline);
-  if (!status?.localReady) {
-    throw new Error('Remote access remains suspended because local runtime, bridge or tunnel is not ready.');
+  try {
+    await installServices({ ...state, remoteAccess: 'active' }, home);
+    await serviceAction('start', state, home, SERVICE_COMPONENTS);
+    const deadline = Date.now() + 60000;
+    let status;
+    do {
+      status = await deviceStatus(home);
+      if (status.localReady && ['suspended', 'active'].includes(status.gateway)) break;
+      await sleep(1000);
+    } while (Date.now() < deadline);
+    if (!status?.localReady) {
+      throw new Error('Local runtime, bridge or tunnel is not ready.');
+    }
+    await control(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
+    state = await saveRemoteAccess(state, home, 'active');
+  } catch (error) {
+    await serviceAction('remove', state, home, SERVICE_COMPONENTS).catch(() => {});
+    throw new Error(`Remote access remains suspended: ${error.message}`);
   }
-  await control(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
-  state = await saveRemoteAccess(state, home, 'active');
   return deviceStatus(home);
 }
 
 export async function restartTeamDevSpace(home = stateHome()) {
   const state = await loadState(home);
-  await serviceAction('restart', state, home, SERVICE_COMPONENTS);
+  const components = enabledStartupComponents(state).filter(component => SERVICE_COMPONENTS.includes(component));
+  if (components.length) await serviceAction('restart', state, home, components);
   return deviceStatus(home);
 }
 

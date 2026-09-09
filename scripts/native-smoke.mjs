@@ -70,6 +70,13 @@ function assertWindowsLauncherTree(homePath) {
   assert.ok(processes.some(process => /^node\.exe$/i.test(process.Name) &&
     Number(process.ParentProcessId) === Number(launchers[0].ProcessId)), 'Launcher must directly own the runtime Node process');
 }
+function windowsTaskExists(label) {
+  try {
+    execFileSync(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), ['/Query', '/TN', label],
+      { stdio: 'ignore', windowsHide: true });
+    return true;
+  } catch { return false; }
+}
 const state = {
   schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
   accessKey: `tds_${stateModule.randomSecret()}`, deviceSecret: stateModule.randomSecret(), ownerToken: stateModule.randomSecret(),
@@ -88,6 +95,14 @@ try {
   // Stopping freshly installed but idle startup entries must be safe. Upgrade
   // performs this before replacing any active payload.
   await platform.serviceAction('stop', state, home);
+  const suspendedState = { ...state, remoteAccess: 'suspended' };
+  await platform.installServices(suspendedState, home);
+  if (process.platform === 'win32') {
+    assert.equal(windowsTaskExists(platform.serviceLabel(state, 'runtime')), false);
+    assert.equal(windowsTaskExists(platform.serviceLabel(state, 'tunnel')), false);
+    assert.equal(windowsTaskExists(platform.serviceLabel(state, 'tray')), true);
+  }
+  await platform.installServices({ ...state, remoteAccess: 'active' }, home);
   // Native process supervision is real. No tunnel is started and no private files are exposed.
   await platform.serviceAction('start', state, home, ['runtime']);
   await waitForPorts(true);
