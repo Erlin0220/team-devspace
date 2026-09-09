@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { access, mkdir, rename, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { access, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { Readable, Transform } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { spawn } from 'node:child_process';
 
 export async function sha256File(path) {
@@ -25,17 +23,12 @@ export async function downloadPinned(artifact, cache) {
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const temporary = `${target}.${process.pid}.partial`;
   try {
-    const response = await fetch(artifact.url, { signal: AbortSignal.timeout(240000) });
-    if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${basename(target)}`);
-    if (new URL(response.url).protocol !== 'https:') throw new Error('Insecure binary download redirect');
-    let size = 0;
-    const maximum = 256 * 1024 * 1024;
-    await pipeline(Readable.fromWeb(response.body), new Transform({
-      transform(chunk, encoding, callback) {
-        size += chunk.length;
-        callback(size > maximum ? new Error('Binary download exceeds release size limit') : null, chunk);
-      },
-    }), createWriteStream(temporary, { flags: 'wx' }));
+    const curl = process.platform === 'win32' ? 'curl.exe' : 'curl';
+    await run(curl, ['--fail', '--location', '--proto', '=https', '--tlsv1.2',
+      '--retry', '4', '--retry-all-errors', '--retry-delay', '2', '--connect-timeout', '30', '--max-time', '240',
+      '--output', temporary, artifact.url], { timeout: 270000 });
+    const size = (await stat(temporary)).size;
+    if (size <= 0 || size > 256 * 1024 * 1024) throw new Error('Binary download exceeds release size limit');
     if (await sha256File(temporary) !== artifact.sha256) throw new Error(`Downloaded binary failed SHA-256 verification: ${basename(target)}`);
     await rename(temporary, target);
     return target;

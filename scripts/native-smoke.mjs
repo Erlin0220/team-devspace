@@ -31,12 +31,14 @@ async function checkPort(port) {
   try { await loopbackRequest(port, '/healthz', { timeout: 500 }); return true; } catch { return false; }
 }
 async function waitForPorts(expected) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const active = await Promise.all([checkPort(state.ports.devspace), checkPort(state.ports.bridge)]);
+  const deadline = Date.now() + (expected ? 90000 : 30000);
+  let active = [false, false];
+  while (Date.now() < deadline) {
+    active = await Promise.all([checkPort(state.ports.devspace), checkPort(state.ports.bridge)]);
     if (active.every(value => value === expected)) return;
-    await sleep(200);
+    await sleep(250);
   }
-  throw new Error(`Native runtime failed to become ${expected ? 'online' : 'offline'}`);
+  throw new Error(`Native runtime failed to become ${expected ? 'online' : 'offline'} (devspace=${active[0]}, bridge=${active[1]})`);
 }
 const state = {
   schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
