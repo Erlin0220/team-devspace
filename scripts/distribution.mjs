@@ -11,6 +11,9 @@ export function validateDistributionConfig(release) {
   if (!distribution || distribution.mode !== 'private-github-release') {
     throw new Error('release.config.json distribution.mode must be private-github-release');
   }
+  if (distribution.trustProfile !== 'internal-free') {
+    throw new Error('release.config.json distribution.trustProfile must be internal-free');
+  }
   if (!Array.isArray(distribution.targets) || distribution.targets.length === 0 ||
       distribution.targets.some(target => !TARGET.test(target)) || new Set(distribution.targets).size !== distribution.targets.length) {
     throw new Error('release.config.json distribution.targets must contain unique supported OS/architecture targets');

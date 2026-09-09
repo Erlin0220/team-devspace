@@ -27,13 +27,17 @@ test('runtime cache ignores only app version metadata, not dependency or install
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', gitFallbackVersion: '2.55.0.windows.5',
-  distribution: { mode: 'private-github-release', targets: ['win32-x64'] },
+  distribution: { mode: 'private-github-release', trustProfile: 'internal-free', targets: ['win32-x64'] },
 };
 
-test('distribution config requires private GitHub Releases and explicit immutable targets', () => {
-  assert.equal(validateDistributionConfig(baseRelease).mode, 'private-github-release');
+test('distribution config requires private GitHub Releases, internal-free trust and explicit immutable targets', () => {
+  const distribution = validateDistributionConfig(baseRelease);
+  assert.equal(distribution.mode, 'private-github-release');
+  assert.equal(distribution.trustProfile, 'internal-free');
   assert.throws(() => validateDistributionConfig({ ...baseRelease,
     distribution: { ...baseRelease.distribution, mode: 'public-object-storage' } }));
+  assert.throws(() => validateDistributionConfig({ ...baseRelease,
+    distribution: { ...baseRelease.distribution, trustProfile: 'commercial-signing' } }));
   assert.throws(() => validateDistributionConfig({ ...baseRelease,
     distribution: { ...baseRelease.distribution, targets: ['win32-x64', 'win32-x64'] } }));
 });

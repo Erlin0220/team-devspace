@@ -12,6 +12,7 @@
   "gitFallbackVersion": "2.55.0.windows.5",
   "distribution": {
     "mode": "private-github-release",
+    "trustProfile": "internal-free",
     "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"]
   }
 }

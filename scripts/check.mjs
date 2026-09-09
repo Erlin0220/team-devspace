@@ -41,6 +41,12 @@ if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes(
     /\brclone\b|cloudflarestorage\.com|RCLONE_CONFIG_RELEASES/i.test(releaseWorkflow)) {
   throw new Error('Release workflow must publish only to a verified private GitHub Release and contain no legacy object-storage publication path');
 }
+if (release.distribution.trustProfile === 'internal-free' &&
+    (!releaseWorkflow.includes('WINDOWS_INTERNAL_SIGNING_PFX_BASE64') ||
+      !releaseWorkflow.includes('sign-internal-windows.ps1') ||
+      /MACOS_INSTALLER_CERT|APPLE_APP_SPECIFIC_PASSWORD|\bnotarytool\b|\bproductsign\b/.test(releaseWorkflow))) {
+  throw new Error('Internal-free publication must use the fixed Windows internal signing identity and no Apple paid signing/notarization gate');
+}
 if (manifest.dependencies['@clack/prompts']) throw new Error('Administrator-only prompts must not ship as an employee runtime dependency');
 if (!/^[a-f0-9]{32}$/.test(release.cloudflare?.accountId ?? '') || !/^[a-f0-9]{32}$/.test(release.cloudflare?.zoneId ?? '') ||
     !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(release.cloudflare?.deviceDomain ?? '')) {
