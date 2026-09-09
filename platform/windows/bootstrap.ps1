@@ -326,7 +326,11 @@ try {
       if ($active) {
         try { Restore-Previous $active }
         catch { throw "$setupFailure Previous startup restoration also failed: $($_.Exception.Message)" }
-      } elseif ($cleanupCode -ne 0) {
+      }
+      if ($cleanupCode -ne 0) {
+        if ($active) {
+          throw "$setupFailure Candidate startup cleanup also failed. Previous startup entries were reinstalled, but running state is not confirmed."
+        }
         throw "$setupFailure Candidate startup cleanup also failed; run Uninstall from this package before retrying."
       }
       throw $setupFailure

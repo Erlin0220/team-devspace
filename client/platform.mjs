@@ -11,6 +11,8 @@ const exec = promisify(execFile);
 export const COMPONENTS = ['runtime', 'tunnel'];
 export const STARTUP_COMPONENTS = process.platform === 'win32' || process.platform === 'darwin'
   ? [...COMPONENTS, 'tray'] : COMPONENTS;
+export const enabledStartupComponents = state => state.remoteAccess === 'suspended'
+  ? STARTUP_COMPONENTS.filter(component => component === 'tray') : STARTUP_COMPONENTS;
 export const xml = value => String(value).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
 const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 const systemdQuoted = value => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;

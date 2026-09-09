@@ -8,34 +8,19 @@ if [ -e /usr/local/bin/team-devspace ] && ! /usr/bin/grep -q 'Team DevSpace mana
 fi
 USER_NAME=$(/usr/bin/stat -f %Su /dev/console)
 if [ "$USER_NAME" = root ] || [ "$USER_NAME" = loginwindow ]; then exit 0; fi
-USER_ID=$(/usr/bin/id -u "$USER_NAME")
 USER_HOME=$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory | /usr/bin/sed 's/^NFSHomeDirectory: //')
 ROOT="$USER_HOME/Library/Application Support/TeamDevSpace/distribution"
 ACTIVE="$ROOT/active-path"
 LEGACY_APP="/Applications/Team DevSpace.app/Contents/Resources/app"
-if [ -f "$ACTIVE" ]; then
-  APP=$(/usr/bin/sed -n '1p' "$ACTIVE")
-elif [ -x "$LEGACY_APP/runtime/bin/node" ]; then
-  # One-time migration from the original monolithic pkg: preserve it as the rollback version before
-  # the lightweight App wrapper replaces /Applications/Team DevSpace.app.
+if [ ! -f "$ACTIVE" ] && [ -x "$LEGACY_APP/runtime/bin/node" ]; then
+  # Preserve a recoverable copy before the lightweight App wrapper replaces the
+  # original monolithic bundle. Do not stop the active user session in preinstall:
+  # the post-install transaction performs that switch only after PKG succeeds.
   APP="$ROOT/versions/legacy"
   /bin/mkdir -p "$ROOT/versions"
   /bin/rm -rf "$APP"
-  /bin/mv "$LEGACY_APP" "$APP"
+  /usr/bin/ditto "$LEGACY_APP" "$APP"
   /usr/sbin/chown -R "$USER_NAME" "$ROOT"
   /usr/bin/printf '%s\n' "$APP" > "$ACTIVE"
   /usr/sbin/chown "$USER_NAME" "$ACTIVE"
-else
-  exit 0
-fi
-if [ ! -x "$APP/runtime/bin/node" ]; then exit 0; fi
-if [ -f "$USER_HOME/Library/Application Support/TeamDevSpace/state.json" ]; then
-  if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/env HOME="$USER_HOME" "$APP/runtime/bin/node" "$APP/client/cli.mjs" stop; then
-    if /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/env HOME="$USER_HOME" "$APP/runtime/bin/node" "$APP/client/cli.mjs" start; then
-      echo 'The active user services could not be fully stopped; they were restarted and the package upgrade was cancelled.' >&2
-    else
-      echo 'The active user services could not be fully stopped or restarted; the package upgrade was cancelled.' >&2
-    fi
-    exit 1
-  fi
 fi

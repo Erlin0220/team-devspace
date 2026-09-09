@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { approvedRoots, atomicJson, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
   readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
-import { installServices, serviceAction, STARTUP_COMPONENTS } from './platform.mjs';
+import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
 const exec = promisify(execFile);
 
@@ -70,8 +70,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   if (startup) {
     onProgress('Installing current-user login startup entries...');
     await installServices(state, home);
-    const startComponents = state.remoteAccess === 'suspended'
-      ? STARTUP_COMPONENTS.filter(component => component === 'tray') : STARTUP_COMPONENTS;
+    const startComponents = enabledStartupComponents(state);
     if (startComponents.length) await serviceAction('start', state, home, startComponents);
     if (state.remoteAccess === 'suspended') {
       onProgress('Upgrade complete. Remote access remains safely suspended.');

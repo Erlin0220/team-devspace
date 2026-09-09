@@ -22,6 +22,7 @@ const releaseWorkflow = await readFile('.github/workflows/build-installers.yml',
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
 const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
+const macosPreinstall = await readFile('platform/macos/preinstall', 'utf8');
 const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
 const windowsPlatformFiles = await readdir('platform/windows');
 const trayCargo = await readFile('native/tray/Cargo.toml', 'utf8');
@@ -65,8 +66,13 @@ if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('
 }
 if (!windowsBootstrap.includes("@('uninstall')") || !windowsBootstrap.includes("@('startup', 'install')") ||
     !unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
-    !unixBootstrap.includes('invoke_client "$current" startup install')) {
+    !unixBootstrap.includes('invoke_client "$current" startup install') ||
+    !windowsBootstrap.includes('Candidate startup cleanup also failed') ||
+    !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
   throw new Error('Failed candidate activation must remove partial startup entries and restore the previous version offline');
+}
+if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
+  throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
 }
 if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {

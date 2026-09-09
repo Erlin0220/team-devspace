@@ -6,7 +6,7 @@ import { realpath } from 'node:fs/promises';
 import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, RELEASE_VERSION, stateHome,
   writeUpstreamConfig } from './state.mjs';
 import { configureDevice, deviceStatus, macSetupDialog, requestFromFile } from './setup.mjs';
-import { installServices, serviceAction } from './platform.mjs';
+import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace,
   resumeRemoteAccess, suspendRemoteAccess } from './control.mjs';
@@ -70,7 +70,8 @@ export async function main(argv = process.argv.slice(2)) {
         const startupState = { ...state, releaseVersion: RELEASE_VERSION, devspaceVersion: DEVSPACE_VERSION };
         await atomicJson(join(home, 'state.json'), startupState);
         await installServices(startupState, home);
-        await serviceAction('start', startupState, home);
+        const startComponents = enabledStartupComponents(startupState);
+        if (startComponents.length) await serviceAction('start', startupState, home, startComponents);
       }
       else if (action === 'remove') await serviceAction('remove', state, home);
       else throw new Error('Use startup install or startup remove');

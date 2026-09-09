@@ -66,6 +66,28 @@ invoke_client() {
   "$version/runtime/bin/node" "$version/client/cli.mjs" "$@"
 }
 
+rollback_candidate() {
+  failure=$1
+  cleanup_failed=0
+  restore_failed=0
+  invoke_client "$candidate" uninstall || cleanup_failed=1
+  rm -rf "$candidate"
+  if [ -n "$current" ] && ! invoke_client "$current" startup install; then restore_failed=1; fi
+  if [ "$cleanup_failed" = 1 ] && [ "$restore_failed" = 1 ]; then
+    echo "$failure; candidate startup cleanup and previous startup restoration both failed." >&2
+  elif [ "$restore_failed" = 1 ]; then
+    echo "$failure; previous startup restoration also failed." >&2
+  elif [ "$cleanup_failed" = 1 ] && [ -n "$current" ]; then
+    echo "$failure; candidate startup cleanup failed. Previous startup entries were reinstalled, but running state is not confirmed." >&2
+  elif [ "$cleanup_failed" = 1 ]; then
+    echo "$failure; candidate startup cleanup also failed." >&2
+  elif [ -n "$current" ]; then
+    echo "$failure; previous startup state was restored." >&2
+  else
+    echo "$failure; partial candidate startup state was removed." >&2
+  fi
+}
+
 if [ "$MODE" = uninstall ]; then
   current=$(active_path || true)
   [ -z "$current" ] || invoke_client "$current" uninstall
@@ -187,33 +209,15 @@ if [ -n "$setup_args" ]; then
   elif ! invoke_client "$candidate" "$setup_args"; then setup_failed=1
   else setup_failed=0; fi
   if [ "$setup_failed" = 1 ]; then
-    cleanup_failed=0
-    invoke_client "$candidate" uninstall || cleanup_failed=1
-    rm -rf "$candidate"
-    if [ -n "$current" ] && ! invoke_client "$current" startup install; then
-      echo 'New version failed setup, and previous startup restoration also failed.' >&2
-    elif [ "$cleanup_failed" = 1 ] && [ -z "$current" ]; then
-      echo 'New version failed setup, and candidate startup cleanup also failed.' >&2
-    else
-      echo 'New version failed setup; previous startup state was restored.' >&2
-    fi
+    rollback_candidate 'New version failed setup'
     exit 1
   fi
 fi
 
 tmp="$ACTIVE.$$.tmp"
 if ! { printf '%s\n' "$candidate" > "$tmp" && mv "$tmp" "$ACTIVE"; }; then
-  cleanup_failed=0
-  invoke_client "$candidate" uninstall || cleanup_failed=1
-  rm -rf "$candidate"
   rm -f "$tmp"
-  if [ -n "$current" ] && ! invoke_client "$current" startup install; then
-    echo 'Activation failed, and previous startup restoration also failed.' >&2
-  elif [ "$cleanup_failed" = 1 ] && [ -z "$current" ]; then
-    echo 'Activation failed, and candidate startup cleanup also failed.' >&2
-  else
-    echo 'Activation failed; previous startup state was restored.' >&2
-  fi
+  rollback_candidate 'Activation failed'
   exit 1
 fi
 # The old version is only a pre-commit recovery candidate, not a supported
