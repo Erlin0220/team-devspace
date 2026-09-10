@@ -235,6 +235,24 @@ try {
     }
     if (process.platform === 'win32') {
       try { console.error(execFileSync(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), ['/Query', '/TN', platform.serviceLabel(state, component), '/V', '/FO', 'LIST'], {encoding:'utf8',windowsHide:true})); } catch {}
+    } else if (process.platform === 'linux') {
+      try {
+        console.error(execFileSync('systemctl', ['--user', '--no-pager', '--full', 'status', platform.serviceLabel(state, component)],
+          { encoding: 'utf8' }));
+      } catch (diagnostic) {
+        console.error(`systemctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+      }
+      try {
+        console.error(execFileSync('systemctl', ['--user', '--no-pager', '--full', '--all', 'status', 'com.teamdevspace.*.runtime.service'],
+          { encoding: 'utf8' }));
+      } catch (diagnostic) {
+        console.error(`legacy systemctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+      }
+      try {
+        console.error(execFileSync('journalctl', ['--user', '--no-pager', '-n', '160'], { encoding: 'utf8' }));
+      } catch (diagnostic) {
+        console.error(`journalctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+      }
     } else if (process.platform === 'darwin') {
       const label = platform.serviceLabel(state, component);
       try { console.error(execFileSync('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], { encoding: 'utf8' })); } catch (diagnostic) {

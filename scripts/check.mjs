@@ -110,6 +110,8 @@ if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr
 const macosMinimumKey = '<key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string>';
 if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(macosMinimumKey).length - 1 !== 2 ||
     !trayBuild.includes('MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion') ||
+    !packageScript.includes("process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion } : {}") ||
+    !packageScript.includes('`:macos-${release.distribution.macosMinimumVersion}`') ||
     !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_ARCH__') ||
     !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_MINIMUM_VERSION__') ||
     !macosPreinstall.includes('code=UNSUPPORTED_ARCH') || !macosPreinstall.includes('code=UNSUPPORTED_MACOS') ||
@@ -117,6 +119,7 @@ if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(m
     !macosPostinstall.includes('if ! /bin/launchctl asuser') ||
     !macosLaunchApp.includes('setup.log') || !macosLaunchApp.includes('>> "$LOG" 2>&1') ||
     !releaseWorkflow.includes('/usr/bin/lipo -archs') || !releaseWorkflow.includes('/usr/bin/otool -l') ||
+    !releaseWorkflow.includes('macOS deployment target mismatch: $file') ||
     !releaseWorkflow.includes('/usr/sbin/installer -verboseR') ||
     !releaseWorkflow.includes("\\[postinstall\\] skip auto-open")) {
   throw new Error('macOS packaging must share one minimum-OS source, keep postinstall fail-open, capture setup diagnostics, scan final Mach-O compatibility, and execute a real Installer transaction');

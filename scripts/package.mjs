@@ -110,12 +110,17 @@ const expectedNpm = packageJson.packageManager.replace(/^npm@/, '');
 if (npmVersion !== expectedNpm) throw new Error(`Build requires ${packageJson.packageManager}; bootstrap with npx --yes ${packageJson.packageManager} ci`);
 const version = (await run(node, ['--version'], { capture: true })).stdout.trim();
 if (version !== `v${release.nodeVersion}`) throw new Error('Bundled Node version differs from release manifest');
-const buildEnvironment = { PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: '', npm_config_fund: 'false', npm_config_audit: 'false' };
+const buildEnvironment = {
+  PATH: `${dirname(node)}${delimiter}${process.env.PATH ?? ''}`,
+  NODE_OPTIONS: '', npm_config_fund: 'false', npm_config_audit: 'false',
+  ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion } : {}),
+};
 const lockSha256 = createHash('sha256').update(await readFile('package-lock.json')).digest('hex');
 // DevSpace uses node-pty for Unix TTY sessions, but its Windows shell path always uses pipes.
 // Windows also disables subagents, so the platform Claude binary and Pi clipboard helpers are unused.
 const omitOptionalDependencies = process.platform === 'win32';
-const dependencyInstallProfile = `${RUNTIME_PROFILE}:${omitOptionalDependencies ? 'omit-dev-optional' : 'omit-dev'}`;
+const dependencyInstallProfile = `${RUNTIME_PROFILE}:${omitOptionalDependencies ? 'omit-dev-optional' : 'omit-dev'}` +
+  (process.platform === 'darwin' ? `:macos-${release.distribution.macosMinimumVersion}` : '');
 const dependencyOmissions = ['--omit=dev', ...(omitOptionalDependencies ? ['--omit=optional'] : [])];
 const fingerprint = dependencyFingerprint({ lockfile: JSON.parse(await readFile('package-lock.json', 'utf8')),
   packageJson, npmrc: await readFile('.npmrc', 'utf8'), target, nodeVersion: version, npmVersion,

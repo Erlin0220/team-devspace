@@ -132,27 +132,43 @@ jobs:
           root="build/bundle-${{ matrix.target }}"
           minimum=$(node -p "require('./release.config.json').distribution.macosMinimumVersion")
           checked=0
+          offenders=0
           while IFS= read -r -d '' file; do
             description=$(/usr/bin/file "$file")
             [[ "$description" == *Mach-O* ]] || continue
             checked=$((checked + 1))
             archs=$(/usr/bin/lipo -archs "$file")
-            [[ " $archs " == *" arm64 "* ]] || { echo "::error file=$file::Mach-O file does not contain arm64: $archs"; exit 1; }
+            if [[ " $archs " != *" arm64 "* ]]; then
+              echo "::error file=$file::Mach-O file does not contain arm64: $archs"
+              echo "macOS architecture mismatch: $file -> $archs"
+              offenders=1
+              continue
+            fi
             versions=$(/usr/bin/otool -l "$file" | /usr/bin/awk '
               $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build=1; legacy=0; next }
               build && $1 == "minos" { print $2; build=0; next }
               $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { legacy=1; build=0; next }
               legacy && $1 == "version" { print $2; legacy=0 }
             ')
-            [[ -n "$versions" ]] || { echo "::error file=$file::Mach-O file has no macOS minimum-version load command"; exit 1; }
+            if [[ -z "$versions" ]]; then
+              echo "::error file=$file::Mach-O file has no macOS minimum-version load command"
+              echo "macOS minimum-version metadata missing: $file"
+              offenders=1
+              continue
+            fi
             while IFS= read -r actual; do
-              /usr/bin/awk -v actual="$actual" -v minimum="$minimum" '
+              if ! /usr/bin/awk -v actual="$actual" -v minimum="$minimum" '
                 function part(v,n,a) { split(v,a,"."); return (a[n] == "" ? 0 : a[n]) + 0 }
                 BEGIN { for (i=1;i<=3;i++) { a=part(actual,i); m=part(minimum,i); if (a<m) exit 0; if (a>m) exit 1 } exit 0 }
-              ' || { echo "::error file=$file::requires macOS $actual, above configured $minimum"; exit 1; }
+              '; then
+                echo "::error file=$file::requires macOS $actual, above configured $minimum"
+                echo "macOS deployment target mismatch: $file -> $actual (configured $minimum)"
+                offenders=1
+              fi
             done <<< "$versions"
           done < <(find "$root" -type f -print0)
           [[ "$checked" -gt 0 ]] || { echo "::error::No Mach-O files found in $root"; exit 1; }
+          [[ "$offenders" -eq 0 ]] || exit 1
           echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum"
       - name: Enforce Linux glibc 2.34 runtime ceiling
         if: ${{ matrix.target == 'linux-x64' }}
