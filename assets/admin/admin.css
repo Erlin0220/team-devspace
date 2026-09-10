@@ -108,16 +108,9 @@ tbody tr:last-child td {
   margin-top: 0;
 }
 
-dialog {
+dialog > article {
   width: min(560px, calc(100vw - 2rem));
   max-width: 560px;
-}
-
-dialog::backdrop {
-  background: rgb(0 0 0 / 36%);
-}
-
-dialog article {
   margin: 0;
   padding: 1.25rem;
   border: 1px solid var(--pico-muted-border-color);
