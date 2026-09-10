@@ -21,6 +21,7 @@ const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
 const deployWorkflow = await readFile('.github/workflows/deploy.yml', 'utf8');
 const workflows = `${releaseWorkflow}\n${deployWorkflow}`;
+const packageScript = await readFile('scripts/package.mjs', 'utf8');
 const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
@@ -28,12 +29,18 @@ const windowsSigning = await readFile('scripts/sign-internal-windows.ps1', 'utf8
 const clientSetup = await readFile('client/setup.mjs', 'utf8');
 const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
 const macosPreinstall = await readFile('platform/macos/preinstall', 'utf8');
+const macosPostinstall = await readFile('platform/macos/postinstall', 'utf8');
+const macosLaunchApp = await readFile('platform/macos/launch-app.sh', 'utf8');
 const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
 const windowsPlatformFiles = await readdir('platform/windows');
 const trayCargo = await readFile('native/tray/Cargo.toml', 'utf8');
 const trayLock = await readFile('native/tray/Cargo.lock', 'utf8');
 const trayToolchain = await readFile('native/tray/rust-toolchain.toml', 'utf8');
 const trayBuild = await readFile('scripts/tray-build.mjs', 'utf8');
+const trayMain = await readFile('native/tray/src/main.rs', 'utf8');
+const nativeSmoke = await readFile('scripts/native-smoke.mjs', 'utf8');
+const platformAcceptance = await readFile('scripts/platform-acceptance.mjs', 'utf8');
+const acceptanceVerifier = await readFile('scripts/verify-acceptance.mjs', 'utf8');
 const adminWeb = await readFile('gateway/admin-web.mjs', 'utf8');
 const picoLicense = await readFile('assets/admin/PICO-LICENSE.md', 'utf8');
 if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
@@ -86,10 +93,11 @@ if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [strin
   throw new Error('Windows Installer V2 must embed its payload, keep local A/B recovery, and treat first-run connection failure as post-install state');
 }
 if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device Binding...') ||
-    !clientSetup.includes("if (remoteAccess === 'suspended')") ||
-    !clientSetup.includes("'/v1/device/status'") ||
+    !clientSetup.includes("const remoteAccess = previous.remoteAccess === 'suspended' ? 'suspended' : 'active'") ||
+    clientSetup.includes("Recovered a legacy stopped state. Restoring normal connection startup...") ||
+    !clientSetup.includes("'/v1/enrollment/preflight'") || !clientSetup.includes("'/v1/device/release'") ||
     !clientSetup.includes("connection: startup ? 'starting' : 'not-started'")) {
-  throw new Error('Existing Enrollment must be reused locally; only a legacy suspended mismatch may be reconciled from Gateway status, and runtime connectivity must not gate setup success');
+  throw new Error('Existing Enrollment must preserve explicit pause intent, and Access Key replacement must validate before releasing the current Device Binding');
 }
 if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
     !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
@@ -99,15 +107,43 @@ if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
 if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
   throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
 }
+const macosMinimumKey = '<key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string>';
+if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(macosMinimumKey).length - 1 !== 2 ||
+    !trayBuild.includes('MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion') ||
+    !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_ARCH__') ||
+    !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_MINIMUM_VERSION__') ||
+    !macosPreinstall.includes('code=UNSUPPORTED_ARCH') || !macosPreinstall.includes('code=UNSUPPORTED_MACOS') ||
+    !macosPostinstall.startsWith('#!/bin/sh\nset -u\n') || macosPostinstall.includes('set -eu') ||
+    !macosPostinstall.includes('if ! /bin/launchctl asuser') ||
+    !macosLaunchApp.includes('setup.log') || !macosLaunchApp.includes('>> "$LOG" 2>&1') ||
+    !releaseWorkflow.includes('/usr/bin/lipo -archs') || !releaseWorkflow.includes('/usr/bin/otool -l') ||
+    !releaseWorkflow.includes('/usr/sbin/installer -verboseR') ||
+    !releaseWorkflow.includes("\\[postinstall\\] skip auto-open")) {
+  throw new Error('macOS packaging must share one minimum-OS source, keep postinstall fail-open, capture setup diagnostics, scan final Mach-O compatibility, and execute a real Installer transaction');
+}
 if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
   throw new Error('Windows background startup must use only the precompiled no-console launcher');
 }
 if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.includes('winit = "=0.30.12"') ||
+    !trayCargo.includes('windows-sys = { version = "=0.61.2"') || !trayCargo.includes('libc = "=0.2.189"') ||
     !trayToolchain.includes('channel = "1.85.1"') || !trayLock.includes('name = "tray-icon"') ||
     !trayBuild.includes("'test', '--release', '--locked'") || !trayBuild.includes("'build', '--release', '--locked'") ||
+    !trayMain.includes('CreateMutexW') || !trayMain.includes('libc::flock') || !trayMain.includes('emit("duplicate", None)') ||
+    !trayMain.includes('include_bytes!("../assets/team-devspace-32.rgba")') ||
+    !trayMain.includes('Submenu::new("故障排查"') || !trayMain.includes('MenuItem::new("更换 Access Key…"') ||
     !releaseWorkflow.includes('npm run package')) {
-  throw new Error('Native tray must use exact Rust/crate locks, test in the release profile, and enter the existing native package matrix');
+  throw new Error('Native tray must stay single-instance, use the branded embedded icon, expose the compact troubleshooting/key lifecycle menu, and enter the native package matrix');
+}
+if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptance.mjs' ||
+    !manifest.scripts['acceptance:local']?.includes('npm run acceptance:platform') ||
+    !releaseWorkflow.includes('Run final platform acceptance gate') || !releaseWorkflow.includes('npm run acceptance:platform') ||
+    !releaseWorkflow.includes('npm run verify:acceptance') || !platformAcceptance.includes('finalEntrypointTransaction') ||
+    !platformAcceptance.includes('traySingleInstance') || !platformAcceptance.includes('sourceDirty') ||
+    !nativeSmoke.includes('scopedStaleTaskMigration') ||
+    !acceptanceVerifier.includes('published entrypoint differs from the accepted bytes') ||
+    !acceptanceVerifier.includes('acceptance was produced from a dirty source checkout')) {
+  throw new Error('Release publication must be gated by one auditable platform acceptance path bound to clean source and the final entrypoint bytes');
 }
 if (!releaseWorkflow.includes('Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4') ||
     !releaseWorkflow.includes('build/tray-target-${{ matrix.target }}') ||

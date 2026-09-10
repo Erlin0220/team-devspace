@@ -10,17 +10,16 @@
 
 ```sh
 npx --yes npm@11.19.1 ci --no-fund --no-audit
-npm run check
-npm test
-node node_modules/npm/bin/npm-cli.js audit --omit=dev
-npm run deploy -- --dry-run
-npm run package
-npm run test:native
+npm run acceptance:local
 ```
 
-Windows 额外执行 `npm run test:installer`。它从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，编译完成后删除外部 `objects` 再运行，证明员工安装不依赖旁路 payload。测试强制首次 Enrollment 返回 503，验证本地程序仍提交成功并保留可重试 identity；随后恢复 Enrollment，验证同一 identity 成功绑定。再次覆盖安装必须复用原 Enrollment、保持 A/B version slot 切换且不再调用 `/v1/enroll`。健康 Enrollment 的 Repair 必须只修本地启动项；缺失 `tunnel.token` 时允许用原设备身份执行一次幂等 Enrollment 恢复；本地程序文件损坏则通过重跑同一 EXE 修复。测试后验证无持久 Windows payload cache、卸载保留 Enrollment 和项目文件。真实 Task Scheduler/runtime 启动由 `test:native` 继续单独验证；两者都不声称公网 Tunnel 已在线，也不会读取或覆盖已有员工安装。
+`acceptance:local` 是本机单一发布前门槛：依次执行 source/check、全部测试、distribution contract、Gateway dry-run、当前平台真实 package，然后对刚生成的 packaged artifact 执行 `acceptance:platform`。不要再把单独跑过 `test:tray`、`test:native` 或 `test:installer` 当成整体通过；这些脚本仍可用于定位失败。
 
-`test:native` 和 `test:installer` 均只创建自己的临时状态、测试项目和原生启动项，测试后清理。不要在真实员工设备的状态目录内改造测试夹具。
+Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，避免覆盖已安装的员工版本；它验证首次 Enrollment 503、Repair、覆盖升级、credential 恢复、损坏 payload 修复、A/B 版本回收、卸载和零测试 Task 残留。`test:native` 使用真实 Task Scheduler/runtime/MCP，并额外制造同一 `TEAM_DEVSPACE_HOME` 的未知旧 owner task 与另一 state home 的 foreign task：前者必须被迁移，后者必须保留。packaged Tray 会真实启动第二个进程，第二个进程必须在创建图标前被 OS single-instance guard 拒绝。
+
+每个平台验收成功后会在该 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。正式 GitHub `publish=true` 时，Windows 先签名，再直接安装/修复/卸载**最终签名 EXE 本身**；publish job 下载三个平台产物后重新计算入口 SHA-256，只有与验收证据完全一致才允许创建 Release。macOS hosted runner 可以验证最终 PKG/bootstrap 与原生 Tray single-instance，但不能伪装成已验证真实员工 LaunchAgent 登录会话；该限制会明确写进 acceptance evidence。
+
+所有 native/installer smoke 都必须把自己的状态目录和启动项限定在测试作用域并在结束时清理。不要在真实员工设备的状态目录内改造测试夹具。
 
 ## 部署与两个员工安装
 

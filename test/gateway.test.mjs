@@ -152,6 +152,8 @@ test('one Worker serves health and public assets with consistent headers without
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp?key=secret')).status, 400);
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/v1/admin/keys')).status, 401);
   assert.equal(requestOperation('POST', `/v1/admin/keys/${randomUUID()}/revoke`), 'admin_revoke');
+  assert.equal(requestOperation('POST', '/v1/enrollment/preflight'), 'enrollment_preflight');
+  assert.equal(requestOperation('POST', '/v1/device/release'), 'device_release');
   assert.equal(requestOperation('POST', '/private-user-content'), 'not_found');
 });
 
@@ -192,6 +194,38 @@ test('gateway authorizes real D1 bindings, isolates devices and namespaces MCP s
   assert.equal(stored.key_hash, hash(a.accessKey));
   assert.ok(!JSON.stringify(stored).includes(a.accessKey));
   assert.ok(!JSON.stringify(stored).includes(da.deviceSecret));
+});
+
+test('Access Key preflight is side-effect free and a device can release only its own binding', async t => {
+  const f = await fixture(t);
+  const current = await f.issue('Current Device');
+  const replacement = await f.issue('Replacement Device');
+  const available = await f.request('/v1/enrollment/preflight', replacement.accessKey, {}).then(response => response.json());
+  assert.deepEqual(available, { available: true });
+  assert.equal(f.tunnels.size, 0, 'Preflight must not create a Tunnel or bind a device');
+
+  const device = f.device();
+  const enrollment = await f.request('/v1/enroll', current.accessKey, device).then(response => response.json());
+  const identity = { keyId: current.id, bindingId: enrollment.bindingId };
+  assert.deepEqual(await f.request('/v1/enrollment/preflight', current.accessKey, {}).then(response => response.json()),
+    { available: false });
+  assert.equal((await f.request('/v1/device/release', secret(), identity)).status, 403);
+
+  f.switches.cleanupFailure = true;
+  const pending = await f.request('/v1/device/release', device.deviceSecret, identity);
+  assert.equal(pending.status, 503);
+  assert.equal((await pending.json()).error, 'connectivity_cleanup_pending');
+  assert.notEqual((await f.request('/mcp', current.accessKey)).status, 200,
+    'Release must deny the old route before cloud cleanup completes');
+
+  f.switches.cleanupFailure = false;
+  const released = await f.request('/v1/device/release', device.deviceSecret, identity);
+  assert.equal(released.status, 200);
+  assert.equal((await released.json()).released, true);
+  assert.equal(f.tunnels.size, 0);
+  assert.equal(f.records.size, 0);
+  assert.deepEqual(await f.request('/v1/enrollment/preflight', current.accessKey, {}).then(response => response.json()),
+    { available: true });
 });
 
 test('Device suspend is fail-closed before local stop and resume waits for the existing Tunnel health', async t => {

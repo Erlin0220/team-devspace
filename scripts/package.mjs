@@ -97,7 +97,7 @@ if (process.platform === 'win32') {
 <key>CFBundleName</key><string>Team DevSpace Tray</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
-<key>LSMinimumSystemVersion</key><string>13.5</string></dict></plist>\n`);
+<key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
   await signMacApplication(dirname(trayContents), macosSigning);
 }
 for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
@@ -258,7 +258,7 @@ if (!values['prepare-only']) {
 <key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpace</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
-<key>LSMinimumSystemVersion</key><string>13.5</string></dict></plist>\n`);
+<key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
     await signMacApplication(dirname(contents), macosSigning);
     await mkdir(join(pkgRoot, 'usr', 'local', 'bin'), { recursive: true });
     await cp('platform/macos/command.sh', join(pkgRoot, 'usr', 'local', 'bin', 'team-devspace'));
@@ -266,8 +266,17 @@ if (!values['prepare-only']) {
     const packageScripts = resolve(`build/pkg-scripts-${target}`);
     await mkdir(packageScripts, { recursive: true });
     for (const name of ['preinstall', 'postinstall']) {
-      await cp(join('platform', 'macos', name), join(packageScripts, name));
-      await chmod(join(packageScripts, name), 0o755);
+      const source = join('platform', 'macos', name);
+      const targetScript = join(packageScripts, name);
+      if (name === 'preinstall') {
+        const template = await readFile(source, 'utf8');
+        const rendered = template
+          .replaceAll('__TEAM_DEVSPACE_MACOS_ARCH__', process.arch)
+          .replaceAll('__TEAM_DEVSPACE_MACOS_MINIMUM_VERSION__', release.distribution.macosMinimumVersion);
+        if (rendered.includes('__TEAM_DEVSPACE_')) throw new Error('macOS preinstall template was not fully rendered');
+        await writeFile(targetScript, rendered);
+      } else await cp(source, targetScript);
+      await chmod(targetScript, 0o755);
     }
     const components = resolve(`build/pkg-components-${target}.plist`);
     await writeFile(components, `<?xml version="1.0" encoding="UTF-8"?>

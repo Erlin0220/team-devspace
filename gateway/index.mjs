@@ -56,6 +56,12 @@ async function employeeKey(request, store) {
   return row;
 }
 
+async function enrollmentPreflight(request, store) {
+  const key = await employeeKey(request, store);
+  await smallJson(request);
+  return json({ available: key.state === 'issued' });
+}
+
 async function enroll(request, env, store) {
   const key = await employeeKey(request, store);
   const body = await smallJson(request);
@@ -106,12 +112,12 @@ function publicOrigin(env) {
   return url.origin;
 }
 
-async function deviceIdentity(request, store) {
+async function deviceIdentity(request, store, allowedStates = ['active', 'suspended']) {
   const secret = bearer(request);
   const body = await smallJson(request);
   if (!UUID.test(body.keyId ?? '') || !UUID.test(body.bindingId ?? '')) throw new HttpError(400, 'invalid_device');
   const row = await store.byId(body.keyId);
-  if (!row || !['active', 'suspended'].includes(row.state) || row.binding_id !== body.bindingId ||
+  if (!row || !allowedStates.includes(row.state) || row.binding_id !== body.bindingId ||
       !equalSecret(row.device_secret_hash, await sha256(secret))) throw new HttpError(403, 'device_disabled');
   return { row, secret };
 }
@@ -125,6 +131,18 @@ async function suspendDevice(request, store) {
   const { row } = await deviceIdentity(request, store);
   if (!await store.suspend(row.id, row.binding_id)) throw new HttpError(409, 'access_lifecycle_changed');
   return json({ state: 'suspended', deviceId: row.device_id, bindingId: row.binding_id });
+}
+
+async function releaseDevice(request, env, store) {
+  let { row } = await deviceIdentity(request, store, ['active', 'suspended', 'resetting']);
+  if (row.state !== 'resetting') {
+    row = await store.disable(row.id, 'reset');
+    if (!row) throw new HttpError(409, 'access_lifecycle_changed');
+  }
+  try { await new Cloudflare(env).remove(row); }
+  catch { throw new HttpError(503, 'connectivity_cleanup_pending'); }
+  if (!await store.finishCleanup(row.id, row.binding_id, 'reset')) throw new HttpError(409, 'access_lifecycle_changed');
+  return json({ released: true, keyId: row.id });
 }
 
 async function resumeDevice(request, store) {
@@ -259,10 +277,12 @@ export function requestOperation(method, pathname) {
   if (pathname.startsWith('/mcp-app-assets/')) return 'assets';
   if (pathname === '/health' && method === 'GET') return 'health';
   if (pathname === '/mcp') return 'mcp';
+  if (pathname === '/v1/enrollment/preflight' && method === 'POST') return 'enrollment_preflight';
   if (pathname === '/v1/enroll' && method === 'POST') return 'enroll';
   if (pathname === '/v1/device/status' && method === 'POST') return 'device_status';
   if (pathname === '/v1/device/suspend' && method === 'POST') return 'device_suspend';
   if (pathname === '/v1/device/resume' && method === 'POST') return 'device_resume';
+  if (pathname === '/v1/device/release' && method === 'POST') return 'device_release';
   if (pathname === '/v1/admin/keys' && method === 'GET') return 'admin_list_keys';
   if (pathname === '/v1/admin/keys' && method === 'POST') return 'admin_issue_key';
   const action = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
@@ -294,10 +314,12 @@ export default {
         } else {
           const store = new KeyStore(env.DB);
           if (pathname === '/mcp') response = await proxyMcp(request, env, store);
+          else if (operation === 'enrollment_preflight') response = await enrollmentPreflight(request, store);
           else if (operation === 'enroll') response = await enroll(request, env, store);
           else if (operation === 'device_status') response = await deviceStatus(request, store);
           else if (operation === 'device_suspend') response = await suspendDevice(request, store);
           else if (operation === 'device_resume') response = await resumeDevice(request, store);
+          else if (operation === 'device_release') response = await releaseDevice(request, env, store);
           else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
           else if (pathname.startsWith('/admin')) response = await adminWeb(request, env,
             new AdminService(store, { remove: row => new Cloudflare(env).remove(row) }));

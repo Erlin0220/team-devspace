@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { writeFile, rename, rm, readFile } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { approvedRoots, atomicJson, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
+import { approvedRoots, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
   readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
@@ -36,8 +36,11 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   const gateway = normalizeGateway(input.gateway ?? previous?.gateway ?? release.gateway);
   const accessKey = input.accessKey ?? previous?.accessKey;
   if (!/^tds_[A-Za-z0-9_-]{43}$/.test(accessKey ?? '')) throw new Error('Enter the Access Key assigned by your administrator');
-  if (previous && (previous.gateway !== gateway || previous.accessKey !== accessKey)) {
-    throw new Error('This installation already belongs to another Access Key or gateway. Reset the Device Binding with the administrator first; do not overwrite its state.');
+  if (previous?.gateway !== undefined && previous.gateway !== gateway) {
+    throw new Error('This installation already belongs to another gateway. Reset the Device Binding with the administrator first; do not overwrite its state.');
+  }
+  if (previous?.bindingId && previous.accessKey !== accessKey) {
+    throw new Error('This installation already belongs to another Access Key. Use the tray Access Key action so the current Device Binding is released safely first.');
   }
   const roots = await approvedRoots(input.roots ?? previous?.roots);
   let state = previous ? await loadState(home) : {
@@ -53,16 +56,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   }
   if (previous?.bindingId && previous?.keyId && previous?.hostname && await hasTunnelCredential(home)) {
     onProgress('Existing Enrollment found. Reusing the current Device Binding...');
-    let remoteAccess = previous.remoteAccess === 'suspended' ? 'suspended' : 'active';
-    if (remoteAccess === 'suspended') {
-      const observed = await control(gateway, '/v1/device/status', previous.deviceSecret, {
-        body: { keyId: previous.keyId, bindingId: previous.bindingId }, timeout: 5000,
-      }).then(result => result.bindingId === previous.bindingId ? result.state : null, () => null);
-      if (observed === 'active') {
-        remoteAccess = 'active';
-        onProgress('Recovered a legacy stopped state. Restoring normal connection startup...');
-      }
-    }
+    const remoteAccess = previous.remoteAccess === 'suspended' ? 'suspended' : 'active';
     state = { ...state, keyId: previous.keyId, bindingId: previous.bindingId, hostname: previous.hostname,
       endpoint: previous.endpoint ?? `${gateway}/mcp`, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
       remoteAccess };
@@ -95,11 +89,7 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
     remoteAccess: binding.state === 'suspended' ? 'suspended' : 'active' };
-  const temporary = join(home, `tunnel.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, binding.tunnelToken, { flag: 'wx', mode: 0o600 });
-    await rename(temporary, join(home, 'tunnel.token'));
-  } finally { await rm(temporary, { force: true }); }
+  await atomicText(join(home, 'tunnel.token'), binding.tunnelToken);
   await writeUpstreamConfig(state, home);
   await atomicJson(join(home, 'state.json'), state);
   if (startup) {
@@ -117,9 +107,110 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     startup: startup ? 'installed' : 'not-installed' };
 }
 
+export async function promptReplacementAccessKey() {
+  if (process.platform === 'win32') {
+    const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = '更换 Access Key'
+$form.Width = 520
+$form.Height = 230
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedDialog'
+$form.MaximizeBox = $false
+$form.MinimizeBox = $false
+$form.ShowInTaskbar = $false
+$label = New-Object System.Windows.Forms.Label
+$label.Left = 20; $label.Top = 20; $label.Width = 460; $label.Text = '新的 Access Key'
+$input = New-Object System.Windows.Forms.TextBox
+$input.Left = 20; $input.Top = 45; $input.Width = 460; $input.UseSystemPasswordChar = $true
+$hint = New-Object System.Windows.Forms.Label
+$hint.Left = 20; $hint.Top = 78; $hint.Width = 460; $hint.Height = 42
+$hint.Text = '更换后，当前远程连接会断开，并使用新的 Access Key 重新绑定此电脑。项目目录设置不会改变。'
+$cancel = New-Object System.Windows.Forms.Button
+$cancel.Text = '取消'; $cancel.Left = 310; $cancel.Top = 135; $cancel.Width = 80; $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$ok = New-Object System.Windows.Forms.Button
+$ok.Text = '更换'; $ok.Left = 400; $ok.Top = 135; $ok.Width = 80; $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$form.Controls.AddRange(@($label, $input, $hint, $cancel, $ok))
+$form.AcceptButton = $ok
+$form.CancelButton = $cancel
+$form.Add_Shown({ $input.Focus() })
+$result = $form.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($input.Text) }
+$form.Dispose()
+`;
+    const { stdout } = await exec(powershell, ['-NoLogo', '-NoProfile', '-STA', '-Command', script],
+      { windowsHide: true, maxBuffer: 64 * 1024 });
+    return stdout.trim() || null;
+  }
+  if (process.platform === 'darwin') {
+    const { stdout } = await exec('/usr/bin/osascript', ['-e',
+      'try', '-e',
+      'text returned of (display dialog "Enter the new Team DevSpace Access Key. The current remote connection will be replaced; project directories are kept." default answer "" with hidden answer buttons {"Cancel", "Replace"} default button "Replace" with title "Team DevSpace")',
+      '-e', 'on error number -128', '-e', 'return ""', '-e', 'end try']);
+    return stdout.trim() || null;
+  }
+  throw new Error('Access Key replacement from the tray is available on Windows and macOS');
+}
+
+export async function replaceAccessKey(accessKey, home = stateHome(), { onProgress = () => {}, startup = true } = {}) {
+  if (!/^tds_[A-Za-z0-9_-]{43}$/.test(accessKey ?? '')) throw new Error('请输入完整的 Access Key');
+  let state = await loadState(home);
+  if (!state.pendingAccessKey && state.accessKey === accessKey) throw new Error('新的 Access Key 与当前 Access Key 相同');
+
+  onProgress('正在验证新的 Access Key…');
+  const preflight = await control(state.gateway, '/v1/enrollment/preflight', accessKey, { body: {}, timeout: 15000 });
+  if (!preflight.available) throw new Error('这个 Access Key 已绑定到其他设备，请使用未绑定的 Access Key');
+
+  state = { ...state, pendingAccessKey: accessKey, remoteAccess: 'suspended' };
+  await atomicJson(join(home, 'state.json'), state);
+
+  onProgress('正在释放当前设备绑定…');
+  const localStop = serviceAction('remove', state, home, COMPONENTS);
+  const remoteRelease = state.keyId && state.bindingId
+    ? control(state.gateway, '/v1/device/release', state.deviceSecret, {
+      body: { keyId: state.keyId, bindingId: state.bindingId }, timeout: 30000,
+    }).catch(error => {
+      // A previously completed release no longer has a device identity to authenticate with.
+      if (error.status === 403) return { released: true, alreadyReleased: true };
+      throw error;
+    })
+    : Promise.resolve({ released: true, alreadyReleased: true });
+  const [localResult, remoteResult] = await Promise.allSettled([localStop, remoteRelease]);
+  if (remoteResult.status === 'rejected') {
+    throw new Error(`旧设备绑定尚未释放：${remoteResult.reason?.message ?? remoteResult.reason}`);
+  }
+  if (localResult.status === 'rejected') {
+    throw new Error(`旧连接已禁用，但本机服务尚未完全停止：${localResult.reason?.message ?? localResult.reason}`);
+  }
+
+  await rm(join(home, 'tunnel.token'), { force: true });
+  const next = { ...state, accessKey, remoteAccess: 'active' };
+  delete next.pendingAccessKey;
+  delete next.keyId;
+  delete next.bindingId;
+  delete next.hostname;
+  delete next.endpoint;
+  await atomicJson(join(home, 'state.json'), next);
+
+  onProgress('正在使用新的 Access Key 重新绑定…');
+  const enrolled = await configureDevice({}, { home, startup: false, onProgress });
+  if (!startup) return { ...enrolled, startup: 'not-installed', replacedAccessKey: true };
+  const finalState = await loadState(home);
+  await installServices(finalState, home, undefined, COMPONENTS);
+  const startComponents = enabledStartupComponents(finalState).filter(component => COMPONENTS.includes(component));
+  if (startComponents.length) await serviceAction('start', finalState, home, startComponents);
+  return { ...enrolled, startup: 'installed', replacedAccessKey: true };
+}
+
 export async function repairDevice(home = stateHome(), { preserveTray = false } = {}) {
   const previous = await readJson(join(home, 'state.json'), null);
   if (!previous) throw new Error('Team DevSpace is installed but has not been configured yet; run setup with the administrator-issued Access Key and project directory');
+  if (previous.pendingAccessKey) {
+    const replaced = await replaceAccessKey(previous.pendingAccessKey, home);
+    return { ...replaced, repaired: true, recoveredEnrollment: true };
+  }
   const recoveredEnrollment = !previous.bindingId || !await hasTunnelCredential(home);
   if (recoveredEnrollment) await configureDevice({}, { home, startup: false });
   const state = await loadState(home);
@@ -159,16 +250,42 @@ export async function deviceStatus(home = stateHome()) {
     ready: Boolean(state.bindingId) && devspace && bridge && tunnel && gateway === 'active' && desiredRemoteAccess === 'active' };
 }
 
-export async function macSetupDialog(home = stateHome()) {
+export async function macSetupDialog(home = stateHome(), { preserveTray = false } = {}) {
   if (process.platform !== 'darwin') throw new Error('The macOS setup dialog is only available on macOS');
   const previous = await readJson(join(home, 'state.json'), null);
-  if (previous?.accessKey) return configureDevice({}, { home });
-  // AppleScript supplies native protected input and a folder picker; no web UI or Electron shell.
+  if (previous?.bindingId) return configureDevice({}, { home });
+  // Pending Enrollment must stay editable. A failed first attempt may already have persisted the
+  // local identity/key/roots, but without a Binding it must never lock the user out of setup.
   const key = await exec('/usr/bin/osascript', ['-e',
     'text returned of (display dialog "Enter your administrator-issued Team DevSpace Access Key. This key grants remote coding access as your user account." default answer "" with hidden answer buttons {"Cancel", "Continue"} default button "Continue" with title "Team DevSpace")']);
-  const folder = await exec('/usr/bin/osascript', ['-e',
-    'POSIX path of (choose folder with prompt "Choose your project directory. File tools are restricted to it; shell commands still run with your user permissions.")']);
-  return configureDevice({ accessKey: key.stdout.trim(), roots: [folder.stdout.trim()] }, { home });
+  let roots = previous?.roots;
+  if (!Array.isArray(roots) || roots.length === 0) {
+    const folder = await exec('/usr/bin/osascript', ['-e',
+      'POSIX path of (choose folder with prompt "Choose your project directory. File tools are restricted to it; shell commands still run with your user permissions.")']);
+    roots = [folder.stdout.trim()];
+  }
+  try {
+    if (!preserveTray) return await configureDevice({ accessKey: key.stdout.trim(), roots }, { home });
+    const enrolled = await configureDevice({ accessKey: key.stdout.trim(), roots }, { home, startup: false });
+    const state = await loadState(home);
+    await installServices(state, home, undefined, COMPONENTS);
+    const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
+    if (startComponents.length) await serviceAction('start', state, home, startComponents);
+    return { ...enrolled, startup: 'installed' };
+  } catch (error) {
+    // On first launch, keep a tray-only control surface alive even when Enrollment fails. The app
+    // payload remains usable and the employee can correct the Access Key without reinstalling.
+    const pending = await readJson(join(home, 'state.json'), null);
+    if (!preserveTray && pending && !pending.bindingId) {
+      try {
+        await installServices(pending, home, undefined, ['tray']);
+        await serviceAction('start', pending, home, ['tray']);
+      } catch {}
+      return { enrolled: false, pendingEnrollment: true, startup: 'tray-only',
+        reason: error.code ?? error.message, roots: pending.roots };
+    }
+    throw error;
+  }
 }
 
 export async function requestFromFile(path, remove = false) {

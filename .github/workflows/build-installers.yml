@@ -123,6 +123,36 @@ jobs:
         run: node scripts/macos-signing.mjs prepare
       - name: Build native component artifacts and self-contained platform package
         run: npm run package
+      - name: Enforce macOS arm64 and minimum deployment target
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="build/bundle-${{ matrix.target }}"
+          minimum=$(node -p "require('./release.config.json').distribution.macosMinimumVersion")
+          checked=0
+          while IFS= read -r -d '' file; do
+            description=$(/usr/bin/file "$file")
+            [[ "$description" == *Mach-O* ]] || continue
+            checked=$((checked + 1))
+            archs=$(/usr/bin/lipo -archs "$file")
+            [[ " $archs " == *" arm64 "* ]] || { echo "::error file=$file::Mach-O file does not contain arm64: $archs"; exit 1; }
+            versions=$(/usr/bin/otool -l "$file" | /usr/bin/awk '
+              $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build=1; legacy=0; next }
+              build && $1 == "minos" { print $2; build=0; next }
+              $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { legacy=1; build=0; next }
+              legacy && $1 == "version" { print $2; legacy=0 }
+            ')
+            [[ -n "$versions" ]] || { echo "::error file=$file::Mach-O file has no macOS minimum-version load command"; exit 1; }
+            while IFS= read -r actual; do
+              /usr/bin/awk -v actual="$actual" -v minimum="$minimum" '
+                function part(v,n,a) { split(v,a,"."); return (a[n] == "" ? 0 : a[n]) + 0 }
+                BEGIN { for (i=1;i<=3;i++) { a=part(actual,i); m=part(minimum,i); if (a<m) exit 0; if (a>m) exit 1 } exit 0 }
+              ' || { echo "::error file=$file::requires macOS $actual, above configured $minimum"; exit 1; }
+            done <<< "$versions"
+          done < <(find "$root" -type f -print0)
+          [[ "$checked" -gt 0 ]] || { echo "::error::No Mach-O files found in $root"; exit 1; }
+          echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum"
       - name: Enforce Linux glibc 2.34 runtime ceiling
         if: ${{ matrix.target == 'linux-x64' }}
         shell: bash
@@ -156,9 +186,14 @@ jobs:
       - name: Remove temporary macOS signing material
         if: ${{ always() && inputs.publish && startsWith(matrix.target, 'darwin-') }}
         run: node scripts/macos-signing.mjs cleanup
-      - name: Start and exercise the native Windows tray protocol
-        if: ${{ matrix.target == 'win32-x64' }}
-        run: npm run test:tray
+      - name: Sign Windows installer with the fixed internal publisher identity
+        if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
+        shell: pwsh
+        env:
+          WINDOWS_INTERNAL_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_BASE64 }}
+          WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD }}
+          TEAM_DEVSPACE_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: ./scripts/sign-internal-windows.ps1
       - name: Prepare Linux systemd user manager for lifecycle verification
         if: ${{ matrix.target == 'linux-x64' }}
         shell: bash
@@ -171,31 +206,32 @@ jobs:
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           test -S "/run/user/$uid/bus"
           XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user daemon-reload
-      - name: Verify native user-session runtime
-        # macOS hosted runners do not expose a durable employee LaunchAgent session. Linux gets a real
-        # per-user systemd manager above; Windows uses the logged-in Task Scheduler session.
-        if: ${{ matrix.native_startup }}
-        run: npm run test:native
+      - name: Verify actual macOS Installer transaction
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.metadata.outputs.version }}"
+          pkg="release/offline/$version/darwin-arm64/Team-DevSpace-$version-macos-arm64.pkg"
+          minimum=$(node -p "require('./release.config.json').distribution.macosMinimumVersion")
+          cleanup() {
+            sudo rm -rf '/Applications/Team DevSpace.app'
+            sudo rm -f /usr/local/bin/team-devspace
+            sudo /usr/sbin/pkgutil --forget com.teamdevspace.installer >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo env TEAM_DEVSPACE_SKIP_OPEN=1 /usr/sbin/installer -verboseR -pkg "$pkg" -target /
+          test -x '/Applications/Team DevSpace.app/Contents/MacOS/TeamDevSpace'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' '/Applications/Team DevSpace.app/Contents/Info.plist')" = "$minimum"
+          grep -q '\[postinstall\] skip auto-open' /var/log/team-devspace-install.log
+      - name: Run final platform acceptance gate
+        env:
+          TEAM_DEVSPACE_FINAL_WINDOWS_INSTALLER: ${{ inputs.publish && matrix.target == 'win32-x64' && '1' || '0' }}
+        run: npm run acceptance:platform
       - name: Clean Linux lifecycle test session
         if: ${{ always() && matrix.target == 'linux-x64' }}
         shell: bash
         run: sudo loginctl disable-linger "$USER" || true
-      - name: Verify actual isolated Windows installer transaction
-        if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
-        run: npm run test:installer
-
-      - name: Verify native Unix offline installer transaction
-        if: ${{ matrix.target != 'win32-x64' }}
-        run: npm run test:installer:unix
-
-      - name: Sign Windows installer with the fixed internal publisher identity
-        if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
-        shell: pwsh
-        env:
-          WINDOWS_INTERNAL_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_BASE64 }}
-          WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD }}
-          TEAM_DEVSPACE_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-        run: ./scripts/sign-internal-windows.ps1
 
       - name: Upload complete native layout and entrypoint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -235,6 +271,10 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private')" = true
       - name: Verify complete offline layouts before publication
         run: npm run verify:release
+      - name: Verify platform acceptance evidence before publication
+        env:
+          TEAM_DEVSPACE_REQUIRE_FINAL_WINDOWS: ${{ inputs.publish && '1' || '0' }}
+        run: npm run verify:acceptance
       - name: Require the live Gateway to match this client protocol
         shell: bash
         run: |

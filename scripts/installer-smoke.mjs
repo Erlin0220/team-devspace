@@ -3,14 +3,16 @@ import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:
 import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { atomicJson, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
+import { serviceLabel, windowsTaskNames } from '../client/platform.mjs';
 import { run } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
 if (process.platform !== 'win32') throw new Error('This smoke test exercises the actual Windows NSIS bootstrapper');
-const { values } = parseArgs({ options: { installer: { type: 'string' } } });
+const { values } = parseArgs({ options: { installer: { type: 'string' }, direct: { type: 'boolean' } } });
+if (values.direct && process.env.CI !== 'true') throw new Error('--direct is reserved for an isolated CI runner; local acceptance rebuilds isolated registry/start-menu identities');
 const sourceInstaller = resolve(values.installer ?? `release/offline/${release.version}/win32-x64/Team-DevSpace-${release.version}-windows-x64-setup.exe`);
 await access(sourceInstaller);
 const sourceLayout = dirname(sourceInstaller);
@@ -19,29 +21,37 @@ const payloadBytes = manifest.components.reduce((total, component) => total + co
 assert.ok((await stat(sourceInstaller)).size > payloadBytes * 0.9, 'Windows installer must physically contain its complete offline payload');
 const exists = async path => access(path).then(() => true, () => false);
 const suffix = randomUUID().slice(0, 8);
-const work = resolve(process.env.TEMP ?? '.', `tds-i-${suffix}`);
+const tempRoot = resolve(process.env.TEMP ?? '.');
+const localAppDataRoot = resolve(process.env.LOCALAPPDATA ?? process.env.TEMP ?? '.');
+const work = join(tempRoot, `tds-i-${suffix}`);
 const releaseRoot = join(work, 'release');
 const layout = join(releaseRoot, 'offline', release.version, 'win32-x64');
 const home = join(work, 'state');
-const install = resolve(process.env.LOCALAPPDATA ?? process.env.TEMP ?? '.', `T${suffix.slice(0, 4)}`);
+const install = join(localAppDataRoot, `T${suffix.slice(0, 4)}`);
+const smokeGuard = join(tempRoot, 'team-devspace-installer-smoke.lock');
+const smokeMarker = join(work, '.team-devspace-installer-smoke.json');
 const project = join(work, 'project');
 await secureStateDirectory(work);
 await mkdir(project);
-await mkdir(dirname(layout), { recursive: true });
-await cp(dirname(sourceInstaller), layout, { recursive: true });
-const compilerRoot = resolve('build/nsis');
-const compilerDirectory = (await readdir(compilerRoot, { withFileTypes: true })).find(entry => entry.isDirectory() && entry.name.startsWith('nsis-'));
-if (!compilerDirectory) throw new Error('Build the Windows package before running installer smoke');
-// Match the developer release tree: the convenient root EXE must find its complete nested offline layout.
-const installer = join(releaseRoot, `Team-DevSpace-smoke-${suffix}.exe`);
-await run(join(compilerRoot, compilerDirectory.name, 'makensis.exe'), ['/V2', '/NOCD',
-  `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${join(layout, 'manifest.json')}`,
-  `/DOFFLINE_OBJECTS=${join(layout, 'objects')}`, `/DPLATFORM_DIR=${resolve('platform/windows')}`, `/DAPP_VERSION=${release.version}`,
-  `/DAPP_VERSION_NUM=${release.version.split('-')[0]}.0`, `/DDEVSPACE_VERSION=${release.devspaceVersion}`, `/DOUTPUT=${installer}`,
-  `/DPRODUCT_KEY=Software\\TeamDevSpaceSmoke\\${suffix}`,
-  `/DUNINSTALL_KEY=Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TeamDevSpaceSmoke-${suffix}`,
-  `/DSTART_MENU_FOLDER=Team DevSpace Smoke ${suffix}`, resolve('platform/windows/installer.nsi')], { timeout: 60000 });
-await rm(join(layout, 'objects'), { recursive: true, force: true });
+let installer = sourceInstaller;
+if (!values.direct) {
+  await mkdir(dirname(layout), { recursive: true });
+  await cp(dirname(sourceInstaller), layout, { recursive: true });
+  const compilerRoot = resolve('build/nsis');
+  const compilerDirectory = (await readdir(compilerRoot, { withFileTypes: true })).find(entry => entry.isDirectory() && entry.name.startsWith('nsis-'));
+  if (!compilerDirectory) throw new Error('Build the Windows package before running installer smoke');
+  // Local acceptance uses production installer sources but isolated registry/start-menu identities,
+  // so it cannot disturb an employee installation already present on the workstation.
+  installer = join(releaseRoot, `Team-DevSpace-smoke-${suffix}.exe`);
+  await run(join(compilerRoot, compilerDirectory.name, 'makensis.exe'), ['/V2', '/NOCD',
+    `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${join(layout, 'manifest.json')}`,
+    `/DOFFLINE_OBJECTS=${join(layout, 'objects')}`, `/DPLATFORM_DIR=${resolve('platform/windows')}`, `/DAPP_VERSION=${release.version}`,
+    `/DAPP_VERSION_NUM=${release.version.split('-')[0]}.0`, `/DDEVSPACE_VERSION=${release.devspaceVersion}`, `/DOUTPUT=${installer}`,
+    `/DPRODUCT_KEY=Software\\TeamDevSpaceSmoke\\${suffix}`,
+    `/DUNINSTALL_KEY=Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TeamDevSpaceSmoke-${suffix}`,
+    `/DSTART_MENU_FOLDER=Team DevSpace Smoke ${suffix}`, resolve('platform/windows/installer.nsi')], { timeout: 60000 });
+  await rm(join(layout, 'objects'), { recursive: true, force: true });
+}
 const key = `tds_${randomSecret()}`;
 const bindingId = randomUUID();
 const keyId = randomUUID();
@@ -74,10 +84,20 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const env = { ...process.env, TEAM_DEVSPACE_HOME: home, NODE_OPTIONS: '',
   PATH: [process.env.SystemRoot, join(process.env.SystemRoot, 'System32'),
     join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0')].join(';') };
-async function execute(file, args, timeout = 240000) {
+function killProcessTree(pid) {
+  if (!pid) return;
+  try {
+    execFileSync(join(process.env.SystemRoot, 'System32', 'taskkill.exe'), ['/PID', String(pid), '/T', '/F'],
+      { stdio: 'ignore', windowsHide: true });
+  } catch {}
+}
+async function execute(file, args, timeout = 240000, environment = env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { env, windowsHide: true, stdio: 'inherit' });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('Installer smoke-test command timed out')); }, timeout);
+    const child = spawn(file, args, { env: environment, windowsHide: true, stdio: 'inherit' });
+    const timer = setTimeout(() => {
+      killProcessTree(child.pid);
+      reject(new Error('Installer smoke-test command timed out'));
+    }, timeout);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); resolve(code); });
   });
@@ -90,23 +110,117 @@ async function taskCommand(args) {
     child.once('exit', code => resolve(code));
   });
 }
-async function testTaskNames() {
-  try {
-    const { deviceId } = await readJson(join(home, 'state.json'));
-    if (!/^[a-f0-9-]{36}$/i.test(deviceId ?? '')) return [];
-    const compact = deviceId.replaceAll('-', '');
-    return ['runtime', 'tunnel', 'tray'].map(component => `com.teamdevspace.${compact}.${component}`);
-  } catch { return []; }
+function discoverTaskNamesForHome(targetHome) {
+  const schtasks = join(process.env.SystemRoot, 'System32', 'schtasks.exe');
+  let listing = '';
+  try { listing = execFileSync(schtasks, ['/Query', '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }); }
+  catch { return []; }
+  const expectedHome = `TEAM_DEVSPACE_HOME=${targetHome}`.toLowerCase();
+  return windowsTaskNames(listing).filter(name => {
+    try {
+      const task = execFileSync(schtasks, ['/Query', '/TN', name, '/XML'], { encoding: 'utf8', windowsHide: true });
+      return task.toLowerCase().includes(expectedHome);
+    } catch { return false; }
+  });
 }
-async function cleanupTestTasks() {
-  for (const name of await testTaskNames()) {
+async function testTaskNames(targetHome = home) {
+  const names = new Set(discoverTaskNamesForHome(targetHome));
+  try {
+    const state = await readJson(join(targetHome, 'state.json'));
+    for (const component of ['runtime', 'tunnel', 'tray']) names.add(serviceLabel(state, component, 'win32'));
+  } catch {}
+  return [...names];
+}
+async function cleanupTestTasks(targetHome = home) {
+  for (const name of await testTaskNames(targetHome)) {
     await taskCommand(['/End', '/TN', name]).catch(() => {});
     await taskCommand(['/Delete', '/TN', name, '/F']).catch(() => {});
   }
 }
-async function assertNoTestTasks() {
-  for (const name of await testTaskNames()) {
+async function assertNoTestTasks(targetHome = home) {
+  for (const name of await testTaskNames(targetHome)) {
     assert.notEqual(await taskCommand(['/Query', '/TN', name]), 0, `Installer smoke left startup task behind: ${name}`);
+  }
+}
+function installProcesses(rootPath = install) {
+  const root = rootPath.replaceAll("'", "''");
+  const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const script = `$root='${root}';$names=@('tds-launcher.exe','node.exe','cloudflared.exe','team-devspace-tray.exe');` +
+    '$items=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {' +
+    '$path=[string]$_.ExecutablePath;$path -and ($names -contains ([string]$_.Name).ToLowerInvariant()) -and ' +
+    '$path.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd("\\")+"\\"),[StringComparison]::OrdinalIgnoreCase)' +
+    '} | Select-Object Name,ProcessId,ParentProcessId,ExecutablePath);ConvertTo-Json -InputObject $items -Compress';
+  const output = execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true }).trim();
+  return output ? JSON.parse(output) : [];
+}
+function cleanupInstallProcesses(rootPath = install) {
+  const processes = installProcesses(rootPath);
+  if (!processes.length) return;
+  const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  execFileSync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    `Stop-Process -Id ${processes.map(process => Number(process.ProcessId)).join(',')} -Force -ErrorAction SilentlyContinue`],
+  { stdio: 'ignore', windowsHide: true });
+}
+async function acquireSmokeGuard() {
+  try {
+    await writeFile(smokeGuard, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+      { flag: 'wx', mode: 0o600 });
+    return;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  let active = false;
+  try {
+    const prior = JSON.parse(await readFile(smokeGuard, 'utf8'));
+    if (Number.isInteger(prior.pid) && prior.pid > 0) {
+      try { process.kill(prior.pid, 0); active = true; } catch {}
+    }
+  } catch {}
+  if (active) throw new Error('Another Windows installer acceptance is still running');
+  await rm(smokeGuard, { force: true });
+  await writeFile(smokeGuard, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+    { flag: 'wx', mode: 0o600 });
+}
+function validatedSmokeScope(entry) {
+  const match = /^tds-i-([a-f0-9]{8})$/i.exec(entry.name);
+  if (!entry.isDirectory() || !match) return null;
+  const candidateWork = join(tempRoot, entry.name);
+  const candidateHome = join(candidateWork, 'state');
+  const candidateInstall = join(localAppDataRoot, `T${match[1].slice(0, 4)}`);
+  return { suffix: match[1], work: candidateWork, home: candidateHome, install: candidateInstall,
+    marker: join(candidateWork, '.team-devspace-installer-smoke.json') };
+}
+async function cleanupSmokeScope(scope) {
+  const marker = await readJson(scope.marker, null).catch(() => null);
+  if (marker?.schema !== 1 || marker.suffix !== scope.suffix) return false;
+  await cleanupTestTasks(scope.home);
+  const uninstaller = join(scope.install, 'Uninstall.exe');
+  if (await exists(uninstaller)) {
+    const cleanupEnv = { ...process.env, TEAM_DEVSPACE_HOME: scope.home, NODE_OPTIONS: '' };
+    await execute(uninstaller, ['/S', `_?=${scope.install}`], 60000, cleanupEnv).catch(() => {});
+  }
+  cleanupInstallProcesses(scope.install);
+  await cleanupTestTasks(scope.home);
+  const reg = join(process.env.SystemRoot, 'System32', 'reg.exe');
+  for (const keyPath of [
+    `HKCU\\Software\\TeamDevSpaceSmoke\\${scope.suffix}`,
+    `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TeamDevSpaceSmoke-${scope.suffix}`,
+  ]) {
+    try { execFileSync(reg, ['delete', keyPath, '/f'], { stdio: 'ignore', windowsHide: true }); } catch {}
+  }
+  if (process.env.APPDATA) await rm(join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs',
+    `Team DevSpace Smoke ${scope.suffix}`), { recursive: true, force: true });
+  await rm(scope.work, { recursive: true, force: true });
+  await rm(scope.install, { recursive: true, force: true });
+  return true;
+}
+async function recoverStaleSmokeScopes() {
+  const entries = await readdir(tempRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    const scope = validatedSmokeScope(entry);
+    if (!scope || scope.work === work) continue;
+    await cleanupSmokeScope(scope);
   }
 }
 async function installAttempt() {
@@ -125,7 +239,13 @@ async function repair() {
   ]);
 }
 
+await acquireSmokeGuard();
+await atomicJson(smokeMarker, { schema: 1, suffix });
+await recoverStaleSmokeScopes();
+
 let canUninstall = false;
+let primaryFailure = null;
+let successReport;
 try {
   const pending = await installAttempt();
   canUninstall = true;
@@ -188,21 +308,37 @@ try {
   const uninstallMs = Date.now() - uninstallStarted;
   canUninstall = false;
   await assertNoTestTasks();
+  assert.deepEqual(installProcesses(), [], 'Successful uninstall must return only after every test-owned process has exited');
   assert.equal(await exists(join(install, 'v')), false);
   assert.equal((await readJson(join(home, 'state.json'))).bindingId, bindingId);
   assert.equal(await exists(project), true);
-  console.log(JSON.stringify({ passed: true, actualInstaller: true, selfContainedInstaller: true,
-    installSurvivesEnrollmentFailure: true, pendingEnrollmentRepairReusesIdentity: true, upgradeSkipsEnrollment: true,
+  successReport = { passed: true, actualInstaller: true, selfContainedInstaller: true,
+    directFinalInstaller: Boolean(values.direct), installSurvivesEnrollmentFailure: true,
+    pendingEnrollmentRepairReusesIdentity: true, upgradeSkipsEnrollment: true,
     healthyRepairIsLocalOnly: true, missingTunnelCredentialIsRecoverable: true,
     rerunInstallerRepairsPayload: true, noPersistentPayloadCache: true,
     officialGitFallbackExecuted: true, retiredVersionsCollected: true, damagedClientUninstallFallback: true,
-    uninstallPreservesProjects: true, uninstallMs }));
+    uninstallPreservesProjects: true, zeroResidue: true, uninstallMs };
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
+  const cleanupErrors = [];
   if (canUninstall || await exists(join(install, 'Uninstall.exe'))) {
-    await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000).catch(() => {});
+    await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000).catch(error => cleanupErrors.push(error));
   }
-  await cleanupTestTasks();
+  await cleanupTestTasks().catch(error => cleanupErrors.push(error));
+  try { cleanupInstallProcesses(); } catch (error) { cleanupErrors.push(error); }
   await new Promise(resolve => server.close(resolve));
-  await rm(work, { recursive: true, force: true }).catch(() => {});
-  await rm(install, { recursive: true, force: true }).catch(() => {});
+  await rm(work, { recursive: true, force: true }).catch(error => cleanupErrors.push(error));
+  await rm(install, { recursive: true, force: true }).catch(error => cleanupErrors.push(error));
+  await rm(smokeGuard, { force: true }).catch(error => cleanupErrors.push(error));
+  if (await exists(work)) cleanupErrors.push(new Error(`Installer smoke left state/work directory behind: ${work}`));
+  if (await exists(install)) cleanupErrors.push(new Error(`Installer smoke left installation directory behind: ${install}`));
+  if (cleanupErrors.length) {
+    const message = cleanupErrors.map(error => error.message).join('; ');
+    if (primaryFailure) console.error(`[installer-smoke cleanup] ${message}`);
+    else throw new AggregateError(cleanupErrors, `Installer smoke cleanup failed: ${message}`);
+  }
 }
+console.log(JSON.stringify(successReport));

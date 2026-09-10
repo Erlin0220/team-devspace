@@ -1,10 +1,29 @@
 #!/bin/sh
-set -eu
-if [ "${3:-/}" != "/" ] || [ "${TEAM_DEVSPACE_SKIP_OPEN:-0}" = "1" ]; then exit 0; fi
-USER_NAME=$(/usr/bin/stat -f %Su /dev/console)
-if [ "$USER_NAME" = root ] || [ "$USER_NAME" = loginwindow ]; then
+set -u
+LOG=/var/log/team-devspace-install.log
+log() { /usr/bin/printf '%s [postinstall] %s\n' "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG" 2>/dev/null || true; }
+log 'start'
+if [ "${3:-/}" != "/" ]; then log 'skip non-root target'; exit 0; fi
+if [ "${TEAM_DEVSPACE_SKIP_OPEN:-0}" = "1" ]; then log 'skip auto-open'; exit 0; fi
+USER_NAME=$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)
+if [ -z "$USER_NAME" ] || [ "$USER_NAME" = root ] || [ "$USER_NAME" = loginwindow ]; then
+  log 'no logged-in desktop user; auto-open skipped'
   echo 'Open Team DevSpace from Applications after signing in to complete Enrollment.'
   exit 0
 fi
-USER_ID=$(/usr/bin/id -u "$USER_NAME")
-/bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/open '/Applications/Team DevSpace.app'
+USER_ID=$(/usr/bin/id -u "$USER_NAME" 2>/dev/null || true)
+case "$USER_ID" in
+  ''|*[!0-9]*)
+    log 'WARN code=CONSOLE_USER_LOOKUP_FAILED; install remains successful'
+    echo 'Team DevSpace was installed, but the logged-in user could not be resolved. Open it from Applications to complete Enrollment.' >&2
+    exit 0
+    ;;
+esac
+if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/open '/Applications/Team DevSpace.app'; then
+  log 'WARN code=AUTO_OPEN_FAILED; install remains successful'
+  echo 'Team DevSpace was installed, but it could not be opened automatically. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
+else
+  log 'auto-open requested successfully'
+fi
+log 'complete'
+exit 0

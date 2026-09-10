@@ -92,6 +92,25 @@ function windowsTaskExists(label) {
     return true;
   } catch { return false; }
 }
+function windowsSid() {
+  const output = execFileSync(join(process.env.SystemRoot, 'System32', 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'],
+    { encoding: 'utf8', windowsHide: true });
+  const sid = /S-1-5-[0-9-]+/.exec(output)?.[0];
+  if (!sid) throw new Error('Cannot resolve Windows test user SID');
+  return sid;
+}
+async function createWindowsFixtureTask(label, taskHome, state, component = 'runtime') {
+  const file = join(home, `${label.replaceAll('.', '-')}.xml`);
+  await writeFile(file, `\uFEFF${platform.windowsTaskXml(state, component, taskHome, windowsSid(), bundle)}`, 'utf16le');
+  execFileSync(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), ['/Create', '/TN', label, '/XML', file, '/F'],
+    { stdio: 'ignore', windowsHide: true });
+}
+function removeWindowsFixtureTask(label) {
+  if (!label) return;
+  const schtasks = join(process.env.SystemRoot, 'System32', 'schtasks.exe');
+  try { execFileSync(schtasks, ['/End', '/TN', label], { stdio: 'ignore', windowsHide: true }); } catch {}
+  try { execFileSync(schtasks, ['/Delete', '/TN', label, '/F'], { stdio: 'ignore', windowsHide: true }); } catch {}
+}
 const state = {
   schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
   accessKey: `tds_${stateModule.randomSecret()}`, deviceSecret: stateModule.randomSecret(), ownerToken: stateModule.randomSecret(),
@@ -100,6 +119,8 @@ const state = {
 };
 let installed = false;
 let client;
+let foreignWindowsTask;
+let foreignLinuxUnit;
 try {
   await stateModule.secureStateDirectory(home);
   await stateModule.atomicJson(join(home, 'state.json'), state);
@@ -108,11 +129,16 @@ try {
   installed = true;
   if (process.platform === 'linux') {
     const directory = platform.systemdUserDirectory();
-    const legacy = `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.runtime.service`;
+    const legacyDeviceId = randomUUID();
+    const legacy = `com.teamdevspace.${legacyDeviceId.replaceAll('-', '')}.runtime.service`;
     const legacyPath = join(directory, legacy);
+    const foreignDeviceId = randomUUID();
+    foreignLinuxUnit = `com.teamdevspace.${foreignDeviceId.replaceAll('-', '')}.runtime.service`;
+    const foreignPath = join(directory, foreignLinuxUnit);
+    const paths = { node: join(bundle, 'runtime/bin/node'), cloudflared: join(bundle, 'bin/cloudflared') };
     await mkdir(directory, { recursive: true });
-    await writeFile(legacyPath, platform.systemdUserUnit(state, 'runtime', home,
-      { node: join(bundle, 'runtime/bin/node'), cloudflared: join(bundle, 'bin/cloudflared') }, bundle), { mode: 0o600 });
+    await writeFile(legacyPath, platform.systemdUserUnit(state, 'runtime', home, paths, bundle), { mode: 0o600 });
+    await writeFile(foreignPath, platform.systemdUserUnit(state, 'runtime', join(home, 'foreign-state'), paths, bundle), { mode: 0o600 });
     execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'inherit' });
     execFileSync('systemctl', ['--user', 'start', legacy], { stdio: 'inherit' });
     await waitForPorts(true);
@@ -123,7 +149,29 @@ try {
     await platform.installServices(state, home);
     await waitForPorts(false);
     assert.equal(await access(legacyPath).then(() => true, () => false), false,
-      'Fixed Linux startup migration must retire the old device-specific unit');
+      'Fixed Linux startup migration must retire an unknown old device-specific unit owned by this state home');
+    assert.equal(await access(foreignPath).then(() => true, () => false), true,
+      'Linux lifecycle migration must not touch an isolated Team DevSpace state home');
+    execFileSync('systemctl', ['--user', 'disable', '--now', foreignLinuxUnit], { stdio: 'ignore' });
+    await rm(foreignPath, { force: true });
+    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' });
+    foreignLinuxUnit = undefined;
+  } else if (process.platform === 'win32') {
+    const legacyTask = `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.runtime`;
+    const foreignState = { ...state, ownerToken: stateModule.randomSecret() };
+    foreignWindowsTask = platform.serviceLabel(foreignState, 'runtime', 'win32');
+    const foreignHome = join(home, 'foreign-state');
+    await createWindowsFixtureTask(legacyTask, home, state);
+    await createWindowsFixtureTask(foreignWindowsTask, foreignHome, foreignState);
+    assert.equal(windowsTaskExists(legacyTask), true);
+    assert.equal(windowsTaskExists(foreignWindowsTask), true);
+    await platform.installServices(state, home);
+    assert.equal(windowsTaskExists(legacyTask), false,
+      'Windows lifecycle migration must retire stale tasks owned by the same state home');
+    assert.equal(windowsTaskExists(foreignWindowsTask), true,
+      'Windows lifecycle migration must not touch an isolated Team DevSpace state home');
+    removeWindowsFixtureTask(foreignWindowsTask);
+    foreignWindowsTask = undefined;
   } else {
     await platform.installServices(state, home);
   }
@@ -178,7 +226,7 @@ try {
   console.log(JSON.stringify({ passed: true, platform: process.platform, architecture: process.arch,
     actualNativeStartup: true, packagedRuntime: true, authenticatedMcp: true,
     stopRestartCleanup: true, ...(process.platform === 'linux' ? { legacyUnitMigration: true } : {}),
-    ...(process.platform === 'win32' ? { noConsoleSupervisor: true } : {}),
+    ...(process.platform === 'win32' ? { noConsoleSupervisor: true, scopedStaleTaskMigration: true } : {}),
     realCloudflare: false, realChatGPT: false }));
 } catch (error) {
   for (const component of ['runtime']) {
@@ -201,6 +249,12 @@ try {
   throw error;
 } finally {
   await client?.close().catch(() => {});
+  removeWindowsFixtureTask(foreignWindowsTask);
+  if (process.platform === 'linux' && foreignLinuxUnit) {
+    try { execFileSync('systemctl', ['--user', 'disable', '--now', foreignLinuxUnit], { stdio: 'ignore' }); } catch {}
+    await rm(join(platform.systemdUserDirectory(), foreignLinuxUnit), { force: true }).catch(() => {});
+    try { execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' }); } catch {}
+  }
   if (installed) await platform.serviceAction('remove', state, home).catch(() => {});
   await rm(home, { recursive: true, force: true });
 }

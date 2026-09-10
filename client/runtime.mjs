@@ -71,6 +71,12 @@ export async function runComponent(component, home = stateHome()) {
   if (process.platform !== 'win32' && process.getuid?.() === 0) throw new Error('Run Team DevSpace as the employee, not root');
   const state = await loadState(home);
   if (component !== 'runtime') throw new Error('Unknown runtime component');
+  // The persisted remote-access policy is a local fail-closed gate as well as a UI state.
+  // A stale startup task must never resurrect the bridge while the user intends access to stay paused.
+  if (state.remoteAccess === 'suspended') {
+    process.stdout.write(`${JSON.stringify({ event: 'paused', component, version: DEVSPACE_VERSION })}\n`);
+    return { close: async () => {} };
+  }
   const upstream = await startUpstream(state, home);
   let bridge;
   try { bridge = await startBridge(state, home); }

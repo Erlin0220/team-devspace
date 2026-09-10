@@ -5,12 +5,14 @@ import { parseArgs } from 'node:util';
 import { validateDistributionConfig } from './distribution.mjs';
 import { sha256File } from './build-utils.mjs';
 
-const { values } = parseArgs({ options: { root: { type: 'string' } } });
+const { values } = parseArgs({ options: { root: { type: 'string' }, target: { type: 'string' } } });
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const distribution = validateDistributionConfig(release);
 const root = resolve(values.root ?? join('release', 'offline', release.version));
+const targets = values.target ? [values.target] : distribution.targets;
+if (targets.some(target => !distribution.targets.includes(target))) throw new Error('Requested release target is not enabled');
 
-for (const target of distribution.targets) {
+for (const target of targets) {
   const directory = join(root, target);
   const manifestPath = join(directory, 'manifest.json');
   const manifestBytes = await readFile(manifestPath);

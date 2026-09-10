@@ -6,10 +6,10 @@ import { tmpdir, homedir } from 'node:os';
 import { join, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
-import { configureDevice, requestFromFile } from '../client/setup.mjs';
+import { configureDevice, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
 import { createAccessKey } from '../client/admin.mjs';
-import { launchAgentXml, systemdUserUnit, windowsTaskXml, serviceLabel } from '../client/platform.mjs';
-import { diagnosticReport, openLogs, rollbackResumeFailure, stopTeamDevSpace } from '../client/control.mjs';
+import { launchAgentXml, systemdUserUnit, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
+import { diagnosticReport, openLogs, rollbackResumeFailure, stopTeamDevSpace, suspendRemoteAccess } from '../client/control.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
 async function fixture(t) {
@@ -29,6 +29,12 @@ async function fixture(t) {
     if (flags.reject) { response.writeHead(503); response.end(JSON.stringify({ error: 'temporary_failure' })); return; }
     if (request.url === '/v1/device/status') {
       response.end(JSON.stringify({ state: flags.deviceState, bindingId })); return;
+    }
+    if (request.url === '/v1/enrollment/preflight') {
+      response.end(JSON.stringify({ available: true })); return;
+    }
+    if (request.url === '/v1/device/release') {
+      response.end(JSON.stringify({ released: true })); return;
     }
     if (request.url === '/v1/admin/keys') {
       response.writeHead(201); response.end(JSON.stringify({ id: data.id, label: data.label, state: 'issued' })); return;
@@ -79,24 +85,56 @@ test('installation retry/repair preserves identity, key, roots and upstream stat
   assert.equal((await loadState(f.home)).accessKey, accessKey);
 });
 
-test('reinstall reconciles only the legacy stopped-state mismatch confirmed active by the Gateway', async t => {
+test('pending Enrollment can replace a bad Access Key without losing the local identity or roots', async t => {
+  const f = await fixture(t);
+  const badKey = `tds_${randomSecret()}`;
+  const goodKey = `tds_${randomSecret()}`;
+  const input = { gateway: f.gateway, accessKey: badKey, roots: [f.project] };
+  f.flags.reject = true;
+  await assert.rejects(configureDevice(input, { home: f.home, startup: false }), /temporary_failure/);
+  const pending = await loadState(f.home);
+  assert.equal(pending.bindingId, undefined);
+  f.flags.reject = false;
+  const completed = await configureDevice({ ...input, accessKey: goodKey }, { home: f.home, startup: false });
+  const state = await loadState(f.home);
+  assert.equal(completed.bindingId, f.bindingId);
+  assert.equal(state.accessKey, goodKey);
+  assert.equal(state.deviceId, pending.deviceId);
+  assert.equal(state.deviceSecret, pending.deviceSecret);
+  assert.equal(state.ownerToken, pending.ownerToken);
+  assert.deepEqual(state.roots, pending.roots);
+});
+
+test('reinstall preserves an explicit suspended policy instead of reopening access from observed Gateway state', async t => {
   const f = await fixture(t);
   const input = { gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] };
   await configureDevice(input, { home: f.home, startup: false });
-  let state = await loadState(f.home);
+  const state = await loadState(f.home);
   await atomicJson(join(f.home, 'state.json'), { ...state, remoteAccess: 'suspended' });
   const requestsBefore = f.requests.length;
-  const recovered = await configureDevice({}, { home: f.home, startup: false });
-  assert.equal(recovered.remoteAccess, 'active');
-  assert.equal((await loadState(f.home)).remoteAccess, 'active');
-  assert.deepEqual(f.requests.slice(requestsBefore).map(request => request.path), ['/v1/device/status']);
-
-  state = await loadState(f.home);
-  await atomicJson(join(f.home, 'state.json'), { ...state, remoteAccess: 'suspended' });
-  f.flags.deviceState = 'suspended';
   const preserved = await configureDevice({}, { home: f.home, startup: false });
   assert.equal(preserved.remoteAccess, 'suspended');
   assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
+  assert.equal(f.requests.length, requestsBefore, 'Repair must not contact the Gateway just to override an explicit local pause');
+});
+
+test('Access Key replacement validates first, preserves local identity and roots, then re-enrolls without reinstalling', async t => {
+  const f = await fixture(t);
+  const originalKey = `tds_${randomSecret()}`;
+  const replacementKey = `tds_${randomSecret()}`;
+  await configureDevice({ gateway: f.gateway, accessKey: originalKey, roots: [f.project] }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  const result = await replaceAccessKey(replacementKey, f.home, { startup: false });
+  const after = await loadState(f.home);
+  assert.equal(result.replacedAccessKey, true);
+  assert.equal(after.accessKey, replacementKey);
+  assert.equal(after.deviceId, before.deviceId);
+  assert.equal(after.deviceSecret, before.deviceSecret);
+  assert.equal(after.ownerToken, before.ownerToken);
+  assert.deepEqual(after.roots, before.roots);
+  assert.equal(after.pendingAccessKey, undefined);
+  const replacementRequests = f.requests.slice(-3).map(request => request.path);
+  assert.deepEqual(replacementRequests, ['/v1/enrollment/preflight', '/v1/device/release', '/v1/enroll']);
 });
 
 test('administrator issuance can be retried without losing the original employee credential', async t => {
@@ -173,7 +211,7 @@ test('Allowed Roots are explicit existing directories; gateway origin cannot car
 });
 
 test('native startup configuration contains no credentials, no SYSTEM/root elevation, and supports XML-special paths', () => {
-  const state = { deviceId: randomUUID(), deviceSecret: randomSecret(), accessKey: `tds_${randomSecret()}`,
+  const state = { deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(), accessKey: `tds_${randomSecret()}`,
     ports: { devspace: 47670, bridge: 47770, metrics: 47870 } };
   const home = join(homedir(), 'Project & Notes');
   const root = join(homedir(), 'Team & DevSpace');
@@ -196,6 +234,12 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   const systemd = systemdUserUnit(state, 'runtime', home, { node: '/old/version/node', cloudflared: '/old/version/cloudflared' },
     join(root, 'versions', 'candidate'));
   assert.equal(serviceLabel(state, 'runtime', 'linux'), 'team-devspace-runtime');
+  assert.equal(serviceLabel(state, 'runtime', 'darwin'), 'com.teamdevspace.runtime');
+  assert.equal(serviceLabel(state, 'runtime', 'win32'), serviceLabel({ ...state, deviceId: randomUUID() }, 'runtime', 'win32'),
+    'Windows lifecycle ownership must survive a remote Device Binding identity change');
+  assert.notEqual(serviceLabel(state, 'runtime', 'win32'), serviceLabel({ ...state, ownerToken: randomSecret() }, 'runtime', 'win32'),
+    'Separate local owners must not share Task Scheduler entries');
+  assert.ok(!serviceLabel(state, 'runtime', 'win32').includes(state.ownerToken), 'Lifecycle labels must not expose the owner credential');
   assert.ok(systemd.includes('TEAM_DEVSPACE_ACTIVE_PATH=') && systemd.includes('active-path'));
   assert.ok(systemd.includes('ExecStart=:/bin/sh -c'));
   assert.ok(systemd.includes('exec \\"$active/runtime/bin/node\\"') || systemd.includes('exec "$active/runtime/bin/node"'));
@@ -204,6 +248,20 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(!systemd.includes('network-online.target') && !systemd.includes('append:'));
   assert.ok(!systemd.includes('/old/version/node') && !systemd.includes(state.deviceSecret) && !systemd.includes(state.accessKey));
   assert.throws(() => serviceLabel(state, 'arbitrary-process'));
+});
+
+test('Windows lifecycle discovery selects only Team DevSpace owner/device task identities', () => {
+  const row = (name, status = 'Ready') => `"\\${name}","N/A","${status}"`;
+  const output = [
+    row('com.teamdevspace.0123456789abcdef.runtime'),
+    row('com.teamdevspace.0123456789abcdef0123456789abcdef.tray', 'Running'),
+    row('com.teamdevspace.not-ours.runtime'),
+    row('Other.Task'),
+  ].join('\r\n');
+  assert.deepEqual(windowsTaskNames(output), [
+    'com.teamdevspace.0123456789abcdef.runtime',
+    'com.teamdevspace.0123456789abcdef0123456789abcdef.tray',
+  ]);
 });
 
 test('opening logs delegates to the desktop shell without waiting for its exit code',
@@ -237,6 +295,27 @@ test('diagnostics separate desired remote access from observed Gateway state and
   assert.equal(report.gatewayHealth, 'unreachable');
   assert.equal('bindingState' in report, false);
   assert.deepEqual(report.recentErrors.find(entry => entry.component === 'runtime')?.lines, ['real failure']);
+});
+
+test('suspend persists fail-closed intent even when local shutdown and Gateway confirmation both fail', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'team-devspace-suspend-intent-'));
+  const project = join(home, 'project');
+  await mkdir(project);
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await atomicJson(join(home, 'state.json'), {
+    schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
+    accessKey: `tds_${randomSecret()}`, keyId: randomUUID(), bindingId: randomUUID(),
+    gateway: 'http://127.0.0.1:1', roots: [project], remoteAccess: 'active',
+    releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
+    ports: { devspace: 65130, bridge: 65131, metrics: 65132 },
+  });
+  const calls = [];
+  await assert.rejects(suspendRemoteAccess(home, {
+    deactivateRemoteStartup: async () => { calls.push('local'); throw new Error('local stop failed'); },
+    control: async () => { calls.push('gateway'); const error = new Error('gateway_unreachable'); error.code = 'gateway_unreachable'; throw error; },
+  }), /暂停意图已保存/);
+  assert.equal((await loadState(home)).remoteAccess, 'suspended');
+  assert.deepEqual(calls, ['local', 'gateway']);
 });
 
 test('closing is local-only and keeps active startup policy for the next login',

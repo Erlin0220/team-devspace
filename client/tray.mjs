@@ -3,8 +3,35 @@ import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { copyDiagnosticReport, openLogs, restartTeamDevSpace, resumeRemoteAccess,
   stopTeamDevSpace, suspendRemoteAccess } from './control.mjs';
-import { deviceStatus, repairDevice } from './setup.mjs';
+import { deviceStatus, macSetupDialog, promptReplacementAccessKey, repairDevice, replaceAccessKey } from './setup.mjs';
 import { installRoot, stateHome } from './state.mjs';
+
+const ACTIVITY_TEXT = {
+  check: '正在检查连接…',
+  suspend: '正在暂停远程访问…',
+  resume: '正在恢复远程访问…',
+  restart: '正在重启连接服务…',
+  repair: '正在修复连接…',
+  'switch-key': '正在更新 Access Key…',
+  exit: '正在关闭 Team DevSpace…',
+};
+
+const ACTION_TEXT = {
+  check: '检查连接', suspend: '暂停远程访问', resume: '恢复远程访问',
+  restart: '重启连接服务', repair: '修复连接', 'switch-key': '设置 Access Key',
+  logs: '打开日志', diagnostics: '复制诊断信息', exit: '关闭 Team DevSpace',
+};
+
+const ERROR_TEXT = {
+  gateway_unreachable: '无法连接 Team Gateway，请检查网络后重试',
+  invalid_access_key: 'Access Key 无效，请检查后重试',
+  access_key_already_bound: 'Access Key 已绑定到其他设备',
+  device_disabled: '当前设备授权已失效，请更换 Access Key',
+  device_offline: '设备当前不可达',
+  device_not_ready: '本机连接服务尚未就绪',
+  connectivity_cleanup_pending: '旧连接正在清理，请稍后重试',
+  access_lifecycle_changed: '连接状态已经变化，请重新检查后再试',
+};
 
 export function trayExecutable(root = installRoot) {
   if (process.platform === 'win32') return join(root, 'platform', 'windows', 'team-devspace-tray.exe');
@@ -13,113 +40,143 @@ export function trayExecutable(root = installRoot) {
   throw new Error('The native tray is available on Windows and macOS; use the CLI on Linux');
 }
 
-export function trayState(status, { busy = false, notice } = {}) {
+function traySummary(status, gatewayState, desiredRemoteAccess) {
+  const enrolled = status.remoteAccess !== 'not-enrolled';
+  if (!enrolled) return { visual: 'stopped', text: 'Team DevSpace 未完成 Enrollment' };
+  if (gatewayState === 'disabled') return { visual: 'partial', text: 'Team DevSpace 授权已失效' };
+  const stopped = !status.devspace && !status.bridge && !status.tunnel;
+  const desiredSuspended = desiredRemoteAccess === 'suspended';
+  if (desiredSuspended) {
+    if (gatewayState === 'suspended') return stopped
+      ? { visual: 'suspended', text: 'Team DevSpace 远程访问已暂停' }
+      : { visual: 'partial', text: 'Team DevSpace 已暂停，本机清理未完成' };
+    if (!stopped) return { visual: 'partial', text: 'Team DevSpace 暂停未完成' };
+    if (gatewayState === 'active') return { visual: 'suspended', text: 'Team DevSpace 本机已暂停，服务端待确认' };
+    return { visual: 'suspended', text: 'Team DevSpace 本机已暂停，服务端状态未知' };
+  }
+  if (gatewayState === 'suspended') return { visual: 'suspended', text: 'Team DevSpace 服务端仍处于暂停状态' };
+  if (status.ready) return { visual: 'ready', text: 'Team DevSpace 正常' };
+  if (gatewayState === 'unreachable') return { visual: stopped ? 'stopped' : 'partial', text: 'Team DevSpace 无法连接服务' };
+  if (stopped) return { visual: 'stopped', text: 'Team DevSpace 本机服务已停止' };
+  if (!status.tunnel) return { visual: 'partial', text: 'Team DevSpace 连接通道异常' };
+  if (!status.devspace || !status.bridge) return { visual: 'partial', text: 'Team DevSpace 本机服务异常' };
+  return { visual: 'partial', text: 'Team DevSpace 部分异常' };
+}
+
+export function trayState(status, { busy = false, activity, alert, diagnosticsCopied = false } = {}) {
   if (!status) return {
     status: 'stopped',
-    summary: '○ Team DevSpace 未完成 Enrollment',
+    summary: 'Team DevSpace 未连接',
+    activity: activity || undefined,
+    alert: alert || undefined,
     remoteText: '暂停远程访问',
     remoteAction: 'suspend',
     remoteEnabled: false,
     checkEnabled: !busy,
+    switchKeyText: '完成设置…',
+    switchKeyEnabled: false,
     restartEnabled: false,
     repairEnabled: false,
+    logsEnabled: true,
+    diagnosticsEnabled: true,
+    diagnosticsText: diagnosticsCopied ? '诊断信息已复制' : '复制诊断信息',
     exitEnabled: !busy,
-    ...(notice ? { notice } : {}),
   };
-  const stopped = !status.devspace && !status.bridge && !status.tunnel;
   const gatewayState = status.gateway ?? status.remoteAccess;
   const desiredRemoteAccess = status.desiredRemoteAccess ?? status.remoteAccess;
-  const suspended = gatewayState === 'suspended';
   const desiredSuspended = desiredRemoteAccess === 'suspended';
-  const legacyResumeNeeded = desiredSuspended && gatewayState === 'active';
-  const suspensionUnconfirmed = desiredSuspended && !['active', 'suspended'].includes(gatewayState);
-  const visual = suspended ? 'suspended' : status.ready ? 'ready' : stopped ? 'stopped' : 'partial';
-  const summary = suspensionUnconfirmed
-    ? (stopped ? '○ Team DevSpace 本机已停止，网关状态未知' : '● Team DevSpace 暂停未完成')
-    : legacyResumeNeeded && stopped ? '○ Team DevSpace 已停止，可恢复连接'
-      : ({ ready: '● Team DevSpace 正常', partial: '● Team DevSpace 部分异常',
-        suspended: '● Team DevSpace 远程访问已暂停', stopped: '○ Team DevSpace 已停止' })[visual];
+  const gatewaySuspended = gatewayState === 'suspended';
+  const pausePending = desiredSuspended && !gatewaySuspended;
   const enrolled = status.remoteAccess !== 'not-enrolled';
   const controllable = enrolled && gatewayState !== 'disabled';
+  const summary = traySummary(status, gatewayState, desiredRemoteAccess);
   return {
-    status: visual,
-    summary,
-    remoteText: suspended || legacyResumeNeeded ? '恢复远程访问'
-      : suspensionUnconfirmed ? '重试暂停远程访问' : '暂停远程访问',
-    remoteAction: suspended || legacyResumeNeeded ? 'resume' : 'suspend',
+    status: summary.visual,
+    summary: summary.text,
+    activity: activity || undefined,
+    alert: alert || undefined,
+    remoteText: pausePending ? '重试暂停远程访问' : gatewaySuspended ? '恢复远程访问' : '暂停远程访问',
+    remoteAction: pausePending ? 'suspend' : gatewaySuspended ? 'resume' : 'suspend',
     remoteEnabled: !busy && controllable,
     checkEnabled: !busy,
-    restartEnabled: !busy && controllable && !suspended && desiredRemoteAccess !== 'suspended',
-    repairEnabled: !busy && controllable && !suspended && desiredRemoteAccess !== 'suspended',
+    switchKeyText: enrolled ? '更换 Access Key…' : '完成设置…',
+    switchKeyEnabled: !busy && (enrolled || gatewayState === 'not-enrolled'),
+    restartEnabled: !busy && controllable && !desiredSuspended && !gatewaySuspended,
+    repairEnabled: !busy && controllable && !desiredSuspended && !gatewaySuspended,
+    logsEnabled: true,
+    diagnosticsEnabled: true,
+    diagnosticsText: diagnosticsCopied ? '诊断信息已复制' : '复制诊断信息',
     exitEnabled: !busy,
-    ...(notice ? { notice } : {}),
   };
 }
 
-function actionNotice(action, status) {
-  if (action === 'check') return `检查完成：${trayState(status).summary.replace(/^[●○] /, '')}`;
-  if (action === 'suspend') return '远程访问已暂停';
-  if (action === 'resume') return '远程访问已恢复';
-  if (action === 'restart') return '连接服务已重新启动';
-  if (action === 'repair') return '修复操作已完成';
-  if (action === 'logs') return '日志目录已打开';
-  return '诊断信息已复制';
+function errorText(error) {
+  const code = error?.code ?? error?.message;
+  return (code && ERROR_TEXT[code]) || String(error?.message ?? error).slice(0, 220);
 }
 
-function errorNotice(error) {
-  return `操作失败：${String(error?.message ?? error).slice(0, 160)}`;
+function actionError(action, error) {
+  return `${ACTION_TEXT[action] ?? '操作'}失败：${errorText(error)}`;
 }
 
 export async function runTray(home = stateHome(), options = {}) {
   const helper = options.helper ?? trayExecutable(options.root);
-  const operations = options.operations ?? {
-    status: () => deviceStatus(home),
-    suspend: () => suspendRemoteAccess(home),
-    resume: () => resumeRemoteAccess(home),
-    restart: () => restartTeamDevSpace(home),
-    repair: () => repairDevice(home, { preserveTray: true }),
-    logs: () => openLogs(home),
-    diagnostics: () => copyDiagnosticReport(home),
-    exit: () => stopTeamDevSpace(home),
-  };
   const child = spawn(helper, options.helperArgs ?? [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   let helperClosed = false;
   let currentStatus = null;
   let mutationBusy = false;
+  let currentActivity;
   let generation = 0;
   let refreshPromise = null;
   let mutationPromise = Promise.resolve();
   let exiting = false;
   let interval;
+  let diagnosticsTimer;
 
   child.stdin.on('error', () => {});
   child.once('exit', () => { helperClosed = true; });
   const send = state => {
     if (!helperClosed && child.stdin.writable && !child.stdin.destroyed) child.stdin.write(`${JSON.stringify(state)}\n`);
   };
+  const present = extra => send(trayState(currentStatus, {
+    busy: mutationBusy, activity: currentActivity, ...extra,
+  }));
 
-  const refresh = async ({ notice = false } = {}) => {
-    if (mutationBusy || exiting) return currentStatus;
-    if (refreshPromise) {
-      await refreshPromise;
-      if (notice && currentStatus && !mutationBusy && !exiting) {
-        send(trayState(currentStatus, { notice: actionNotice('check', currentStatus) }));
+  const operations = options.operations ?? {
+    status: () => deviceStatus(home),
+    suspend: () => suspendRemoteAccess(home),
+    resume: () => resumeRemoteAccess(home),
+    restart: () => restartTeamDevSpace(home),
+    repair: () => repairDevice(home, { preserveTray: true }),
+    'switch-key': async () => {
+      if (process.platform === 'darwin' && currentStatus?.remoteAccess === 'not-enrolled') {
+        return macSetupDialog(home, { preserveTray: true });
       }
-      return currentStatus;
-    }
+      const accessKey = await promptReplacementAccessKey();
+      if (!accessKey) return { cancelled: true };
+      return replaceAccessKey(accessKey, home);
+    },
+    logs: () => openLogs(home),
+    diagnostics: () => copyDiagnosticReport(home),
+    exit: () => stopTeamDevSpace(home),
+  };
+
+  const refresh = async () => {
+    if (mutationBusy || exiting) return currentStatus;
+    if (refreshPromise) return refreshPromise;
     const startedAt = generation;
     refreshPromise = (async () => {
       try {
         const status = await operations.status();
         if (startedAt === generation && !mutationBusy && !exiting) {
           currentStatus = status;
-          send(trayState(status, notice ? { notice: actionNotice('check', status) } : {}));
+          present();
         }
         return status;
-      } catch (error) {
+      } catch {
         if (startedAt === generation && !mutationBusy && !exiting) {
           currentStatus = null;
-          send(trayState(null, notice ? { notice: errorNotice(error) } : {}));
+          present();
         }
         return null;
       } finally {
@@ -129,36 +186,60 @@ export async function runTray(home = stateHome(), options = {}) {
     return refreshPromise;
   };
 
+  const runCheck = () => {
+    if (mutationBusy || exiting) return;
+    mutationBusy = true;
+    currentActivity = ACTIVITY_TEXT.check;
+    generation++;
+    present();
+    mutationPromise = (async () => {
+      let alert;
+      try {
+        currentStatus = await (refreshPromise ?? operations.status());
+      } catch (error) {
+        currentStatus = null;
+        alert = actionError('check', error);
+      } finally {
+        mutationBusy = false;
+        currentActivity = undefined;
+        generation++;
+        present(alert ? { alert } : undefined);
+      }
+    })();
+  };
+
   const runMutation = action => {
     if (mutationBusy || exiting) return;
     mutationBusy = true;
+    currentActivity = ACTIVITY_TEXT[action] ?? '正在执行操作…';
     generation++;
-    send(trayState(currentStatus, { busy: true, notice: action === 'exit' ? '正在关闭 Team DevSpace…' : '正在执行操作…' }));
+    present();
     mutationPromise = (async () => {
+      let alert;
       try {
         const result = await operations[action]();
         if (action === 'exit') {
           exiting = true;
           if (interval) clearInterval(interval);
-          send(trayState(currentStatus, { busy: true, notice: '本地服务已停止，正在退出…' }));
+          currentActivity = '本地服务已停止，正在退出…';
+          present();
           child.stdin.end();
           return result;
         }
-        const status = await operations.status();
-        currentStatus = status;
-        send(trayState(status, { notice: actionNotice(action, status) }));
-        process.stdout.write(`[Team DevSpace tray] ${action}: ${actionNotice(action, status)}\n`);
+        currentStatus = await operations.status();
+        process.stdout.write(`[Team DevSpace tray] ${action}: complete\n`);
         return result;
       } catch (error) {
-        const message = errorNotice(error);
         try { currentStatus = await operations.status(); } catch {}
-        send(trayState(currentStatus, { notice: message }));
-        process.stderr.write(`[Team DevSpace tray] ${action}: ${message}\n`);
+        alert = actionError(action, error);
+        process.stderr.write(`[Team DevSpace tray] ${action}: ${alert}\n`);
         return null;
       } finally {
         if (!exiting) {
           mutationBusy = false;
+          currentActivity = undefined;
           generation++;
+          present(alert ? { alert } : undefined);
         }
       }
     })();
@@ -168,12 +249,16 @@ export async function runTray(home = stateHome(), options = {}) {
     if (exiting) return;
     try {
       await operations[action]();
-      const notice = actionNotice(action, currentStatus);
-      send(trayState(currentStatus, { busy: mutationBusy, notice }));
-      process.stdout.write(`[Team DevSpace tray] ${action}: ${notice}\n`);
+      if (action === 'diagnostics') {
+        clearTimeout(diagnosticsTimer);
+        present({ diagnosticsCopied: true });
+        diagnosticsTimer = setTimeout(() => present(), 1400);
+        diagnosticsTimer.unref?.();
+      }
+      process.stdout.write(`[Team DevSpace tray] ${action}: complete\n`);
     } catch (error) {
-      const message = errorNotice(error);
-      send(trayState(currentStatus, { busy: mutationBusy, notice: message }));
+      const message = actionError(action, error);
+      present({ alert: message });
       process.stderr.write(`[Team DevSpace tray] ${action}: ${message}\n`);
     }
   };
@@ -183,9 +268,9 @@ export async function runTray(home = stateHome(), options = {}) {
       const event = JSON.parse(line);
       if (event.event === 'ready') void refresh();
       else if (event.event === 'protocol-error') process.stderr.write('[Team DevSpace tray] native protocol error\n');
-      else if (event.event === 'menu' && event.action === 'check') void refresh({ notice: true });
+      else if (event.event === 'menu' && event.action === 'check') runCheck();
       else if (event.event === 'menu' && ['logs', 'diagnostics'].includes(event.action)) void runUtility(event.action);
-      else if (event.event === 'menu' && ['suspend', 'resume', 'restart', 'repair', 'exit'].includes(event.action)) runMutation(event.action);
+      else if (event.event === 'menu' && ['suspend', 'resume', 'restart', 'repair', 'switch-key', 'exit'].includes(event.action)) runMutation(event.action);
     } catch {}
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
@@ -197,6 +282,7 @@ export async function runTray(home = stateHome(), options = {}) {
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
   if (interval) clearInterval(interval);
+  if (diagnosticsTimer) clearTimeout(diagnosticsTimer);
   await mutationPromise;
   if (exit.signal || exit.code !== 0) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
 }

@@ -39,6 +39,48 @@ function Get-DeviceTaskNames {
   return @('runtime', 'tunnel', 'tray') | ForEach-Object { "com.teamdevspace.$compact.$_" }
 }
 
+function Get-OwnerTaskNames {
+  $stateFile = Join-Path $stateHome 'state.json'
+  if (-not (Test-Path -LiteralPath $stateFile)) { return @() }
+  try { $ownerToken = [string](Read-Json $stateFile).ownerToken } catch { return @() }
+  if ($ownerToken -notmatch '^[A-Za-z0-9_-]{43}$') { return @() }
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($ownerToken)
+    $owner = ([BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+  } finally { $algorithm.Dispose() }
+  return @('runtime', 'tunnel', 'tray') | ForEach-Object { "com.teamdevspace.$owner.$_" }
+}
+
+function Get-OwnedLifecycleTaskNames {
+  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $names = @()
+  $savedPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $lines = @(& $schtasks /Query /FO CSV /NH 2>$null)
+    foreach ($line in $lines) {
+      if ([string]$line -notmatch '^"([^"]+)"') { continue }
+      $name = $Matches[1].TrimStart('\\')
+      if ($name -notmatch '^com\.teamdevspace\.(?:[a-f0-9]{16}|[a-f0-9]{32})\.(?:runtime|tunnel|tray)$') { continue }
+      $taskXml = @(& $schtasks /Query /TN $name /XML 2>$null) -join "`n"
+      if ($LASTEXITCODE -ne 0 -or -not $taskXml) { continue }
+      try { $task = [xml]$taskXml } catch { continue }
+      $taskSid = [string]$task.Task.Triggers.LogonTrigger.UserId
+      $arguments = [string]$task.Task.Actions.Exec.Arguments
+      $expectedHome = '"TEAM_DEVSPACE_HOME=' + $stateHome + '"'
+      if ($taskSid -eq $sid -and $arguments.Contains($expectedHome)) { $names += $name }
+    }
+  } finally { $ErrorActionPreference = $savedPreference }
+  return @($names | Select-Object -Unique)
+}
+
+function Get-KnownTaskNames {
+  $names = @(Get-OwnerTaskNames) + @(Get-DeviceTaskNames) + @(Get-OwnedLifecycleTaskNames)
+  return @($names | Select-Object -Unique)
+}
+
 function Test-LegacyTaskNeedsElevation([string]$Name) {
   $taskFile = Join-Path (Join-Path $env:SystemRoot 'System32\Tasks') $Name
   if (-not (Test-Path -LiteralPath $taskFile)) { return $false }
@@ -51,7 +93,7 @@ function Test-LegacyTaskNeedsElevation([string]$Name) {
 
 function Remove-KnownStartupEntries {
   $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
-  foreach ($name in @(Get-DeviceTaskNames)) {
+  foreach ($name in @(Get-KnownTaskNames)) {
     # Windows PowerShell 5 can promote native stderr to a terminating error when
     # ErrorActionPreference=Stop. Missing tasks are expected here, so inspect the
     # native exit code explicitly instead of letting stderr bypass the fallback.
@@ -70,18 +112,46 @@ function Remove-KnownStartupEntries {
 }
 
 function Invoke-LegacyTaskCleanupIfNeeded {
-  $legacy = @(Get-DeviceTaskNames | Where-Object { Test-LegacyTaskNeedsElevation $_ })
+  $legacy = @(Get-KnownTaskNames | Where-Object { Test-LegacyTaskNeedsElevation $_ })
   if ($legacy.Count -eq 0) { return }
   Write-Step 'Migrating legacy administrator-owned startup tasks once...'
   $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
   $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
   $commands = foreach ($name in $legacy) {
-    # Names are derived only from a validated UUID and fixed component names.
+    # Names are derived only from validated Team DevSpace lifecycle labels.
     "`"$schtasks`" /End /TN `"$name`" >nul 2>&1 & `"$schtasks`" /Delete /TN `"$name`" /F >nul 2>&1 || exit /b 1"
   }
   $arguments = "/d /s /c `"$($commands -join ' & ') & exit /b 0`""
   $process = Start-Process -FilePath $cmd -Verb RunAs -ArgumentList $arguments -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw 'Legacy Team DevSpace startup tasks require one-time administrator cleanup.' }
+}
+
+function Get-InstallProcessIds {
+  $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\\') + '\\'
+  $names = @('tds-launcher.exe', 'node.exe', 'cloudflared.exe', 'team-devspace-tray.exe')
+  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $path = [string]$_.ExecutablePath
+    $path -and $names -contains ([string]$_.Name).ToLowerInvariant() -and
+      $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+  } | ForEach-Object { [int]$_.ProcessId })
+}
+
+function Stop-InstallProcesses {
+  $deadline = [DateTime]::UtcNow.AddSeconds(3)
+  do {
+    $ids = @(Get-InstallProcessIds)
+    if ($ids.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  foreach ($processId in $ids) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+  $deadline = [DateTime]::UtcNow.AddSeconds(3)
+  do {
+    $remaining = @(Get-InstallProcessIds)
+    if ($remaining.Count -eq 0) { return }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Team DevSpace processes are still running after startup removal: $($remaining -join ', ')"
 }
 
 function Get-Sha256([string]$Path) {
@@ -297,6 +367,7 @@ try {
       Write-Warning 'The installed client is unavailable; removing only this device startup entries directly.'
       Remove-KnownStartupEntries
     }
+    Stop-InstallProcesses
     Write-Step 'Removing local application payload...'
     foreach ($name in @('versions', 'staging', 'v', 's', 'cache', 'a')) {
       Remove-PayloadTree (Join-Path $InstallPath $name)

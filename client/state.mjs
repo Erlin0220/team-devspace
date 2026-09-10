@@ -43,11 +43,11 @@ export async function readJson(path, fallback) {
   }
 }
 
-export async function atomicJson(path, value, { createOnly = false } = {}) {
+async function atomicFile(path, content, { createOnly = false } = {}) {
   await privateDirectory(dirname(path));
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
     if (createOnly) {
       try { await link(temporary, path); }
       catch (error) { if (error.code === 'EEXIST') return false; throw error; }
@@ -63,6 +63,14 @@ export async function atomicJson(path, value, { createOnly = false } = {}) {
     if (process.platform !== 'win32') await chmod(path, 0o600);
     return true;
   } finally { await rm(temporary, { force: true }).catch(() => {}); }
+}
+
+export async function atomicJson(path, value, options) {
+  return atomicFile(path, `${JSON.stringify(value, null, 2)}\n`, options);
+}
+
+export async function atomicText(path, value, options) {
+  return atomicFile(path, String(value), options);
 }
 
 export function randomSecret() { return randomBytes(32).toString('base64url'); }

@@ -7,13 +7,81 @@ use serde::Deserialize;
 use std::io::{self, BufRead, Write};
 use std::thread;
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu},
     Icon, TrayIcon, TrayIconBuilder,
 };
 use winit::{
     application::ApplicationHandler,
     event_loop::{ActiveEventLoop, EventLoop},
 };
+
+const ICON_SIZE: usize = 32;
+const BASE_ICON: &[u8; ICON_SIZE * ICON_SIZE * 4] = include_bytes!("../assets/team-devspace-32.rgba");
+
+#[cfg(target_os = "windows")]
+struct InstanceGuard {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+impl InstanceGuard {
+    fn acquire() -> io::Result<Option<Self>> {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError},
+            System::Threading::CreateMutexW,
+        };
+
+        let name = "Local\\TeamDevSpace.Tray\0".encode_utf16().collect::<Vec<_>>();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+            unsafe { CloseHandle(handle) };
+            return Ok(None);
+        }
+        Ok(Some(Self { handle }))
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct InstanceGuard {
+    _file: std::fs::File,
+}
+
+#[cfg(target_os = "macos")]
+impl InstanceGuard {
+    fn acquire() -> io::Result<Option<Self>> {
+        use std::fs::OpenOptions;
+        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+
+        let path = std::env::temp_dir().join(format!(
+            "team-devspace-tray-{}.lock",
+            unsafe { libc::geteuid() }
+        ));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .mode(0o600)
+            .open(path)?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(Some(Self { _file: file }));
+        }
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)) {
+            return Ok(None);
+        }
+        Err(error)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,11 +92,18 @@ struct TrayState {
     remote_action: String,
     remote_enabled: bool,
     check_enabled: bool,
+    switch_key_text: String,
+    switch_key_enabled: bool,
     restart_enabled: bool,
     repair_enabled: bool,
+    logs_enabled: bool,
+    diagnostics_enabled: bool,
+    diagnostics_text: String,
     exit_enabled: bool,
     #[serde(default)]
-    notice: Option<String>,
+    activity: Option<String>,
+    #[serde(default)]
+    alert: Option<String>,
 }
 
 impl Default for TrayState {
@@ -40,10 +115,16 @@ impl Default for TrayState {
             remote_action: "suspend".into(),
             remote_enabled: false,
             check_enabled: true,
+            switch_key_text: "完成设置…".into(),
+            switch_key_enabled: false,
             restart_enabled: false,
             repair_enabled: false,
+            logs_enabled: true,
+            diagnostics_enabled: true,
+            diagnostics_text: "复制诊断信息".into(),
             exit_enabled: true,
-            notice: None,
+            activity: None,
+            alert: None,
         }
     }
 }
@@ -60,6 +141,8 @@ struct Application {
     status: MenuItem,
     remote: MenuItem,
     check: MenuItem,
+    switch_key: MenuItem,
+    troubleshooting: Submenu,
     restart: MenuItem,
     repair: MenuItem,
     logs: MenuItem,
@@ -88,30 +171,118 @@ fn bounded_text(value: &str, max_chars: usize) -> String {
 }
 
 fn menu_status_text(state: &TrayState) -> String {
-    bounded_text(state.notice.as_deref().unwrap_or(&state.summary), 32)
+    bounded_text(state.activity.as_deref().unwrap_or(&state.summary), 36)
 }
 
-fn icon(status: &str) -> Icon {
-    let rgb = match status {
+fn set_pixel(rgba: &mut [u8], x: i32, y: i32, rgb: [u8; 3]) {
+    if x < 0 || y < 0 || x >= ICON_SIZE as i32 || y >= ICON_SIZE as i32 {
+        return;
+    }
+    let offset = ((y as usize * ICON_SIZE) + x as usize) * 4;
+    rgba[offset..offset + 3].copy_from_slice(&rgb);
+    rgba[offset + 3] = 255;
+}
+
+fn draw_rect(rgba: &mut [u8], left: i32, top: i32, right: i32, bottom: i32, rgb: [u8; 3]) {
+    for y in top..=bottom {
+        for x in left..=right {
+            set_pixel(rgba, x, y, rgb);
+        }
+    }
+}
+
+fn draw_line(rgba: &mut [u8], mut x0: i32, mut y0: i32, x1: i32, y1: i32, rgb: [u8; 3]) {
+    let dx = (x1 - x0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let dy = -(y1 - y0).abs();
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        for oy in -1..=0 {
+            for ox in -1..=0 {
+                set_pixel(rgba, x0 + ox, y0 + oy, rgb);
+            }
+        }
+        if x0 == x1 && y0 == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x0 += sx; }
+        if e2 <= dx { err += dx; y0 += sy; }
+    }
+}
+
+fn draw_badge(rgba: &mut [u8], status: &str) {
+    let fill = match status {
         "ready" => [41, 163, 92],
         "partial" => [230, 166, 35],
         "suspended" => [211, 64, 83],
+        "busy" => [55, 125, 220],
         _ => [123, 132, 145],
     };
-    let size = 32usize;
-    let mut rgba = vec![0u8; size * size * 4];
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - 15.5;
-            let dy = y as f32 - 15.5;
-            if dx * dx + dy * dy <= 12.5 * 12.5 {
-                let offset = (y * size + x) * 4;
-                rgba[offset..offset + 3].copy_from_slice(&rgb);
-                rgba[offset + 3] = 255;
+    let center = (25.0f32, 25.0f32);
+    for y in 17..=31 {
+        for x in 17..=31 {
+            let dx = x as f32 - center.0;
+            let dy = y as f32 - center.1;
+            let distance = dx * dx + dy * dy;
+            if distance <= 56.25 {
+                set_pixel(rgba, x, y, [255, 255, 255]);
+            }
+            if distance <= 42.25 {
+                set_pixel(rgba, x, y, fill);
             }
         }
     }
-    Icon::from_rgba(rgba, size as u32, size as u32).expect("valid tray icon")
+    let white = [255, 255, 255];
+    match status {
+        "ready" => {
+            draw_line(rgba, 21, 25, 24, 28, white);
+            draw_line(rgba, 24, 28, 29, 21, white);
+        }
+        "partial" => {
+            draw_rect(rgba, 24, 20, 25, 25, white);
+            draw_rect(rgba, 24, 28, 25, 29, white);
+        }
+        "suspended" => {
+            draw_rect(rgba, 22, 21, 23, 28, white);
+            draw_rect(rgba, 27, 21, 28, 28, white);
+        }
+        "busy" => {
+            draw_rect(rgba, 21, 24, 22, 25, white);
+            draw_rect(rgba, 24, 24, 25, 25, white);
+            draw_rect(rgba, 27, 24, 28, 25, white);
+        }
+        _ => draw_rect(rgba, 21, 24, 29, 25, white),
+    }
+}
+
+fn icon(status: &str) -> Icon {
+    let mut rgba = BASE_ICON.to_vec();
+    draw_badge(&mut rgba, status);
+    Icon::from_rgba(rgba, ICON_SIZE as u32, ICON_SIZE as u32).expect("valid tray icon")
+}
+
+#[cfg(target_os = "windows")]
+fn show_error_alert(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND};
+    let title = "Team DevSpace\0".encode_utf16().collect::<Vec<_>>();
+    let text = format!("{message}\0").encode_utf16().collect::<Vec<_>>();
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn show_error_alert(message: &str) {
+    let _ = std::process::Command::new("/usr/bin/osascript")
+        .args([
+            "-e", "on run argv",
+            "-e", "display alert \"Team DevSpace\" message (item 1 of argv) as critical",
+            "-e", "end run",
+            "--", message,
+        ])
+        .status();
 }
 
 impl Application {
@@ -121,6 +292,8 @@ impl Application {
             status: MenuItem::new("正在检查 Team DevSpace…", false, None),
             remote: MenuItem::new("暂停远程访问", false, None),
             check: MenuItem::new("检查连接", true, None),
+            switch_key: MenuItem::new("更换 Access Key…", false, None),
+            troubleshooting: Submenu::new("故障排查", true),
             restart: MenuItem::new("重启连接服务", false, None),
             repair: MenuItem::new("修复连接", false, None),
             logs: MenuItem::new("打开日志", true, None),
@@ -131,19 +304,28 @@ impl Application {
     }
 
     fn build_tray(&self) -> TrayIcon {
-        let menu = Menu::new();
-        menu.append_items(&[
-            &self.status,
-            &PredefinedMenuItem::separator(),
-            &self.remote,
-            &PredefinedMenuItem::separator(),
-            &self.check,
+        let troubleshooting_separator = PredefinedMenuItem::separator();
+        self.troubleshooting.append_items(&[
             &self.restart,
             &self.repair,
-            &PredefinedMenuItem::separator(),
+            &troubleshooting_separator,
             &self.logs,
             &self.diagnostics,
-            &PredefinedMenuItem::separator(),
+        ]).expect("create troubleshooting submenu");
+
+        let menu = Menu::new();
+        let first_separator = PredefinedMenuItem::separator();
+        let second_separator = PredefinedMenuItem::separator();
+        let third_separator = PredefinedMenuItem::separator();
+        menu.append_items(&[
+            &self.status,
+            &first_separator,
+            &self.remote,
+            &self.check,
+            &self.switch_key,
+            &second_separator,
+            &self.troubleshooting,
+            &third_separator,
             &self.exit,
         ]).expect("create tray menu");
         TrayIconBuilder::new()
@@ -154,25 +336,36 @@ impl Application {
             .expect("create tray icon")
     }
 
-    fn update(&mut self, state: TrayState) {
+    fn update(&mut self, mut state: TrayState) {
         let status_text = menu_status_text(&state);
         self.status.set_text(status_text.clone());
         self.remote.set_text(&state.remote_text);
         self.remote.set_enabled(state.remote_enabled);
         self.check.set_enabled(state.check_enabled);
+        self.switch_key.set_text(&state.switch_key_text);
+        self.switch_key.set_enabled(state.switch_key_enabled);
         self.restart.set_enabled(state.restart_enabled);
         self.repair.set_enabled(state.repair_enabled);
+        self.logs.set_enabled(state.logs_enabled);
+        self.diagnostics.set_enabled(state.diagnostics_enabled);
+        self.diagnostics.set_text(&state.diagnostics_text);
         self.exit.set_enabled(state.exit_enabled);
         if let Some(tray) = &self.tray {
             let _ = tray.set_tooltip(Some(&status_text));
-            let _ = tray.set_icon(Some(icon(&state.status)));
+            let icon_state = if state.activity.is_some() { "busy" } else { &state.status };
+            let _ = tray.set_icon(Some(icon(icon_state)));
         }
+        let alert = state.alert.take();
         self.state = state;
+        if let Some(message) = alert {
+            show_error_alert(&bounded_text(&message, 220));
+        }
     }
 
     fn action(&self, id: &MenuId) -> Option<String> {
         if id == self.remote.id() { Some(self.state.remote_action.clone())
         } else if id == self.check.id() { Some("check".into())
+        } else if id == self.switch_key.id() { Some("switch-key".into())
         } else if id == self.restart.id() { Some("restart".into())
         } else if id == self.repair.id() { Some("repair".into())
         } else if id == self.logs.id() { Some("logs".into())
@@ -208,6 +401,17 @@ impl ApplicationHandler<UserEvent> for Application {
 }
 
 fn main() {
+    let _instance = match InstanceGuard::acquire() {
+        Ok(Some(instance)) => instance,
+        Ok(None) => {
+            emit("duplicate", None);
+            return;
+        }
+        Err(error) => {
+            eprintln!("Team DevSpace tray single-instance guard failed: {error}");
+            std::process::exit(1);
+        }
+    };
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("create event loop");
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -232,13 +436,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn menu_status_text_is_bounded_even_when_an_operation_error_is_long() {
+    fn operation_activity_is_bounded_without_replacing_persistent_summary() {
         let state = TrayState {
-            notice: Some("操作失败：".to_owned() + &"很长的错误详情".repeat(20)),
+            summary: "Team DevSpace 正常".into(),
+            activity: Some("正在执行一个非常非常非常非常非常非常非常非常非常长的操作…".into()),
             ..TrayState::default()
         };
         let text = menu_status_text(&state);
-        assert!(text.chars().count() <= 32);
+        assert!(text.chars().count() <= 36);
         assert!(text.ends_with('…'));
+        assert_eq!(state.summary, "Team DevSpace 正常");
+    }
+
+    #[test]
+    fn branded_status_icon_keeps_valid_rgba_dimensions() {
+        for status in ["ready", "partial", "suspended", "busy", "stopped"] {
+            let _ = icon(status);
+        }
     }
 }

@@ -33,13 +33,25 @@ async function saveRemoteAccess(state, home, remoteAccess) {
 const deactivateRemoteStartup = (state, home) =>
   serviceAction(process.platform === 'linux' ? 'disable' : 'remove', state, home, COMPONENTS);
 
-export async function suspendRemoteAccess(home = stateHome()) {
+export async function suspendRemoteAccess(home = stateHome(), dependencies = {}) {
+  const deactivate = dependencies.deactivateRemoteStartup ?? deactivateRemoteStartup;
+  const sendControl = dependencies.control ?? control;
   let state = await loadState(home);
-  await control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
+  // Persist the user's safety intent first. Even if the network disappears mid-operation,
+  // a later runtime start must still observe that remote access is supposed to stay closed.
   state = await saveRemoteAccess(state, home, 'suspended');
-  try { await deactivateRemoteStartup(state, home); }
-  catch (error) {
-    throw new Error(`Remote access is suspended at the Gateway, but local services or login startup were not fully disabled: ${error.message}`);
+  const [local, gateway] = await Promise.allSettled([
+    deactivate(state, home),
+    sendControl(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
+  ]);
+  if (local.status === 'rejected' && gateway.status === 'rejected') {
+    throw new Error(`暂停意图已保存，但本机服务停止和 Gateway 暂停都未能确认：${gateway.reason?.message ?? gateway.reason}`);
+  }
+  if (local.status === 'rejected') {
+    throw new Error(`Gateway 已暂停远程访问，但本机服务尚未完全停止：${local.reason?.message ?? local.reason}`);
+  }
+  if (gateway.status === 'rejected') {
+    throw new Error(`本机已暂停，Gateway 状态暂未确认：${gateway.reason?.message ?? gateway.reason}`);
   }
   return deviceStatus(home);
 }

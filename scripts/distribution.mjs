@@ -18,6 +18,10 @@ export function validateDistributionConfig(release) {
       distribution.targets.some(target => !TARGET.test(target)) || new Set(distribution.targets).size !== distribution.targets.length) {
     throw new Error('release.config.json distribution.targets must contain unique supported OS/architecture targets');
   }
+  if (distribution.targets.some(target => target.startsWith('darwin-')) &&
+      !/^\d+\.\d+$/.test(distribution.macosMinimumVersion ?? '')) {
+    throw new Error('release.config.json distribution.macosMinimumVersion must be an explicit macOS major.minor baseline');
+  }
   if (!VERSION.test(release.version ?? '')) throw new Error('Release version must be explicit semver, never latest');
   return distribution;
 }

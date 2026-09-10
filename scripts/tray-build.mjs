@@ -2,6 +2,7 @@ import { access, cp, mkdir } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { downloadPinned, run } from './build-utils.mjs';
 import { peDetails, WINDOWS_GUI_SUBSYSTEM, WINDOWS_X64_MACHINE, zigCompiler } from './windows-launcher.mjs';
+import release from '../release.config.json' with { type: 'json' };
 
 const RUSTUP = {
   url: 'https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-pc-windows-msvc/rustup-init.exe',
@@ -43,7 +44,8 @@ export async function buildTray(destination) {
   if (!['win32', 'darwin'].includes(process.platform)) return null;
   const { cargo, env } = await cargoCommand();
   const targetDirectory = resolve(`build/tray-target-${process.platform}-${process.arch}`);
-  const buildEnv = { ...env, CARGO_TARGET_DIR: targetDirectory };
+  const buildEnv = { ...env, CARGO_TARGET_DIR: targetDirectory,
+    ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion } : {}) };
   const gnuLinker = buildEnv.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER ??
     process.env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER;
   if (process.platform === 'win32' && gnuLinker) {

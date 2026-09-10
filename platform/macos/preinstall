@@ -1,9 +1,37 @@
 #!/bin/sh
 set -eu
+LOG=/var/log/team-devspace-install.log
+EXPECTED_ARCH='__TEAM_DEVSPACE_MACOS_ARCH__'
+MINIMUM_MACOS_VERSION='__TEAM_DEVSPACE_MACOS_MINIMUM_VERSION__'
+: > "$LOG" 2>/dev/null || true
+/bin/chmod 644 "$LOG" 2>/dev/null || true
+log() { /usr/bin/printf '%s [preinstall] %s\n' "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >> "$LOG" 2>/dev/null || true; }
+trap 'code=$?; if [ "$code" -ne 0 ]; then log "FAILED exit=$code"; fi' EXIT
+log 'start'
 # Installer may run as root; the DevSpace runtime must not.
-if [ "${3:-/}" != "/" ]; then exit 0; fi
+if [ "${3:-/}" != "/" ]; then log 'skip non-root target'; exit 0; fi
+ARCH=$(/usr/bin/uname -m 2>/dev/null || true)
+if [ "$ARCH" != "$EXPECTED_ARCH" ]; then
+  log "ERROR code=UNSUPPORTED_ARCH actual=$ARCH required=$EXPECTED_ARCH"
+  echo "Team DevSpace requires Apple Silicon ($EXPECTED_ARCH). This Mac reports $ARCH. See $LOG." >&2
+  exit 1
+fi
+MACOS_VERSION=$(/usr/bin/sw_vers -productVersion 2>/dev/null || true)
+if ! /usr/bin/awk -v actual="$MACOS_VERSION" -v minimum="$MINIMUM_MACOS_VERSION" '
+  function value(v, a, n, i) {
+    n=split(v,a,"."); if (n < 2 || n > 3) return -1;
+    for (i=1; i<=n; i++) if (a[i] !~ /^[0-9]+$/) return -1;
+    return (a[1]+0)*1000000 + (a[2]+0)*1000 + (n > 2 ? a[3]+0 : 0);
+  }
+  BEGIN { a=value(actual); m=value(minimum); exit ! (a >= m && m >= 0) }
+'; then
+  log "ERROR code=UNSUPPORTED_MACOS actual=$MACOS_VERSION required=$MINIMUM_MACOS_VERSION"
+  echo "Team DevSpace requires macOS $MINIMUM_MACOS_VERSION or newer. This Mac reports $MACOS_VERSION. See $LOG." >&2
+  exit 1
+fi
 if [ -e /usr/local/bin/team-devspace ] && ! /usr/bin/grep -q 'Team DevSpace managed CLI entrypoint' /usr/local/bin/team-devspace; then
-  echo 'An unrelated /usr/local/bin/team-devspace exists. It will not be overwritten.' >&2
+  log 'ERROR code=CLI_CONFLICT path=/usr/local/bin/team-devspace'
+  echo 'An unrelated /usr/local/bin/team-devspace exists. It will not be overwritten. See /var/log/team-devspace-install.log.' >&2
   exit 1
 fi
 USER_NAME=$(/usr/bin/stat -f %Su /dev/console)
@@ -24,3 +52,4 @@ if [ ! -f "$ACTIVE" ] && [ -x "$LEGACY_APP/runtime/bin/node" ]; then
   /usr/bin/printf '%s\n' "$APP" > "$ACTIVE"
   /usr/sbin/chown "$USER_NAME" "$ACTIVE"
 fi
+log 'complete'

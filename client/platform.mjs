@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { access, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { join, delimiter, resolve } from 'node:path';
 import { installRoot, privateDirectory, stateHome } from './state.mjs';
 
@@ -30,10 +31,74 @@ export function componentArguments(component, home, state, root = installRoot) {
   return [join(root, 'client', 'cli.mjs'), 'run', component, '--home', home];
 }
 
+function localOwnerId(state) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(state?.ownerToken ?? '')) throw new Error('Invalid local lifecycle owner');
+  return createHash('sha256').update(state.ownerToken).digest('hex').slice(0, 16);
+}
+
 export function serviceLabel(state, component, platform = process.platform) {
   if (!STARTUP_COMPONENTS.includes(component)) throw new Error('Unknown component');
   if (platform === 'linux') return `team-devspace-${component}`;
+  if (platform === 'darwin') return `com.teamdevspace.${component}`;
+  if (platform === 'win32') return `com.teamdevspace.${localOwnerId(state)}.${component}`;
+  throw new Error('Unsupported runtime platform');
+}
+
+function legacyServiceLabel(state, component) {
   return `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.${component}`;
+}
+
+export function windowsTaskNames(output) {
+  return String(output).split(/\r?\n/).map(line => /^"([^"]+)"/.exec(line)?.[1]?.replace(/^\\/, ''))
+    .filter(name => /^com\.teamdevspace\.(?:[a-f0-9]{16}|[a-f0-9]{32})\.(?:runtime|tunnel|tray)$/i.test(name ?? ''));
+}
+
+async function windowsOwnedLifecycleLabels(sid, home, components = STARTUP_COMPONENTS) {
+  const listing = await native('schtasks.exe', ['/Query', '/FO', 'CSV', '/NH'], true);
+  if (!listing) return [];
+  const labels = [];
+  const expectedHome = `"TEAM_DEVSPACE_HOME=${home}"`.toLowerCase();
+  for (const label of windowsTaskNames(listing.stdout)) {
+    if (!components.some(component => label.endsWith(`.${component}`))) continue;
+    const task = await native('schtasks.exe', ['/Query', '/TN', label, '/XML'], true);
+    if (task && new RegExp(`<UserId>\\s*${sid.replaceAll('-', '\\-')}\\s*</UserId>`, 'i').test(task.stdout) &&
+        task.stdout.toLowerCase().includes(expectedHome)) labels.push(label);
+  }
+  return labels;
+}
+
+async function macOwnedLegacyLabels(home, components = STARTUP_COMPONENTS) {
+  const directory = join(homedir(), 'Library', 'LaunchAgents');
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const expectedHome = `<key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string>`;
+  const labels = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const match = /^((?:com\.teamdevspace\.)[a-f0-9]{32}\.(runtime|tunnel|tray))\.plist$/i.exec(entry.name);
+    if (!match || !components.includes(match[2])) continue;
+    const text = await readFile(join(directory, entry.name), 'utf8').catch(() => '');
+    if (text.includes(expectedHome)) labels.push(match[1]);
+  }
+  return labels;
+}
+
+async function linuxOwnedLegacyUnits(home, components = COMPONENTS) {
+  const directory = systemdUserDirectory();
+  let entries;
+  try { entries = await readdir(directory, { withFileTypes: true }); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const expectedHome = `Environment=${systemdQuoted(`TEAM_DEVSPACE_HOME=${home}`)}`;
+  const units = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const match = /^((?:com\.teamdevspace\.)[a-f0-9]{32}\.(runtime|tunnel))\.service$/i.exec(entry.name);
+    if (!match || !components.includes(match[2])) continue;
+    const text = await readFile(join(directory, entry.name), 'utf8').catch(() => '');
+    if (text.includes(expectedHome)) units.push(entry.name);
+  }
+  return units;
 }
 
 export function launchAgentXml(state, component, home, paths, root = installRoot) {
@@ -94,10 +159,6 @@ export function systemdUserDirectory() {
   return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'systemd', 'user');
 }
 
-function legacyLinuxServiceLabel(state, component) {
-  return `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.${component}`;
-}
-
 async function native(command, args, allowMissing = false) {
   const executable = process.platform === 'win32'
     ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', command)
@@ -119,7 +180,8 @@ async function windowsSid() {
 }
 
 export async function installServices(state, home = stateHome(), root = installRoot, scope = STARTUP_COMPONENTS) {
-  if (!state.bindingId) throw new Error('Enrollment is required before installing startup entries');
+  const pendingMacTrayOnly = process.platform === 'darwin' && scope.length === 1 && scope[0] === 'tray';
+  if (!state.bindingId && !pendingMacTrayOnly) throw new Error('Enrollment is required before installing startup entries');
   if (scope.some(component => !STARTUP_COMPONENTS.includes(component))) throw new Error('Unknown startup component');
   const desired = enabledStartupComponents(state);
   const components = scope.filter(component => desired.includes(component));
@@ -134,6 +196,12 @@ export async function installServices(state, home = stateHome(), root = installR
     if (components.length) await access(join(root, 'platform', 'windows', 'tds-launcher.exe'));
     const sid = await windowsSid();
     if (components.includes('tray')) await access(join(root, 'platform', 'windows', 'team-devspace-tray.exe'));
+    const currentLabels = new Set(scope.map(component => serviceLabel(state, component, 'win32')));
+    for (const stale of await windowsOwnedLifecycleLabels(sid, home, scope)) {
+      if (currentLabels.has(stale)) continue;
+      await native('schtasks.exe', ['/End', '/TN', stale]);
+      await native('schtasks.exe', ['/Delete', '/TN', stale, '/F']);
+    }
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const task = join(home, 'startup', `${component}.xml`);
@@ -146,6 +214,15 @@ export async function installServices(state, home = stateHome(), root = installR
     await mkdir(directory, { recursive: true });
     if (components.some(component => component !== 'tunnel')) await access(join(root, 'runtime', 'bin', 'node'));
     if (components.includes('tray')) await access(join(root, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
+    const domain = `gui/${process.getuid()}`;
+    const legacyLabels = new Set([
+      ...scope.map(component => legacyServiceLabel(state, component)),
+      ...await macOwnedLegacyLabels(home, scope),
+    ]);
+    for (const legacy of legacyLabels) {
+      await native('launchctl', ['bootout', `${domain}/${legacy}`], true);
+      await rm(join(directory, `${legacy}.plist`), { force: true });
+    }
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const label = serviceLabel(state, component);
@@ -159,10 +236,15 @@ export async function installServices(state, home = stateHome(), root = installR
     await mkdir(directory, { recursive: true });
     if (scope.includes('runtime')) await access(join(root, 'runtime', 'bin', 'node'));
     if (scope.includes('tunnel')) await access(paths.cloudflared);
-    for (const component of scope) {
-      const legacy = `${legacyLinuxServiceLabel(state, component)}.service`;
+    const legacyUnits = new Set([
+      ...scope.map(component => `${legacyServiceLabel(state, component)}.service`),
+      ...await linuxOwnedLegacyUnits(home, scope),
+    ]);
+    for (const legacy of legacyUnits) {
       await native('systemctl', ['--user', 'disable', '--now', legacy], true);
       await rm(join(directory, legacy), { force: true });
+    }
+    for (const component of scope) {
       const unit = `${serviceLabel(state, component)}.service`;
       await writeFile(join(directory, unit), systemdUserUnit(state, component, home, paths, root), { mode: 0o600 });
     }
@@ -202,44 +284,63 @@ export async function serviceAction(action, state, home = stateHome(), component
     return serviceAction('start', state, home, components);
   }
   const ordered = ['stop', 'disable', 'remove'].includes(action) ? [...components].reverse() : components;
+  const windowsOwned = process.platform === 'win32' && action !== 'start'
+    ? await windowsOwnedLifecycleLabels(await windowsSid(), home, components) : [];
+  const macOwned = process.platform === 'darwin' && action !== 'start'
+    ? await macOwnedLegacyLabels(home, components) : [];
+  const linuxOwned = process.platform === 'linux' && action !== 'start'
+    ? await linuxOwnedLegacyUnits(home, components) : [];
   for (const component of ordered) {
     const label = serviceLabel(state, component);
     if (process.platform === 'win32') {
       if (action === 'start') await native('schtasks.exe', ['/Run', '/TN', label]);
       else {
-        const existing = await native('schtasks.exe', ['/Query', '/TN', label, '/XML'], true);
-        if (existing) {
-          await native('schtasks.exe', ['/End', '/TN', label]);
-          if (action === 'remove') await native('schtasks.exe', ['/Delete', '/TN', label, '/F']);
+        const labels = [...new Set([label, legacyServiceLabel(state, component),
+          ...windowsOwned.filter(owned => owned.endsWith(`.${component}`))])];
+        for (const ownedLabel of labels) {
+          const existing = await native('schtasks.exe', ['/Query', '/TN', ownedLabel, '/XML'], true);
+          if (existing) {
+            await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
+            if (action === 'remove') await native('schtasks.exe', ['/Delete', '/TN', ownedLabel, '/F']);
+          }
         }
       }
     } else if (process.platform === 'darwin') {
       const domain = `gui/${process.getuid()}`;
-      const plist = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+      const directory = join(homedir(), 'Library', 'LaunchAgents');
+      const plist = join(directory, `${label}.plist`);
       if (action === 'start') {
         const existing = await native('launchctl', ['print', `${domain}/${label}`], true);
         if (!existing) await native('launchctl', ['bootstrap', domain, plist]);
         await native('launchctl', ['kickstart', `${domain}/${label}`]);
       } else {
-        await native('launchctl', ['bootout', `${domain}/${label}`], true);
-        if (action === 'remove') await rm(plist, { force: true });
+        const labels = [...new Set([label, legacyServiceLabel(state, component),
+          ...macOwned.filter(owned => owned.endsWith(`.${component}`))])];
+        for (const ownedLabel of labels) {
+          await native('launchctl', ['bootout', `${domain}/${ownedLabel}`], true);
+          if (action === 'remove') await rm(join(directory, `${ownedLabel}.plist`), { force: true });
+        }
       }
     } else if (process.platform === 'linux') {
       const unit = `${label}.service`;
-      const unitFile = join(systemdUserDirectory(), unit);
-      const legacyUnit = `${legacyLinuxServiceLabel(state, component)}.service`;
+      const directory = systemdUserDirectory();
+      const unitFile = join(directory, unit);
+      const ownedUnits = [...new Set([`${legacyServiceLabel(state, component)}.service`,
+        ...linuxOwned.filter(owned => owned.endsWith(`.${component}.service`))])];
       if (action === 'start') await native('systemctl', ['--user', 'start', unit]);
       else if (action === 'disable') {
         await native('systemctl', ['--user', 'disable', '--now', unit], true);
-        await native('systemctl', ['--user', 'disable', '--now', legacyUnit], true);
+        for (const owned of ownedUnits) await native('systemctl', ['--user', 'disable', '--now', owned], true);
       } else if (action === 'remove') {
         await native('systemctl', ['--user', 'disable', '--now', unit], true);
-        await native('systemctl', ['--user', 'disable', '--now', legacyUnit], true);
+        for (const owned of ownedUnits) {
+          await native('systemctl', ['--user', 'disable', '--now', owned], true);
+          await rm(join(directory, owned), { force: true });
+        }
         await rm(unitFile, { force: true });
-        await rm(join(systemdUserDirectory(), legacyUnit), { force: true });
       } else {
         await native('systemctl', ['--user', 'stop', unit], true);
-        await native('systemctl', ['--user', 'stop', legacyUnit], true);
+        for (const owned of ownedUnits) await native('systemctl', ['--user', 'stop', owned], true);
       }
     } else throw new Error('Unsupported runtime platform');
   }
