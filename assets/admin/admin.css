@@ -38,7 +38,7 @@ body > main {
 }
 
 table {
-  min-width: 760px;
+  min-width: 720px;
   margin: 0;
 }
 
@@ -69,6 +69,18 @@ tbody tr:last-child td {
   font-size: .875rem;
 }
 
+.danger-link {
+  border-color: transparent;
+  background: transparent;
+  color: #b4233a;
+}
+
+.danger-link:is(:hover, :focus) {
+  border-color: transparent;
+  background: color-mix(in srgb, #b4233a 8%, transparent);
+  color: #8f1c30;
+}
+
 .state {
   display: inline-flex;
   align-items: center;
@@ -83,17 +95,43 @@ tbody tr:last-child td {
 }
 
 .state-active { color: #18864b; }
+.state-revoked { color: #b4233a; }
 .state-suspended,
-.state-revoked,
-.state-resetting { color: #b4233a; }
+.state-resetting,
 .state-issued,
 .state-provisioning,
-.cleanup-pending { color: #9a6700; }
+.state-cleanup { color: #9a6700; }
+
+.muted {
+  color: var(--pico-muted-color);
+}
 
 .empty-row td {
   padding-block: 2.5rem;
   text-align: center;
   color: var(--pico-muted-color);
+}
+
+.revoked-section {
+  margin: 1rem 0 0;
+  overflow: hidden;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: calc(var(--pico-border-radius) * 1.2);
+  background: var(--pico-card-background-color);
+}
+
+.revoked-section > summary {
+  margin: 0;
+  padding: .8rem 1rem;
+  font-weight: 600;
+}
+
+.revoked-section[open] > summary {
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.revoked-section .table-wrap {
+  margin: 0;
 }
 
 .notice {
@@ -185,6 +223,24 @@ dialog > article {
 .dialog-actions button {
   width: auto;
   margin: 0;
+}
+
+button.danger {
+  border-color: #b4233a;
+  background: #b4233a;
+  color: #fff;
+}
+
+button.danger:is(:hover, :focus) {
+  border-color: #8f1c30;
+  background: #8f1c30;
+  color: #fff;
+}
+
+#action-description {
+  margin: 0;
+  color: var(--pico-color);
+  line-height: 1.65;
 }
 
 #credential-panel h3 {

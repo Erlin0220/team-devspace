@@ -91,13 +91,29 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
   assert.ok(!html.includes('secret-hash') && !/ADMIN_TOKEN|MASTER_KEY|device_secret/i.test(html));
   assert.match(response.headers.get('Content-Security-Policy'), /default-src 'none'/);
+  assert.match(response.headers.get('Content-Security-Policy'), /img-src 'self' data:/);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(escapeHtml(`<&"' `), '&lt;&amp;&quot;&#39; ');
   const emptyAdmin = renderAdmin([]);
   assert.ok(emptyAdmin.includes('暂无访问密钥'));
-  assert.ok(emptyAdmin.includes('<dialog id="create-dialog">'));
+  assert.ok(emptyAdmin.includes('<dialog id="create-dialog"'));
+  assert.ok(emptyAdmin.includes('<dialog id="action-dialog"'));
   assert.ok(emptyAdmin.includes('id="copy-key"'));
   assert.ok(emptyAdmin.includes('placeholder="例如：张三-Windows"'));
+
+  const lifecycleAdmin = renderAdmin([
+    { id, label: 'Active', state: 'active', deviceId: 'device-active', bindingId, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '33333333-3333-4333-8333-333333333333', label: 'Paused', state: 'suspended', deviceId: 'device-paused', bindingId, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '44444444-4444-4444-8444-444444444444', label: 'Waiting', state: 'issued', deviceId: null, bindingId: null, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '55555555-5555-4555-8555-555555555555', label: 'Revoked pending', state: 'revoked', deviceId: 'device-old', bindingId, updatedAt: row.updated_at, cleanupPending: true },
+    { id: '66666666-6666-4666-8666-666666666666', label: 'Revoked archived', state: 'revoked', deviceId: 'device-old', bindingId, updatedAt: row.updated_at, cleanupPending: false },
+  ]);
+  assert.ok(lifecycleAdmin.includes('设备端已暂停'));
+  assert.ok(lifecycleAdmin.includes('待绑定'));
+  assert.ok(lifecycleAdmin.includes('已吊销 · 待清理'));
+  assert.ok(lifecycleAdmin.includes('<summary>已吊销（1）</summary>'));
+  assert.ok(lifecycleAdmin.includes('<th>设备 ID</th>'));
+  assert.ok(!lifecycleAdmin.includes('<th>清理状态</th>'));
 });
 
 test('Admin Web accepts only same-origin hash-only POSTs and never performs lifecycle actions through GET', async t => {

@@ -24,7 +24,7 @@ function headers(contentType) {
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   });
 }
 
@@ -79,25 +79,43 @@ async function smallJson(request) {
 
 function stateText(key) {
   return ({
-    issued: '已签发', provisioning: '配置中', active: '正常', suspended: '已暂停',
+    issued: '待绑定', provisioning: '配置中', active: '正常', suspended: '设备端已暂停',
     resetting: '重置中', revoked: '已吊销',
   })[key.state] ?? '未知';
 }
 
+function renderKeyRow(key) {
+  const id = escapeHtml(key.id);
+  const label = escapeHtml(key.label);
+  const state = escapeHtml(key.state);
+  const fullDevice = key.deviceId ? escapeHtml(key.deviceId) : '';
+  const device = key.deviceId ? `${String(key.deviceId).slice(0, 8)}…` : '';
+  const status = `${stateText(key)}${key.cleanupPending ? ' · 待清理' : ''}`;
+  const buttons = [];
+  if (key.bindingId && ['active', 'suspended'].includes(key.state)) {
+    buttons.push(`<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}" data-key-label="${label}">重置设备</button>`);
+  }
+  if (!['revoked', 'resetting'].includes(key.state)) {
+    buttons.push(`<button type="button" class="danger-link" data-key-action="revoke" data-key-id="${id}" data-key-label="${label}">吊销</button>`);
+  }
+  return `<tr><td class="key-name">${label}</td><td><span class="state state-${state}${key.cleanupPending ? ' state-cleanup' : ''}">${escapeHtml(status)}</span></td>` +
+    `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code>` : '<span class="muted">未绑定</span>'}</td>` +
+    `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
+    `<td class="actions">${buttons.join(' ') || '—'}</td></tr>`;
+}
+
+function keyTable(rows, emptyText) {
+  return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>设备 ID</th><th>最近变更</th><th>操作</th></tr></thead>` +
+    `<tbody>${rows || `<tr class="empty-row"><td colspan="5">${escapeHtml(emptyText)}</td></tr>`}</tbody></table></div>`;
+}
+
 export function renderAdmin(keys) {
-  const rows = keys.map(key => {
-    const id = escapeHtml(key.id);
-    const fullDevice = key.deviceId ? escapeHtml(key.deviceId) : '';
-    const device = key.deviceId ? `${String(key.deviceId).slice(0, 8)}…` : '—';
-    const actions = key.state === 'revoked' ? '—' : [
-      key.bindingId ? `<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}">重置设备</button>` : '',
-      `<button type="button" class="contrast outline" data-key-action="revoke" data-key-id="${id}">吊销</button>`,
-    ].filter(Boolean).join(' ');
-    return `<tr><td class="key-name">${escapeHtml(key.label)}</td><td><span class="state state-${escapeHtml(key.state)}">${stateText(key)}</span></td>` +
-      `<td><code${fullDevice ? ` title="${fullDevice}"` : ''}>${escapeHtml(device)}</code></td>` +
-      `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
-      `<td>${key.cleanupPending ? '<span class="cleanup-pending">待清理</span>' : '—'}</td><td class="actions">${actions}</td></tr>`;
-  }).join('');
+  const activeKeys = keys.filter(key => key.state !== 'revoked' || key.cleanupPending);
+  const revokedKeys = keys.filter(key => key.state === 'revoked' && !key.cleanupPending);
+  const rows = activeKeys.map(renderKeyRow).join('');
+  const revokedRows = revokedKeys.map(renderKeyRow).join('');
+  const revokedSection = revokedKeys.length
+    ? `<details class="revoked-section"><summary>已吊销（${revokedKeys.length}）</summary>${keyTable(revokedRows, '暂无已吊销记录')}</details>` : '';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>Team DevSpace 管理后台</title><link rel="stylesheet" href="/admin/assets/pico.min.css">` +
     `<link rel="stylesheet" href="/admin/assets/admin.css">` +
@@ -105,9 +123,9 @@ export function renderAdmin(keys) {
     `<header class="page-header"><div><h1>Team DevSpace 管理后台</h1><p>访问密钥与设备绑定管理</p></div>` +
     `<button type="button" id="show-create">创建访问密钥</button></header>` +
     `<p id="notice" class="notice" role="alert" hidden></p>` +
-    `<section class="table-card" aria-label="访问密钥列表"><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th>` +
-    `<th>设备</th><th>更新时间</th><th>清理状态</th><th>操作</th></tr></thead><tbody>${rows || '<tr class="empty-row"><td colspan="6">暂无访问密钥</td></tr>'}</tbody></table></div></section>` +
-    `<dialog id="create-dialog"><article><header class="dialog-header"><div><h2 id="dialog-title">创建访问密钥</h2>` +
+    `<section class="table-card" aria-label="访问密钥列表">${keyTable(rows, revokedKeys.length ? '暂无有效或待处理的访问密钥' : '暂无访问密钥')}</section>` +
+    revokedSection +
+    `<dialog id="create-dialog" aria-labelledby="dialog-title"><article><header class="dialog-header"><div><h2 id="dialog-title">创建访问密钥</h2>` +
     `<p>为员工或设备生成一个独立的连接密钥。</p></div><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
     `<p id="dialog-notice" class="notice" role="alert" hidden></p>` +
     `<section id="create-panel"><form id="create-key"><label>名称<input name="label" maxlength="100" autocomplete="off" placeholder="例如：张三-Windows" required>` +
@@ -117,7 +135,11 @@ export function renderAdmin(keys) {
     `<button type="button" id="copy-key" class="secondary">复制</button></div><p class="credential-hint">该密钥只显示一次，请保存后再关闭。</p>` +
     `<footer class="dialog-actions"><button type="button" class="secondary" id="retry-key" hidden>重试同步</button>` +
     `<button type="button" id="dismiss-key">我已保存并关闭</button></footer></section></article></dialog>` +
-    `</main></body></html>`;
+    `<dialog id="action-dialog" aria-labelledby="action-title"><article><header class="dialog-header"><div><h2 id="action-title">确认操作</h2>` +
+    `<p id="action-description"></p></div><button type="button" id="close-action-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
+    `<p id="action-notice" class="notice" role="alert" hidden></p><footer class="dialog-actions">` +
+    `<button type="button" class="secondary" id="cancel-action">取消</button><button type="button" class="danger" id="confirm-action">确认</button>` +
+    `</footer></article></dialog></main></body></html>`;
 }
 
 function json(value, status = 200) {

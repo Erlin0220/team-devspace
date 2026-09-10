@@ -1,4 +1,5 @@
 const PENDING_KEY = 'team-devspace.pending-access-key';
+const FLASH_KEY = 'team-devspace.admin-flash';
 
 function base64Url(bytes) {
   return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
@@ -77,16 +78,22 @@ async function issueCredential(credential) {
 }
 
 function initialize() {
-  const dialog = document.querySelector('#create-dialog');
+  const createDialog = document.querySelector('#create-dialog');
+  const actionDialog = document.querySelector('#action-dialog');
   const createPanel = document.querySelector('#create-panel');
   const credentialPanel = document.querySelector('#credential-panel');
   const credentialOutput = document.querySelector('#credential');
   const pageNotice = document.querySelector('#notice');
   const dialogNotice = document.querySelector('#dialog-notice');
+  const actionNotice = document.querySelector('#action-notice');
   const dialogTitle = document.querySelector('#dialog-title');
+  const actionTitle = document.querySelector('#action-title');
+  const actionDescription = document.querySelector('#action-description');
   const createForm = document.querySelector('#create-key');
   const createSubmit = document.querySelector('#create-submit');
   const retryButton = document.querySelector('#retry-key');
+  const copyButton = document.querySelector('#copy-key');
+  const confirmAction = document.querySelector('#confirm-action');
 
   const showNotice = (target, message) => {
     target.textContent = message;
@@ -96,13 +103,21 @@ function initialize() {
     target.textContent = '';
     target.hidden = true;
   };
-  const setBusy = (button, busy) => {
-    button.disabled = busy;
-    if (busy) button.setAttribute('aria-busy', 'true');
-    else button.removeAttribute('aria-busy');
+  const setBusy = (button, busy, busyText = '处理中…') => {
+    if (busy) {
+      button.dataset.idleText = button.textContent;
+      button.textContent = busyText;
+      button.disabled = true;
+      button.setAttribute('aria-busy', 'true');
+    } else {
+      if (button.dataset.idleText) button.textContent = button.dataset.idleText;
+      delete button.dataset.idleText;
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
   };
-  const openDialog = () => {
-    if (!dialog.open) dialog.showModal();
+  const openCreateDialog = () => {
+    if (!createDialog.open) createDialog.showModal();
   };
   const showCreateForm = () => {
     dialogTitle.textContent = '创建访问密钥';
@@ -111,7 +126,7 @@ function initialize() {
     retryButton.hidden = true;
     clearNotice(dialogNotice);
     createForm.reset();
-    openDialog();
+    openCreateDialog();
     requestAnimationFrame(() => createForm.elements.label?.focus());
   };
   const showCredential = (credential, needsRetry = false) => {
@@ -120,8 +135,9 @@ function initialize() {
     credentialPanel.hidden = false;
     createPanel.hidden = true;
     retryButton.hidden = !needsRetry;
-    openDialog();
+    openCreateDialog();
   };
+  const flash = message => sessionStorage.setItem(FLASH_KEY, message);
 
   for (const time of document.querySelectorAll('.local-time')) {
     const date = new Date(time.dateTime);
@@ -129,6 +145,12 @@ function initialize() {
       time.title = time.dateTime;
       time.textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
     }
+  }
+
+  const previousFlash = sessionStorage.getItem(FLASH_KEY);
+  if (previousFlash) {
+    sessionStorage.removeItem(FLASH_KEY);
+    showNotice(pageNotice, previousFlash);
   }
 
   let pending = loadPendingCredential(sessionStorage);
@@ -145,10 +167,10 @@ function initialize() {
     }
     showCreateForm();
   });
-  document.querySelector('#close-dialog').addEventListener('click', () => dialog.close());
-  document.querySelector('#cancel-create').addEventListener('click', () => dialog.close());
-  dialog.addEventListener('click', event => {
-    if (event.target === dialog) dialog.close();
+  document.querySelector('#close-dialog').addEventListener('click', () => createDialog.close());
+  document.querySelector('#cancel-create').addEventListener('click', () => createDialog.close());
+  createDialog.addEventListener('click', event => {
+    if (event.target === createDialog) createDialog.close();
   });
 
   createForm.addEventListener('submit', async event => {
@@ -156,7 +178,7 @@ function initialize() {
     const label = new FormData(event.currentTarget).get('label')?.trim();
     if (!label) return;
     clearNotice(dialogNotice);
-    setBusy(createSubmit, true);
+    setBusy(createSubmit, true, '创建中…');
     try {
       pending ??= await createPendingCredential(label);
       savePendingCredential(sessionStorage, pending);
@@ -184,7 +206,7 @@ function initialize() {
   retryButton.addEventListener('click', async () => {
     if (!pending) return;
     clearNotice(dialogNotice);
-    setBusy(retryButton, true);
+    setBusy(retryButton, true, '重试中…');
     try {
       await issueCredential(pending);
       showCredential(pending, false);
@@ -195,10 +217,14 @@ function initialize() {
     }
   });
 
-  document.querySelector('#copy-key').addEventListener('click', async () => {
+  let copyTimer;
+  copyButton.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(credentialOutput.textContent);
-      showNotice(dialogNotice, '访问密钥已复制。');
+      clearNotice(dialogNotice);
+      clearTimeout(copyTimer);
+      copyButton.textContent = '已复制';
+      copyTimer = setTimeout(() => { copyButton.textContent = '复制'; }, 1200);
     } catch {
       showNotice(dialogNotice, '复制失败，请手动选择并复制访问密钥。');
     }
@@ -209,30 +235,69 @@ function initialize() {
     pending = null;
     credentialOutput.textContent = '';
     credentialPanel.hidden = true;
-    dialog.close();
+    createDialog.close();
+    flash('访问密钥已创建。');
     location.reload();
   });
 
+  let actionContext = null;
+  const closeActionDialog = () => {
+    if (actionDialog.open && !confirmAction.disabled) actionDialog.close();
+  };
+  document.querySelector('#close-action-dialog').addEventListener('click', closeActionDialog);
+  document.querySelector('#cancel-action').addEventListener('click', closeActionDialog);
+  actionDialog.addEventListener('click', event => {
+    if (event.target === actionDialog) closeActionDialog();
+  });
+  actionDialog.addEventListener('cancel', event => {
+    if (confirmAction.disabled) event.preventDefault();
+  });
+
   for (const button of document.querySelectorAll('[data-key-action]')) {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', () => {
       const action = button.dataset.keyAction;
-      if (!confirm(action === 'revoke'
-        ? '确定吊销此访问密钥并断开对应设备吗？'
-        : '确定重置此设备绑定吗？重置后该设备需要重新绑定。')) return;
-      clearNotice(pageNotice);
-      setBusy(button, true);
-      try {
-        const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(button.dataset.keyId)}/${action}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-        });
-        if (!response.ok && !result.retryable) throw new Error(errorText(result.error));
-        location.reload();
-      } catch (error) {
-        setBusy(button, false);
-        showNotice(pageNotice, `操作失败：${error.message}`);
+      const label = button.dataset.keyLabel || '该访问密钥';
+      actionContext = { action, id: button.dataset.keyId, label };
+      clearNotice(actionNotice);
+      if (action === 'revoke') {
+        actionTitle.textContent = '吊销访问密钥';
+        actionDescription.textContent = `吊销后，“${label}”将立即失效，当前设备无法继续连接。此操作不可恢复。`;
+        confirmAction.textContent = '吊销密钥';
+        confirmAction.classList.add('danger');
+      } else {
+        actionTitle.textContent = '重置设备绑定';
+        actionDescription.textContent = `将解除“${label}”当前设备的绑定并清理对应连接资源。访问密钥不会被吊销，可用于重新绑定设备。`;
+        confirmAction.textContent = '确认重置';
+        confirmAction.classList.remove('danger');
       }
+      actionDialog.showModal();
     });
   }
+
+  confirmAction.addEventListener('click', async () => {
+    if (!actionContext) return;
+    const { action, id } = actionContext;
+    clearNotice(pageNotice);
+    clearNotice(actionNotice);
+    setBusy(confirmAction, true, action === 'revoke' ? '吊销中…' : '重置中…');
+    try {
+      const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(id)}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      if (!response.ok && !result.retryable) throw new Error(errorText(result.error));
+      if (result.retryable) {
+        flash(action === 'revoke'
+          ? '访问密钥已吊销，云端连接资源暂未清理完成，系统会自动继续清理。'
+          : '设备绑定已进入重置，云端连接资源暂未清理完成，系统会自动继续清理。');
+      } else {
+        flash(action === 'revoke' ? '访问密钥已吊销。' : '设备绑定已重置，可使用原访问密钥重新绑定。');
+      }
+      location.reload();
+    } catch (error) {
+      setBusy(confirmAction, false);
+      showNotice(actionNotice, `操作失败：${error.message}`);
+    }
+  });
 }
 
 if (typeof document !== 'undefined') initialize();
