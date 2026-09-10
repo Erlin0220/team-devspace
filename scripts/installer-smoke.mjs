@@ -90,8 +90,13 @@ async function repair() {
 
 let canUninstall = false;
 try {
+  // 0.1.0 could leave a monolithic legacy slot with Node but no executable
+  // Team DevSpace client. It must not block every future verified installer.
+  await mkdir(join(install, 'a', 'runtime'), { recursive: true });
+  await writeFile(join(install, 'a', 'runtime', 'node.exe'), 'incomplete legacy sentinel');
   const first = await installAttempt();
   canUninstall = true;
+  assert.equal(await exists(join(install, 'a')), false, 'Incomplete legacy payload must be retired after activation');
   assert.equal(first.bindingId, bindingId);
   const firstActive = await readJson(join(install, 'active.json'));
   const upstream = await readJson(join(firstActive.path, 'node_modules', '@waishnav', 'devspace', 'package.json'));

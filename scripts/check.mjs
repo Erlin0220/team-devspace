@@ -72,6 +72,11 @@ if (!windowsBootstrap.includes("@('uninstall')") ||
     !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
   throw new Error('Failed candidate activation must remove partial startup entries and restore the previous version offline');
 }
+if (!windowsBootstrap.includes("Join-Path $legacyRoot 'client\\cli.mjs'") ||
+    !windowsBootstrap.includes('Incomplete legacy payload ignored') ||
+    !windowsBootstrap.includes('Remove-Item -LiteralPath $legacyRoot -Recurse -Force')) {
+  throw new Error('Windows bootstrap must ignore and retire an incomplete legacy payload instead of blocking activation');
+}
 if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
   throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
 }

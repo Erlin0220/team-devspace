@@ -60,8 +60,13 @@ function Get-Active {
     }
     return $value
   }
-  if (Test-Path -LiteralPath (Join-Path $legacyRoot 'runtime\node.exe')) {
+  $legacyNode = Join-Path $legacyRoot 'runtime\node.exe'
+  $legacyClient = Join-Path $legacyRoot 'client\cli.mjs'
+  if ((Test-Path -LiteralPath $legacyNode) -and (Test-Path -LiteralPath $legacyClient)) {
     return [pscustomobject]@{ release = 'legacy'; path = $legacyRoot; manifestSha256 = ''; previous = $null }
+  }
+  if ((Test-Path -LiteralPath $legacyNode) -or (Test-Path -LiteralPath $legacyClient)) {
+    Write-Warning 'Incomplete legacy payload ignored; the verified candidate will replace it.'
   }
   return $null
 }
@@ -197,6 +202,11 @@ function Remove-UnreferencedPayload([string]$Current, [object]$Manifest) {
       try { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
       catch { Write-Warning "Old version cleanup deferred: $($directory.Name)" }
     }
+  }
+  if ((Test-Path -LiteralPath $legacyRoot) -and
+      [IO.Path]::GetFullPath($legacyRoot) -ne [IO.Path]::GetFullPath($Current)) {
+    try { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
+    catch { Write-Warning 'Legacy payload cleanup deferred until next repair.' }
   }
   foreach ($directory in @(Get-ChildItem -LiteralPath $cacheRoot -Directory)) {
     if ($directory.Name -match $shaPattern -and $hashes -notcontains $directory.Name) {
