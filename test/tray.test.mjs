@@ -142,7 +142,8 @@ test('health refreshes coalesce without blocking utility menu actions', async ()
   assert.equal(statusCalls, 1);
 });
 
-test('native startup keeps tray separate from runtime and does not expose credentials', () => {
+test('native startup keeps tray separate from runtime and does not expose credentials',
+  { skip: !['win32', 'darwin'].includes(process.platform) }, () => {
   const state = { deviceId: randomUUID(), deviceSecret: 'secret', accessKey: 'tds_secret',
     ports: { devspace: 47670, bridge: 47770, metrics: 47870 } };
   const home = join(homedir(), 'TeamDevSpace');
