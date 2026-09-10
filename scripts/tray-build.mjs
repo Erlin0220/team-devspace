@@ -54,6 +54,7 @@ export async function buildTray(destination) {
     buildEnv.TDS_ZIG = zig;
   }
   const crate = resolve('native/tray');
+  await run(cargo, ['test', '--locked'], { cwd: crate, env: buildEnv, timeout: 900000 });
   await run(cargo, ['build', '--release', '--locked'], { cwd: crate, env: buildEnv, timeout: 900000 });
   const binary = join(targetDirectory, 'release', process.platform === 'win32'
     ? 'team-devspace-tray.exe' : 'team-devspace-tray');

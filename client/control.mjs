@@ -1,16 +1,23 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
-import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
+import { COMPONENTS, installServices, serviceAction } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
 import { atomicJson, loadState, stateHome } from './state.mjs';
 
 const exec = promisify(execFile);
-const SERVICE_COMPONENTS = ['runtime', 'tunnel'];
 const REDACTED = '<REDACTED>';
+
+async function launchDetached(command, args) {
+  await new Promise((resolveLaunch, reject) => {
+    const child = spawn(command, args, { windowsHide: true, detached: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('spawn', () => { child.unref(); resolveLaunch(); });
+  });
+}
 
 function identity(state) {
   return { keyId: state.keyId, bindingId: state.bindingId };
@@ -26,18 +33,35 @@ export async function suspendRemoteAccess(home = stateHome()) {
   let state = await loadState(home);
   await control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
   state = await saveRemoteAccess(state, home, 'suspended');
-  try { await serviceAction('remove', state, home, SERVICE_COMPONENTS); }
+  try { await serviceAction('remove', state, home, COMPONENTS); }
   catch (error) {
     throw new Error(`Remote access is suspended at the Gateway, but local services or login startup were not fully removed: ${error.message}`);
   }
   return deviceStatus(home);
 }
 
+export async function rollbackResumeFailure(error, suspendGateway, cleanupLocal) {
+  let gatewayRollbackFailed = false;
+  let localCleanupFailed = false;
+  try { await suspendGateway(); } catch { gatewayRollbackFailed = true; }
+  try { await cleanupLocal(); } catch { localCleanupFailed = true; }
+  if (gatewayRollbackFailed && localCleanupFailed) {
+    throw new Error(`Resume failed and neither Gateway suspension nor local service shutdown could be confirmed: ${error.message}`);
+  }
+  if (gatewayRollbackFailed) {
+    throw new Error(`Local services were stopped, but Gateway suspension could not be confirmed after resume failed: ${error.message}`);
+  }
+  if (localCleanupFailed) {
+    throw new Error(`Gateway is suspended, but local services could not be fully stopped after resume failed: ${error.message}`);
+  }
+  throw new Error(`Remote access remains suspended: ${error.message}`);
+}
+
 export async function resumeRemoteAccess(home = stateHome()) {
   let state = await loadState(home);
   try {
-    await installServices({ ...state, remoteAccess: 'active' }, home);
-    await serviceAction('start', state, home, SERVICE_COMPONENTS);
+    await installServices({ ...state, remoteAccess: 'active' }, home, undefined, COMPONENTS);
+    await serviceAction('start', state, home, COMPONENTS);
     const deadline = Date.now() + 60000;
     let status;
     do {
@@ -45,23 +69,35 @@ export async function resumeRemoteAccess(home = stateHome()) {
       if (status.localReady && ['suspended', 'active'].includes(status.gateway)) break;
       await sleep(1000);
     } while (Date.now() < deadline);
-    if (!status?.localReady) {
-      throw new Error('Local runtime, bridge or tunnel is not ready.');
-    }
+    if (!status?.localReady) throw new Error('Local runtime, bridge or tunnel is not ready.');
     await control(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
     state = await saveRemoteAccess(state, home, 'active');
   } catch (error) {
-    await serviceAction('remove', state, home, SERVICE_COMPONENTS).catch(() => {});
-    throw new Error(`Remote access remains suspended: ${error.message}`);
+    await rollbackResumeFailure(error,
+      () => control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
+      () => serviceAction('remove', state, home, COMPONENTS));
   }
   return deviceStatus(home);
 }
 
 export async function restartTeamDevSpace(home = stateHome()) {
   const state = await loadState(home);
-  const components = enabledStartupComponents(state).filter(component => SERVICE_COMPONENTS.includes(component));
-  if (components.length) await serviceAction('restart', state, home, components);
+  if (state.remoteAccess === 'suspended') throw new Error('Remote access is suspended; resume it before restarting connection services');
+  await serviceAction('restart', state, home, COMPONENTS);
   return deviceStatus(home);
+}
+
+export async function stopTeamDevSpace(home = stateHome()) {
+  let state = await loadState(home);
+  state = await saveRemoteAccess(state, home, 'suspended');
+  const gatewaySuspend = control(state.gateway, '/v1/device/suspend', state.deviceSecret, {
+    body: identity(state), timeout: 3000,
+  }).then(() => true, () => false);
+  await serviceAction('remove', state, home, COMPONENTS);
+  if (!await gatewaySuspend) {
+    throw new Error('Local services are stopped, but Gateway suspension could not be confirmed. Retry closing Team DevSpace.');
+  }
+  return { stopped: true, deviceId: state.deviceId, remoteAccess: 'suspended' };
 }
 
 export function redactDiagnostic(value) {
@@ -121,10 +157,10 @@ export async function copyDiagnosticReport(home = stateHome()) {
   return text;
 }
 
-export async function openLogs(home = stateHome()) {
+export async function openLogs(home = stateHome(), { launch = launchDetached } = {}) {
   const directory = join(home, 'logs');
   const command = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe')
     : process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open';
-  await exec(command, [directory], { windowsHide: true });
+  await launch(command, [directory]);
   return directory;
 }

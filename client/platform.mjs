@@ -67,7 +67,7 @@ export function windowsTaskXml(state, component, home, sid, root = installRoot) 
 <RegistrationInfo><Description>Team DevSpace ${xml(component)}; runs only in this employee session.</Description></RegistrationInfo>
 <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(sid)}</UserId></LogonTrigger></Triggers>
 <Principals><Principal id="Employee"><UserId>${xml(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
-<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>
+<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>10</Count></RestartOnFailure></Settings>
 <Actions Context="Employee"><Exec><Command>${xml(launcher)}</Command><Arguments>${xml(args.map(quoted).join(' '))}</Arguments><WorkingDirectory>${xml(root)}</WorkingDirectory></Exec></Actions>
 </Task>\n`;
 }
@@ -90,7 +90,8 @@ async function native(command, args, allowMissing = false) {
   try { return await exec(executable, args, { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 }); }
   catch (error) {
     if (allowMissing) return null;
-    throw new Error(`${command} failed (${error.code ?? 'unknown'}). Check local startup permissions; no SYSTEM/root fallback is used.`);
+    const detail = String(error.stderr ?? error.stdout ?? '').trim().replace(/\s+/g, ' ').slice(0, 240);
+    throw new Error(`${command} ${args.join(' ')} failed (${error.code ?? 'unknown'})${detail ? `: ${detail}` : ''}. Check local startup permissions; no SYSTEM/root fallback is used.`);
   }
 }
 
@@ -101,20 +102,22 @@ async function windowsSid() {
   return sid;
 }
 
-export async function installServices(state, home = stateHome(), root = installRoot) {
+export async function installServices(state, home = stateHome(), root = installRoot, scope = STARTUP_COMPONENTS) {
   if (!state.bindingId) throw new Error('Enrollment is required before installing startup entries');
-  const components = enabledStartupComponents(state);
+  if (scope.some(component => !STARTUP_COMPONENTS.includes(component))) throw new Error('Unknown startup component');
+  const desired = enabledStartupComponents(state);
+  const components = scope.filter(component => desired.includes(component));
+  const disabled = scope.filter(component => !desired.includes(component));
   await privateDirectory(join(home, 'logs'));
   await privateDirectory(join(home, 'startup'));
   await access(join(root, 'client', 'cli.mjs'));
   const paths = await executablePaths(root);
-  await access(paths.cloudflared);
-  const disabled = STARTUP_COMPONENTS.filter(component => !components.includes(component));
+  if (components.includes('tunnel')) await access(paths.cloudflared);
   if (process.platform === 'win32') {
-    await access(join(root, 'runtime', 'node.exe'));
-    await access(join(root, 'platform', 'windows', 'tds-launcher.exe'));
+    if (components.some(component => component !== 'tunnel')) await access(join(root, 'runtime', 'node.exe'));
+    if (components.length) await access(join(root, 'platform', 'windows', 'tds-launcher.exe'));
     const sid = await windowsSid();
-    await access(join(root, 'platform', 'windows', 'team-devspace-tray.exe'));
+    if (components.includes('tray')) await access(join(root, 'platform', 'windows', 'team-devspace-tray.exe'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const task = join(home, 'startup', `${component}.xml`);
@@ -125,8 +128,8 @@ export async function installServices(state, home = stateHome(), root = installR
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
     const directory = join(homedir(), 'Library', 'LaunchAgents');
     await mkdir(directory, { recursive: true });
-    await access(join(root, 'runtime', 'bin', 'node'));
-    await access(join(root, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
+    if (components.some(component => component !== 'tunnel')) await access(join(root, 'runtime', 'bin', 'node'));
+    if (components.includes('tray')) await access(join(root, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const label = serviceLabel(state, component);
@@ -137,7 +140,7 @@ export async function installServices(state, home = stateHome(), root = installR
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
     const directory = join(homedir(), '.config', 'systemd', 'user');
     await mkdir(directory, { recursive: true });
-    await access(join(root, 'runtime', 'bin', 'node'));
+    if (components.includes('runtime')) await access(join(root, 'runtime', 'bin', 'node'));
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
       const unit = `${serviceLabel(state, component)}.service`;

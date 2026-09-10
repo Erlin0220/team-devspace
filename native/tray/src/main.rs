@@ -8,7 +8,7 @@ use std::io::{self, BufRead, Write};
 use std::thread;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
-    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    Icon, TrayIcon, TrayIconBuilder,
 };
 use winit::{
     application::ApplicationHandler,
@@ -20,8 +20,13 @@ use winit::{
 struct TrayState {
     status: String,
     summary: String,
-    remote_access: String,
-    busy: bool,
+    remote_text: String,
+    remote_action: String,
+    remote_enabled: bool,
+    check_enabled: bool,
+    restart_enabled: bool,
+    repair_enabled: bool,
+    exit_enabled: bool,
     #[serde(default)]
     notice: Option<String>,
 }
@@ -31,8 +36,13 @@ impl Default for TrayState {
         Self {
             status: "stopped".into(),
             summary: "正在检查 Team DevSpace…".into(),
-            remote_access: "unknown".into(),
-            busy: false,
+            remote_text: "暂停远程访问".into(),
+            remote_action: "suspend".into(),
+            remote_enabled: false,
+            check_enabled: true,
+            restart_enabled: false,
+            repair_enabled: false,
+            exit_enabled: true,
             notice: None,
         }
     }
@@ -42,7 +52,6 @@ impl Default for TrayState {
 enum UserEvent {
     State(TrayState),
     Menu(MenuId),
-    Inspect,
     InputClosed,
 }
 
@@ -52,9 +61,10 @@ struct Application {
     remote: MenuItem,
     check: MenuItem,
     restart: MenuItem,
+    repair: MenuItem,
     logs: MenuItem,
     diagnostics: MenuItem,
-    quit: MenuItem,
+    exit: MenuItem,
     state: TrayState,
 }
 
@@ -66,6 +76,19 @@ fn emit(event: &str, action: Option<&str>) {
     let mut stdout = io::stdout().lock();
     let _ = writeln!(stdout, "{value}");
     let _ = stdout.flush();
+}
+
+fn bounded_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let mut text = value.chars().take(max_chars.saturating_sub(1)).collect::<String>();
+    text.push('…');
+    text
+}
+
+fn menu_status_text(state: &TrayState) -> String {
+    bounded_text(state.notice.as_deref().unwrap_or(&state.summary), 32)
 }
 
 fn icon(status: &str) -> Icon {
@@ -98,10 +121,11 @@ impl Application {
             status: MenuItem::new("正在检查 Team DevSpace…", false, None),
             remote: MenuItem::new("暂停远程访问", false, None),
             check: MenuItem::new("检查连接", true, None),
-            restart: MenuItem::new("重启 Team DevSpace", true, None),
+            restart: MenuItem::new("重启连接服务", false, None),
+            repair: MenuItem::new("修复连接", false, None),
             logs: MenuItem::new("打开日志", true, None),
             diagnostics: MenuItem::new("复制诊断信息", true, None),
-            quit: MenuItem::new("退出托盘", true, None),
+            exit: MenuItem::new("关闭并退出 Team DevSpace", true, None),
             state: TrayState::default(),
         }
     }
@@ -115,11 +139,12 @@ impl Application {
             &PredefinedMenuItem::separator(),
             &self.check,
             &self.restart,
+            &self.repair,
             &PredefinedMenuItem::separator(),
             &self.logs,
             &self.diagnostics,
             &PredefinedMenuItem::separator(),
-            &self.quit,
+            &self.exit,
         ]).expect("create tray menu");
         TrayIconBuilder::new()
             .with_menu(Box::new(menu))
@@ -130,27 +155,29 @@ impl Application {
     }
 
     fn update(&mut self, state: TrayState) {
-        self.status.set_text(&state.summary);
-        let suspended = state.remote_access == "suspended";
-        self.remote.set_text(if suspended { "恢复远程访问" } else { "暂停远程访问" });
-        self.remote.set_enabled(!state.busy && state.remote_access != "not-enrolled");
-        self.check.set_enabled(!state.busy);
-        self.restart.set_enabled(!state.busy && state.remote_access != "not-enrolled");
+        let status_text = menu_status_text(&state);
+        self.status.set_text(status_text.clone());
+        self.remote.set_text(&state.remote_text);
+        self.remote.set_enabled(state.remote_enabled);
+        self.check.set_enabled(state.check_enabled);
+        self.restart.set_enabled(state.restart_enabled);
+        self.repair.set_enabled(state.repair_enabled);
+        self.exit.set_enabled(state.exit_enabled);
         if let Some(tray) = &self.tray {
-            let tooltip = state.notice.as_deref().unwrap_or(&state.summary);
-            let _ = tray.set_tooltip(Some(tooltip));
+            let _ = tray.set_tooltip(Some(&status_text));
             let _ = tray.set_icon(Some(icon(&state.status)));
         }
         self.state = state;
     }
 
-    fn action(&self, id: &MenuId) -> Option<&'static str> {
-        if id == self.remote.id() {
-            Some(if self.state.remote_access == "suspended" { "resume" } else { "suspend" })
-        } else if id == self.check.id() { Some("check")
-        } else if id == self.restart.id() { Some("restart")
-        } else if id == self.logs.id() { Some("logs")
-        } else if id == self.diagnostics.id() { Some("diagnostics")
+    fn action(&self, id: &MenuId) -> Option<String> {
+        if id == self.remote.id() { Some(self.state.remote_action.clone())
+        } else if id == self.check.id() { Some("check".into())
+        } else if id == self.restart.id() { Some("restart".into())
+        } else if id == self.repair.id() { Some("repair".into())
+        } else if id == self.logs.id() { Some("logs".into())
+        } else if id == self.diagnostics.id() { Some("diagnostics".into())
+        } else if id == self.exit.id() { Some("exit".into())
         } else { None }
     }
 }
@@ -172,11 +199,9 @@ impl ApplicationHandler<UserEvent> for Application {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::State(state) => self.update(state),
-            UserEvent::Inspect => emit("menu", Some("check")),
             UserEvent::InputClosed => event_loop.exit(),
-            UserEvent::Menu(id) if id == *self.quit.id() => event_loop.exit(),
             UserEvent::Menu(id) => {
-                if let Some(action) = self.action(&id) { emit("menu", Some(action)); }
+                if let Some(action) = self.action(&id) { emit("menu", Some(&action)); }
             }
         }
     }
@@ -187,10 +212,6 @@ fn main() {
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let _ = proxy.send_event(UserEvent::Menu(event.id));
-    }));
-    let proxy = event_loop.create_proxy();
-    TrayIconEvent::set_event_handler(Some(move |_: TrayIconEvent| {
-        let _ = proxy.send_event(UserEvent::Inspect);
     }));
     let proxy = event_loop.create_proxy();
     thread::spawn(move || {
@@ -204,4 +225,20 @@ fn main() {
     });
     let mut application = Application::new();
     if event_loop.run_app(&mut application).is_err() { std::process::exit(1); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_status_text_is_bounded_even_when_an_operation_error_is_long() {
+        let state = TrayState {
+            notice: Some("操作失败：".to_owned() + &"很长的错误详情".repeat(20)),
+            ..TrayState::default()
+        };
+        let text = menu_status_text(&state);
+        assert!(text.chars().count() <= 32);
+        assert!(text.ends_with('…'));
+    }
 }
