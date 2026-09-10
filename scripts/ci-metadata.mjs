@@ -12,7 +12,7 @@ const metadata = {
   npm: pkg.packageManager,
   matrix: JSON.stringify({ include: validateDistributionConfig(release).targets.map(target => {
     if (!runners[target]) throw new Error(`No native CI runner is configured for ${target}`);
-    return { target, runner: runners[target], native_startup: target === 'win32-x64' };
+    return { target, runner: runners[target], native_startup: ['win32-x64', 'linux-x64'].includes(target) };
   }) }),
 };
 if (process.env.GITHUB_OUTPUT) {

@@ -21,7 +21,7 @@ const HELP = `Team DevSpace
   start | stop | restart            Control your user-session runtime
   suspend | resume                  Fail-closed remote access safety switch
   diagnostics                       Print stable redacted diagnostics
-  logs                              Open the existing log directory
+  logs [--follow]                   Show Linux journal logs or open the desktop log directory
   roots list | add <path> | remove <path>
   startup install | remove          Manage native user-login startup
   uninstall                         Stop/remove startup; retain Enrollment for repair
@@ -37,7 +37,8 @@ export async function main(argv = process.argv.slice(2)) {
     home: { type: 'string' }, gateway: { type: 'string' }, root: { type: 'string', multiple: true },
     'credential-file': { type: 'string' }, 'request-file': { type: 'string' },
     'runtime-root': { type: 'string' },
-    'no-startup': { type: 'boolean' }, 'installer-progress': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+    'no-startup': { type: 'boolean' }, follow: { type: 'boolean' },
+    'installer-progress': { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
   } });
   if (values.home) process.env.TEAM_DEVSPACE_HOME = resolve(values.home);
   const home = stateHome();
@@ -62,7 +63,11 @@ export async function main(argv = process.argv.slice(2)) {
   else if (command === 'suspend') result = await suspendRemoteAccess(home);
   else if (command === 'resume') result = await resumeRemoteAccess(home);
   else if (command === 'diagnostics') result = await diagnosticReport(home);
-  else if (command === 'logs') result = { logs: await openLogs(home) };
+  else if (command === 'logs') {
+    const logs = await openLogs(home, { follow: values.follow });
+    if (process.platform === 'linux') return;
+    result = { logs };
+  }
   else {
     const state = await loadState(home);
     if (['start', 'stop', 'restart'].includes(command)) {

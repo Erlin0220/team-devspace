@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import net from 'node:net';
@@ -16,7 +16,8 @@ const home = join(work, 'device state');
 const media = join(work, 'offline media');
 const exists = path => access(path).then(() => true, () => false);
 const source = resolve('release/offline', release.version, target);
-const env = { TEAM_DEVSPACE_HOME: home, NODE_OPTIONS: '' };
+const cliDir = join(work, 'bin');
+const env = { TEAM_DEVSPACE_HOME: home, TEAM_DEVSPACE_CLI_DIR: cliDir, NODE_OPTIONS: '' };
 const sockets = [];
 try {
   await mkdir(media);
@@ -50,6 +51,13 @@ try {
   const active = () => readFile(join(root, 'active-path'), 'utf8').then(value => value.trim());
   await install();
   const first = await active();
+  if (process.platform === 'linux') {
+    const stableCli = join(root, 'bin', 'team-devspace');
+    await access(stableCli);
+    assert.equal(await readlink(join(cliDir, 'team-devspace')), stableCli);
+    const cli = await run(stableCli, ['roots', 'list'], { cwd: work, env, capture: true });
+    assert.ok(cli.stdout.includes(work), 'Stable Linux CLI must resolve the active version and retained state');
+  }
   await writeFile(join(first, 'obsolete'), 'old version');
   const stale = join(root, 'cache/sha256', '0'.repeat(64));
   await mkdir(stale);
@@ -75,7 +83,8 @@ try {
   assert.equal((await readdir(join(root, 'staging'))).length, 0);
   console.log(JSON.stringify({ passed: true, target, actualOfflinePackage: true, pathsWithSpaces: true,
     nativeModulesFromInstalledTree: true, repair: true, failedRepairRetainsActive: true,
-    retiredVersionsCollected: true, cacheGarbageCollected: true, nativeLoginSessionTested: false }));
+    retiredVersionsCollected: true, cacheGarbageCollected: true,
+    stableLinuxCli: process.platform === 'linux', nativeLoginSessionTested: false }));
 } finally {
   for (const socket of sockets) if (socket.listening) await new Promise(resolve => socket.close(resolve));
   await rm(work, { recursive: true, force: true });

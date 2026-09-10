@@ -19,6 +19,9 @@ const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const deployment = JSON.parse(await readFile('deployment.config.json', 'utf8'));
 const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
+const deployWorkflow = await readFile('.github/workflows/deploy.yml', 'utf8');
+const workflows = `${releaseWorkflow}\n${deployWorkflow}`;
+const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
 const windowsSigning = await readFile('scripts/sign-internal-windows.ps1', 'utf8');
@@ -82,9 +85,11 @@ if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [strin
     windowsBootstrap.includes('$cacheRoot') || windowsBootstrap.includes('$legacyRoot')) {
   throw new Error('Windows Installer V2 must embed its payload, keep local A/B recovery, and treat first-run connection failure as post-install state');
 }
-if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device Binding without contacting the Gateway') ||
+if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device Binding...') ||
+    !clientSetup.includes("if (remoteAccess === 'suspended')") ||
+    !clientSetup.includes("'/v1/device/status'") ||
     !clientSetup.includes("connection: startup ? 'starting' : 'not-started'")) {
-  throw new Error('Existing Enrollment must be reused locally and runtime connectivity must not gate setup success');
+  throw new Error('Existing Enrollment must be reused locally; only a legacy suspended mismatch may be reconciled from Gateway status, and runtime connectivity must not gate setup success');
 }
 if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
     !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
@@ -100,9 +105,31 @@ if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('
 }
 if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.includes('winit = "=0.30.12"') ||
     !trayToolchain.includes('channel = "1.85.1"') || !trayLock.includes('name = "tray-icon"') ||
-    !trayBuild.includes("'test', '--locked'") || !trayBuild.includes("'--release', '--locked'") ||
+    !trayBuild.includes("'test', '--release', '--locked'") || !trayBuild.includes("'build', '--release', '--locked'") ||
     !releaseWorkflow.includes('npm run package')) {
-  throw new Error('Native tray must use exact Rust/crate locks, run native tests, and enter the existing native package matrix');
+  throw new Error('Native tray must use exact Rust/crate locks, test in the release profile, and enter the existing native package matrix');
+}
+if (!releaseWorkflow.includes('Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4') ||
+    !releaseWorkflow.includes('build/tray-target-${{ matrix.target }}') ||
+    !releaseWorkflow.includes('actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9') ||
+    !releaseWorkflow.includes('build/zig-win32-x64')) {
+  throw new Error('Native package CI must reuse the pinned Rust dependency cache and verified Windows Zig toolchain cache');
+}
+if (!/^[a-f0-9]{64}$/.test(binaries.zig?.['win32-x64']?.executableSha256 ?? '')) {
+  throw new Error('Cached Windows Zig executable must have an exact SHA-256 pin');
+}
+const officialActionRefs = [...workflows.matchAll(/uses:\s+(actions\/[A-Za-z0-9_.-]+)@([^\s#]+)/g)];
+if (officialActionRefs.length === 0 || officialActionRefs.some(([, , reference]) => !/^[a-f0-9]{40}$/.test(reference))) {
+  throw new Error('Every GitHub-owned Action must remain pinned to a full 40-character commit SHA');
+}
+for (const required of [
+  'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+  'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+  'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+  'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
+]) {
+  if (!workflows.includes(required)) throw new Error(`GitHub Action must stay on its reviewed Node 24 pin: ${required}`);
 }
 if (wrangler.workers_dev !== false || wrangler.preview_urls !== false ||
     !adminWeb.includes("default-src 'none'") || !adminWeb.includes('/admin/assets/admin.js') ||

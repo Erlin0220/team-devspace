@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
-import { COMPONENTS, installServices, serviceAction } from './platform.mjs';
+import { COMPONENTS, installServices, serviceAction, serviceLabel } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
 import { atomicJson, installRoot, loadState, stateHome } from './state.mjs';
 
@@ -30,13 +30,16 @@ async function saveRemoteAccess(state, home, remoteAccess) {
   return next;
 }
 
+const deactivateRemoteStartup = (state, home) =>
+  serviceAction(process.platform === 'linux' ? 'disable' : 'remove', state, home, COMPONENTS);
+
 export async function suspendRemoteAccess(home = stateHome()) {
   let state = await loadState(home);
   await control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
   state = await saveRemoteAccess(state, home, 'suspended');
-  try { await serviceAction('remove', state, home, COMPONENTS); }
+  try { await deactivateRemoteStartup(state, home); }
   catch (error) {
-    throw new Error(`Remote access is suspended at the Gateway, but local services or login startup were not fully removed: ${error.message}`);
+    throw new Error(`Remote access is suspended at the Gateway, but local services or login startup were not fully disabled: ${error.message}`);
   }
   return deviceStatus(home);
 }
@@ -76,7 +79,7 @@ export async function resumeRemoteAccess(home = stateHome()) {
   } catch (error) {
     await rollbackResumeFailure(error,
       () => control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
-      () => serviceAction('remove', state, home, COMPONENTS));
+      () => deactivateRemoteStartup(state, home));
   }
   return deviceStatus(home);
 }
@@ -89,16 +92,10 @@ export async function restartTeamDevSpace(home = stateHome()) {
 }
 
 export async function stopTeamDevSpace(home = stateHome()) {
-  let state = await loadState(home);
-  state = await saveRemoteAccess(state, home, 'suspended');
-  const gatewaySuspend = control(state.gateway, '/v1/device/suspend', state.deviceSecret, {
-    body: identity(state), timeout: 3000,
-  }).then(() => true, error => error.status === 403 && error.code === 'device_disabled');
-  await serviceAction('remove', state, home, COMPONENTS);
-  if (!await gatewaySuspend) {
-    throw new Error('Local services are stopped, but Gateway suspension could not be confirmed. Retry closing Team DevSpace.');
-  }
-  return { stopped: true, deviceId: state.deviceId, remoteAccess: 'suspended' };
+  const state = await loadState(home);
+  await serviceAction('stop', state, home, COMPONENTS);
+  return { stopped: true, deviceId: state.deviceId,
+    remoteAccess: state.remoteAccess === 'suspended' ? 'suspended' : 'active', startupRetained: true };
 }
 
 export function redactDiagnostic(value) {
@@ -131,15 +128,26 @@ async function manifestIdentity() {
   } catch { return null; }
 }
 
-async function recentErrors(home) {
+async function recentErrors(home, state = null) {
   const summaries = [];
   for (const component of ['runtime', 'tunnel', 'tray']) {
-    try {
-      const lines = redactDiagnostic(await readTail(join(home, 'logs', `${component}.error.log`)))
-        .split(/\r?\n/).filter(line => line && !/UNDICI-EHPA|node --trace-warnings/i.test(line))
-        .map(line => line.slice(0, 500)).slice(-8);
-      if (lines.length) summaries.push({ component, lines });
-    } catch {}
+    let lines = [];
+    if (process.platform === 'linux' && COMPONENTS.includes(component)) {
+      try {
+        const unit = `${serviceLabel(state ?? { deviceId: '' }, component)}.service`;
+        const { stdout } = await exec('journalctl', ['--user', '--no-pager', '--output=cat', '-p', 'warning', '-n', '40', '-u', unit],
+          { timeout: 5000, maxBuffer: 256 * 1024 });
+        lines = redactDiagnostic(stdout).split(/\r?\n/).filter(Boolean).map(line => line.slice(0, 500)).slice(-8);
+      } catch {}
+    }
+    if (!lines.length) {
+      try {
+        lines = redactDiagnostic(await readTail(join(home, 'logs', `${component}.error.log`)))
+          .split(/\r?\n/).filter(line => line && !/UNDICI-EHPA|node --trace-warnings/i.test(line))
+          .map(line => line.slice(0, 500)).slice(-8);
+      } catch {}
+    }
+    if (lines.length) summaries.push({ component, lines });
   }
   return summaries;
 }
@@ -154,7 +162,7 @@ export async function diagnosticReport(home = stateHome()) {
   } catch {
     return { release: null, manifest, devspace: null, platform: process.platform, architecture: process.arch,
       remoteAccess: 'not-enrolled', desiredRemoteAccess: 'not-enrolled', devspaceHealth: false,
-      bridgeHealth: false, tunnelHealth: false, gatewayHealth: 'not-enrolled', recentErrors: await recentErrors(home) };
+      bridgeHealth: false, tunnelHealth: false, gatewayHealth: 'not-enrolled', recentErrors: await recentErrors(home, state) };
   }
   return {
     release: state.releaseVersion,
@@ -168,7 +176,7 @@ export async function diagnosticReport(home = stateHome()) {
     bridgeHealth: status.bridge,
     tunnelHealth: status.tunnel,
     gatewayHealth: status.gateway,
-    recentErrors: await recentErrors(home),
+    recentErrors: await recentErrors(home, state),
   };
 }
 
@@ -188,10 +196,26 @@ export async function copyDiagnosticReport(home = stateHome()) {
   return text;
 }
 
-export async function openLogs(home = stateHome(), { launch = launchDetached } = {}) {
+export async function openLogs(home = stateHome(), { launch = launchDetached, follow = false } = {}) {
+  if (process.platform === 'linux') {
+    const state = await loadState(home);
+    const units = COMPONENTS.map(component => `${serviceLabel(state, component)}.service`);
+    const args = ['--user', '--no-pager', '--output=short-iso', ...(follow ? ['--follow'] : ['-n', '200']),
+      ...units.flatMap(unit => ['-u', unit])];
+    if (follow) {
+      await new Promise((resolveLogs, reject) => {
+        const child = spawn('journalctl', args, { stdio: 'inherit' });
+        child.once('error', reject);
+        child.once('exit', code => code === 0 ? resolveLogs() : reject(new Error(`journalctl exited with code ${code}`)));
+      });
+    } else {
+      const { stdout } = await exec('journalctl', args, { timeout: 10000, maxBuffer: 1024 * 1024 });
+      process.stdout.write(stdout);
+    }
+    return { source: 'journalctl', units };
+  }
   const directory = join(home, 'logs');
-  const command = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe')
-    : process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open';
+  const command = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe') : '/usr/bin/open';
   await launch(command, [directory]);
   return directory;
 }

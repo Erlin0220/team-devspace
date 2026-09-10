@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
 import { configureDevice, requestFromFile } from '../client/setup.mjs';
 import { createAccessKey } from '../client/admin.mjs';
-import { launchAgentXml, windowsTaskXml, serviceLabel } from '../client/platform.mjs';
+import { launchAgentXml, systemdUserUnit, windowsTaskXml, serviceLabel } from '../client/platform.mjs';
 import { diagnosticReport, openLogs, rollbackResumeFailure, stopTeamDevSpace } from '../client/control.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
@@ -19,7 +19,7 @@ async function fixture(t) {
   const requests = [];
   const bindingId = randomUUID();
   const keyId = randomUUID();
-  const flags = { reject: false };
+  const flags = { reject: false, deviceState: 'active' };
   const server = http.createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
@@ -27,6 +27,9 @@ async function fixture(t) {
     requests.push({ path: request.url, body: data, authorization: request.headers.authorization });
     response.setHeader('Content-Type', 'application/json');
     if (flags.reject) { response.writeHead(503); response.end(JSON.stringify({ error: 'temporary_failure' })); return; }
+    if (request.url === '/v1/device/status') {
+      response.end(JSON.stringify({ state: flags.deviceState, bindingId })); return;
+    }
     if (request.url === '/v1/admin/keys') {
       response.writeHead(201); response.end(JSON.stringify({ id: data.id, label: data.label, state: 'issued' })); return;
     }
@@ -74,6 +77,26 @@ test('installation retry/repair preserves identity, key, roots and upstream stat
   assert.ok(f.requests.every(request => request.body.deviceSecret === pending.deviceSecret));
   await assert.rejects(configureDevice({ ...input, accessKey: `tds_${randomSecret()}` }, { home: f.home, startup: false }), /already belongs/);
   assert.equal((await loadState(f.home)).accessKey, accessKey);
+});
+
+test('reinstall reconciles only the legacy stopped-state mismatch confirmed active by the Gateway', async t => {
+  const f = await fixture(t);
+  const input = { gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] };
+  await configureDevice(input, { home: f.home, startup: false });
+  let state = await loadState(f.home);
+  await atomicJson(join(f.home, 'state.json'), { ...state, remoteAccess: 'suspended' });
+  const requestsBefore = f.requests.length;
+  const recovered = await configureDevice({}, { home: f.home, startup: false });
+  assert.equal(recovered.remoteAccess, 'active');
+  assert.equal((await loadState(f.home)).remoteAccess, 'active');
+  assert.deepEqual(f.requests.slice(requestsBefore).map(request => request.path), ['/v1/device/status']);
+
+  state = await loadState(f.home);
+  await atomicJson(join(f.home, 'state.json'), { ...state, remoteAccess: 'suspended' });
+  f.flags.deviceState = 'suspended';
+  const preserved = await configureDevice({}, { home: f.home, startup: false });
+  assert.equal(preserved.remoteAccess, 'suspended');
+  assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
 });
 
 test('administrator issuance can be retried without losing the original employee credential', async t => {
@@ -170,10 +193,21 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(launch.includes('<key>KeepAlive</key><true/>'));
   assert.ok(!launch.includes('<key>UserName</key>'));
   assert.ok(!launch.includes(state.deviceSecret) && !launch.includes(state.accessKey));
+  const systemd = systemdUserUnit(state, 'runtime', home, { node: '/old/version/node', cloudflared: '/old/version/cloudflared' },
+    join(root, 'versions', 'candidate'));
+  assert.equal(serviceLabel(state, 'runtime', 'linux'), 'team-devspace-runtime');
+  assert.ok(systemd.includes('TEAM_DEVSPACE_ACTIVE_PATH=') && systemd.includes('active-path'));
+  assert.ok(systemd.includes('ExecStart=:/bin/sh -c'));
+  assert.ok(systemd.includes('exec \\"$active/runtime/bin/node\\"') || systemd.includes('exec "$active/runtime/bin/node"'));
+  assert.ok(systemd.includes('StandardOutput=journal') && systemd.includes('Restart=on-failure'));
+  assert.ok(systemd.includes('StartLimitBurst=5'));
+  assert.ok(!systemd.includes('network-online.target') && !systemd.includes('append:'));
+  assert.ok(!systemd.includes('/old/version/node') && !systemd.includes(state.deviceSecret) && !systemd.includes(state.accessKey));
   assert.throws(() => serviceLabel(state, 'arbitrary-process'));
 });
 
-test('opening logs delegates to the desktop shell without waiting for its exit code', async () => {
+test('opening logs delegates to the desktop shell without waiting for its exit code',
+  { skip: process.platform === 'linux' }, async () => {
   let launched;
   const home = join(homedir(), 'TeamDevSpace');
   const directory = join(home, 'logs');
@@ -205,26 +239,51 @@ test('diagnostics separate desired remote access from observed Gateway state and
   assert.deepEqual(report.recentErrors.find(entry => entry.component === 'runtime')?.lines, ['real failure']);
 });
 
-test('closing is allowed when the Gateway says the device is already disabled',
+test('closing is local-only and keeps active startup policy for the next login',
   { skip: process.platform !== 'win32' }, async t => {
-    const home = await mkdtemp(join(tmpdir(), 'team-devspace-disabled-'));
+    const home = await mkdtemp(join(tmpdir(), 'team-devspace-close-local-'));
     const project = join(home, 'project');
     await mkdir(project);
     t.after(() => rm(home, { recursive: true, force: true }));
+    await atomicJson(join(home, 'state.json'), {
+      schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
+      keyId: randomUUID(), bindingId: randomUUID(), gateway: 'http://127.0.0.1:1',
+      roots: [project], remoteAccess: 'active', releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
+      ports: { devspace: 65119, bridge: 65118, metrics: 65117 },
+    });
+    const result = await stopTeamDevSpace(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.remoteAccess, 'active');
+    assert.equal(result.startupRetained, true);
+    assert.equal((await loadState(home)).remoteAccess, 'active');
+  });
+
+test('closing does not change an explicit suspended policy or contact the Gateway',
+  { skip: process.platform !== 'win32' }, async t => {
+    const home = await mkdtemp(join(tmpdir(), 'team-devspace-close-suspended-'));
+    const project = join(home, 'project');
+    await mkdir(project);
+    t.after(() => rm(home, { recursive: true, force: true }));
+    let requests = 0;
     const server = http.createServer((_request, response) => {
-      response.writeHead(403, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ error: 'device_disabled' }));
+      requests++;
+      response.writeHead(500);
+      response.end();
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => server.close(resolve)));
     await atomicJson(join(home, 'state.json'), {
       schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
       keyId: randomUUID(), bindingId: randomUUID(), gateway: `http://127.0.0.1:${server.address().port}`,
-      roots: [project], remoteAccess: 'active', releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
+      roots: [project], remoteAccess: 'suspended', releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
       ports: { devspace: 65120, bridge: 65121, metrics: 65122 },
     });
-    assert.equal((await stopTeamDevSpace(home)).stopped, true);
+    const result = await stopTeamDevSpace(home);
+    assert.equal(result.stopped, true);
+    assert.equal(result.remoteAccess, 'suspended');
+    assert.equal(result.startupRetained, true);
     assert.equal((await loadState(home)).remoteAccess, 'suspended');
+    assert.equal(requests, 0);
   });
 
 test('resume rollback reports dual failure instead of claiming local services stopped', async () => {

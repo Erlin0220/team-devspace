@@ -1,6 +1,6 @@
 import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { downloadPinned, run } from './build-utils.mjs';
+import { downloadPinned, run, sha256File } from './build-utils.mjs';
 
 export const WINDOWS_GUI_SUBSYSTEM = 2;
 export const WINDOWS_X64_MACHINE = 0x8664;
@@ -28,23 +28,28 @@ export async function peSubsystem(path) { return (await peDetails(path)).subsyst
 export async function zigCompiler() {
   const target = 'win32-x64';
   const binaries = JSON.parse(await readFile(new URL('./binaries.json', import.meta.url), 'utf8'));
-  const cache = resolve('build/cache');
-  const archive = await downloadPinned(binaries.zig[target], cache);
+  const artifact = binaries.zig[target];
   const root = resolve('build/zig-win32-x64');
   let compiler;
   try {
     const directory = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory());
     compiler = directory && join(root, directory.name, 'zig.exe');
     await access(compiler);
-  } catch {
-    await rm(root, { recursive: true, force: true });
-    await mkdir(root, { recursive: true });
-    const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
-    await run(tar, ['-xf', archive, '-C', root], { timeout: 120000 });
-    const directory = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory());
-    if (!directory) throw new Error('Unexpected Zig archive layout');
-    compiler = join(root, directory.name, 'zig.exe');
-  }
+    if (await sha256File(compiler) !== artifact.executableSha256) throw new Error('Cached Zig executable hash differs from build contract');
+    const cachedVersion = (await run(compiler, ['version'], { capture: true, timeout: 30000 })).stdout.trim();
+    if (cachedVersion === '0.15.2') return compiler;
+  } catch {}
+
+  const cache = resolve('build/cache');
+  const archive = await downloadPinned(artifact, cache);
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  const tar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
+  await run(tar, ['-xf', archive, '-C', root], { timeout: 120000 });
+  const directory = (await readdir(root, { withFileTypes: true })).find(entry => entry.isDirectory());
+  if (!directory) throw new Error('Unexpected Zig archive layout');
+  compiler = join(root, directory.name, 'zig.exe');
+  if (await sha256File(compiler) !== artifact.executableSha256) throw new Error('Pinned Zig executable hash differs from build contract');
   const version = (await run(compiler, ['version'], { capture: true, timeout: 30000 })).stdout.trim();
   if (version !== '0.15.2') throw new Error('Pinned Zig compiler version differs from build contract');
   return compiler;

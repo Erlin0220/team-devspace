@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,6 +19,21 @@ const home = await mkdtemp(join(tmpdir(), 'team-devspace-native-'));
 const project = join(home, 'project');
 await mkdir(project);
 await writeFile(join(project, 'proof.txt'), 'native-user-session-proof');
+if (process.platform === 'linux') {
+  const distributionRoot = join(home, 'distribution');
+  const versions = join(distributionRoot, 'versions');
+  const active = join(versions, 'active');
+  await mkdir(versions, { recursive: true });
+  await symlink(bundle, active, 'dir');
+  await writeFile(join(distributionRoot, 'active-path'), `${active}\n`);
+  process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT = distributionRoot;
+  for (const component of platform.COMPONENTS) {
+    const unit = join(platform.systemdUserDirectory(), `${platform.serviceLabel({ deviceId: 'test' }, component)}.service`);
+    if (await access(unit).then(() => true, () => false)) {
+      throw new Error(`Refusing to overwrite an existing Team DevSpace Linux user unit during native smoke: ${unit}`);
+    }
+  }
+}
 async function freePort() {
   const server = net.createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -90,8 +105,28 @@ try {
   await stateModule.atomicJson(join(home, 'state.json'), state);
   await stateModule.writeUpstreamConfig(state, home);
   await writeFile(join(home, 'tunnel.token'), 'not-a-live-tunnel-credential', { mode: 0o600 });
-  await platform.installServices(state, home);
   installed = true;
+  if (process.platform === 'linux') {
+    const directory = platform.systemdUserDirectory();
+    const legacy = `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.runtime.service`;
+    const legacyPath = join(directory, legacy);
+    await mkdir(directory, { recursive: true });
+    await writeFile(legacyPath, platform.systemdUserUnit(state, 'runtime', home,
+      { node: join(bundle, 'runtime/bin/node'), cloudflared: join(bundle, 'bin/cloudflared') }, bundle), { mode: 0o600 });
+    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'inherit' });
+    execFileSync('systemctl', ['--user', 'start', legacy], { stdio: 'inherit' });
+    await waitForPorts(true);
+    await platform.serviceAction('stop', state, home, ['runtime']);
+    await waitForPorts(false);
+    execFileSync('systemctl', ['--user', 'start', legacy], { stdio: 'inherit' });
+    await waitForPorts(true);
+    await platform.installServices(state, home);
+    await waitForPorts(false);
+    assert.equal(await access(legacyPath).then(() => true, () => false), false,
+      'Fixed Linux startup migration must retire the old device-specific unit');
+  } else {
+    await platform.installServices(state, home);
+  }
   // Stopping freshly installed but idle startup entries must be safe. Upgrade
   // performs this before replacing any active payload.
   await platform.serviceAction('stop', state, home);
@@ -101,6 +136,10 @@ try {
     assert.equal(windowsTaskExists(platform.serviceLabel(state, 'runtime')), false);
     assert.equal(windowsTaskExists(platform.serviceLabel(state, 'tunnel')), false);
     assert.equal(windowsTaskExists(platform.serviceLabel(state, 'tray')), true);
+  } else if (process.platform === 'linux') {
+    for (const component of platform.COMPONENTS) {
+      await access(join(platform.systemdUserDirectory(), `${platform.serviceLabel(state, component)}.service`));
+    }
   }
   await platform.installServices({ ...state, remoteAccess: 'active' }, home);
   // Native process supervision is real. No tunnel is started and no private files are exposed.
@@ -138,7 +177,8 @@ try {
   installed = false;
   console.log(JSON.stringify({ passed: true, platform: process.platform, architecture: process.arch,
     actualNativeStartup: true, packagedRuntime: true, authenticatedMcp: true,
-    stopRestartCleanup: true, ...(process.platform === 'win32' ? { noConsoleSupervisor: true } : {}),
+    stopRestartCleanup: true, ...(process.platform === 'linux' ? { legacyUnitMigration: true } : {}),
+    ...(process.platform === 'win32' ? { noConsoleSupervisor: true } : {}),
     realCloudflare: false, realChatGPT: false }));
 } catch (error) {
   for (const component of ['runtime']) {

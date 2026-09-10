@@ -26,7 +26,7 @@ ChatGPT 工作空间 App + 员工 Access Key
 
 | 组件 | 版本 |
 | --- | --- |
-| Team DevSpace | 0.2.0 |
+| Team DevSpace | 0.2.1 |
 | 官方 DevSpace | 1.0.8 |
 | Node.js | 22.23.0 |
 | cloudflared | 2026.8.3 |
@@ -82,17 +82,17 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 管理员先完成云端部署，再从 private GitHub Release 下载并分发对应平台包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
 
-**Windows x64：**管理员分发 `Team-DevSpace-0.2.0-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.0-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
+**Windows x64：**管理员分发 `Team-DevSpace-0.2.1-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
 
-**macOS：**分别使用 arm64 或 x64 的自包含 `.pkg`，包内已包含离线 runtime 组件。`internal-free` 不要求 Apple 付费凭据；凭据齐全的 production job 会签名、公证并 staple，未配置时明确保持 unsigned/unnotarized。管理员只通过 private GitHub Release 交付并核对 SHA-256；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime。
+**macOS：**使用 Apple Silicon (`arm64`) 自包含 `.pkg`，包内已包含离线 runtime 组件。`internal-free` 不要求 Apple 付费凭据；凭据齐全的 production job 会签名、公证并 staple，未配置时明确保持 unsigned/unnotarized。管理员只通过 private GitHub Release 交付并核对 SHA-256；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime。
 
-**Linux：**使用对应 x64/arm64 离线 `.tar.gz`，解压后运行其中的 `install.sh`；安装和 native 依赖测试与实际 systemd 用户会话自启动验收分开记录。
+**Linux x64：**当前包要求 `x86_64`、glibc 2.34+ 和可用的 systemd user manager。员工只使用 private GitHub Release 中的 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与 `SHA256SUMS`，不要把 Actions 中间 artifact 当成员工安装包。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
 
 内部发行仍可能触发 Windows SmartScreen 或 macOS Gatekeeper 的额外确认；只对管理员提供、SHA-256 已核对的固定版本包建立例外，不要关闭整机安全功能。
 
 安装成功后，员工在 ChatGPT 连接共享 App，输入同一个 Access Key 即可。状态检查只报告可观测到的本地/网关健康状态，不会伪造“ChatGPT 已连接”。
 
-Windows/macOS 登录后显示统一的系统托盘/菜单栏入口，可检查真实状态、暂停/恢复远程访问、重启、打开日志和复制脱敏诊断。退出托盘不会停止 runtime/tunnel；托盘崩溃也不改变远程访问状态。Linux 始终使用可靠的 CLI fallback。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS 使用 `team-devspace`：
+Windows/macOS 登录后显示统一的系统托盘/菜单栏入口，可检查真实状态、暂停/恢复远程访问、重启、打开日志和复制脱敏诊断。退出托盘不会停止 runtime/tunnel；托盘崩溃也不改变远程访问状态。Linux 使用稳定 CLI + systemd user service，不额外引入托盘或 supervisor。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
 
 ```sh
 team-devspace status
@@ -103,6 +103,7 @@ team-devspace suspend
 team-devspace resume
 team-devspace diagnostics
 team-devspace logs
+team-devspace logs --follow   # Linux: journalctl --user
 team-devspace roots list
 team-devspace roots add <绝对项目目录>
 team-devspace roots remove <绝对项目目录>
@@ -124,7 +125,7 @@ team-devspace roots remove <绝对项目目录>
 - macOS：`~/Library/Application Support/TeamDevSpace`
 - Linux：`${XDG_STATE_HOME:-~/.local/state}/team-devspace`
 
-修复和升级保留 Key、Device Binding、Allowed Roots，**不需要重新认证或重新输入 Access Key**；只有管理员已 reset/revoke、状态文件丢失或改用另一个 Gateway/Key 时才需重新 Enrollment。若升级前远程访问已暂停，升级只恢复托盘，不会暗中启动 runtime/tunnel 或把 Gateway 改回 active。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
+修复和升级保留 Key、Device Binding、Allowed Roots，**不需要重新认证或重新输入 Access Key**；只有管理员已 reset/revoke、状态文件丢失或改用另一个 Gateway/Key 时才需重新 Enrollment。若升级前远程访问已暂停，不会暗中启动 runtime/tunnel 或把 Gateway 改回 active；Linux 保留已安装但 disabled 的固定 user units，恢复时只重新 enable/start。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
 
 macOS 卸载执行一次 `team-devspace uninstall`：它先停止/移除用户 LaunchAgent，再通过 macOS 原生管理员授权删除包拥有的 App、命令入口和安装 receipt；Enrollment 与员工项目不会删除。Windows 使用系统卸载入口。高级隔离测试可通过 `TEAM_DEVSPACE_HOME` 或 CLI `--home` 指定独立状态目录，但不要复用他人的状态文件。
 
@@ -142,9 +143,9 @@ npm run test:native
 
 `package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建后自动清理解压/组装中间文件；员工 runtime 不携带构建用 npm 和 lock/.npmrc。
 
-`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和临时原生启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试。Unix 打包还会实际启动 native PTY；托管 CI 的包安装测试不等于真实登录会话自启动验收。
+`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；release workflow 对 Windows x64 和 Linux x64 启用这条 native lifecycle gate。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试；Unix 打包仍会实际启动 native PTY。
 
-GitHub Actions 的固定版本 release workflow 覆盖 Windows x64、macOS arm64/x64、Linux x64/arm64，聚合 native layout 后才允许发布。当前 canonical trust profile 是 `internal-free`：发布前只要求 `production` 环境中的固定 Windows 内部自签 PFX；CI 用它签 Windows 安装器，并把公开证书和当前用户信任脚本一起放进 Windows 离线 ZIP。Apple 凭据不是 gate，但完整配置时会启用 Developer ID app/installer 签名、公证与 staple；未配置时明确记录为 unsigned/unnotarized。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
+GitHub Actions 的固定版本 release workflow 只覆盖 Windows x64、Apple Silicon macOS 和 Linux x64 三个目标，聚合 native layout 后才允许发布。当前 canonical trust profile 是 `internal-free`：发布前只要求 `production` 环境中的固定 Windows 内部自签 PFX；CI 用它签 Windows 安装器，并把公开证书和当前用户信任脚本一起放进 Windows 离线 ZIP。Apple 凭据不是 gate，但完整配置时会启用 Developer ID app/installer 签名、公证与 staple；未配置时明确记录为 unsigned/unnotarized。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 

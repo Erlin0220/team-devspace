@@ -52,10 +52,20 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     if (state.gateway !== gateway || state.accessKey !== accessKey) throw new Error('Another setup already enrolled this installation with different credentials');
   }
   if (previous?.bindingId && previous?.keyId && previous?.hostname && await hasTunnelCredential(home)) {
-    onProgress('Existing Enrollment found. Reusing the current Device Binding without contacting the Gateway...');
+    onProgress('Existing Enrollment found. Reusing the current Device Binding...');
+    let remoteAccess = previous.remoteAccess === 'suspended' ? 'suspended' : 'active';
+    if (remoteAccess === 'suspended') {
+      const observed = await control(gateway, '/v1/device/status', previous.deviceSecret, {
+        body: { keyId: previous.keyId, bindingId: previous.bindingId }, timeout: 5000,
+      }).then(result => result.bindingId === previous.bindingId ? result.state : null, () => null);
+      if (observed === 'active') {
+        remoteAccess = 'active';
+        onProgress('Recovered a legacy stopped state. Restoring normal connection startup...');
+      }
+    }
     state = { ...state, keyId: previous.keyId, bindingId: previous.bindingId, hostname: previous.hostname,
       endpoint: previous.endpoint ?? `${gateway}/mcp`, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
-      remoteAccess: previous.remoteAccess === 'suspended' ? 'suspended' : 'active' };
+      remoteAccess };
     await writeUpstreamConfig(state, home);
     await atomicJson(join(home, 'state.json'), state);
     if (startup) {

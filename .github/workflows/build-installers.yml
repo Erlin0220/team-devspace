@@ -26,7 +26,7 @@ jobs:
       node: ${{ steps.release.outputs.node }}
       npm: ${{ steps.release.outputs.npm }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: release
@@ -54,10 +54,10 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
       CI: 'true'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ needs.metadata.outputs.node }}
           cache: npm
@@ -85,13 +85,29 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
       CI: 'true'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ needs.metadata.outputs.node }}
           cache: npm
+      - name: Activate repository-pinned Rust toolchain
+        if: ${{ matrix.target == 'win32-x64' || startsWith(matrix.target, 'darwin-') }}
+        run: rustup show active-toolchain && rustc --version && cargo --version
+      - name: Restore Rust dependency and tray release cache
+        if: ${{ matrix.target == 'win32-x64' || startsWith(matrix.target, 'darwin-') }}
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: native/tray -> ../../build/tray-target-${{ matrix.target }}
+          key: tray-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore pinned Zig toolchain
+        if: ${{ matrix.target == 'win32-x64' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/zig-win32-x64
+          key: team-devspace-zig-${{ matrix.target }}-${{ hashFiles('scripts/binaries.json') }}
       - name: Install locked build dependencies
         run: npx --yes ${{ needs.metadata.outputs.npm }} ci --no-fund --no-audit
       - name: Prepare optional protected macOS signing identity
@@ -107,6 +123,26 @@ jobs:
         run: node scripts/macos-signing.mjs prepare
       - name: Build native component artifacts and self-contained platform package
         run: npm run package
+      - name: Enforce Linux glibc 2.34 runtime ceiling
+        if: ${{ matrix.target == 'linux-x64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          max_glibc=$(
+            while IFS= read -r -d '' file; do
+              readelf --version-info "$file" 2>/dev/null || true
+            done < <(find build/bundle-linux-x64 -type f \( -perm /111 -o -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0) |
+              { grep -oE 'GLIBC_[0-9]+\.[0-9]+' || true; } |
+              sort -Vu |
+              tail -n 1
+          )
+          test -n "$max_glibc"
+          highest=$(printf '%s\n' GLIBC_2.34 "$max_glibc" | sort -V | tail -n 1)
+          if test "$highest" != GLIBC_2.34; then
+            echo "::error::Linux runtime requires $max_glibc, above the supported GLIBC_2.34 ceiling"
+            exit 1
+          fi
+          echo "Linux runtime ABI ceiling: $max_glibc"
       - name: Record macOS package trust mode
         if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
         shell: bash
@@ -123,11 +159,27 @@ jobs:
       - name: Start and exercise the native Windows tray protocol
         if: ${{ matrix.target == 'win32-x64' }}
         run: npm run test:tray
+      - name: Prepare Linux systemd user manager for lifecycle verification
+        if: ${{ matrix.target == 'linux-x64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid=$(id -u)
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$uid.service"
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          test -S "/run/user/$uid/bus"
+          XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user daemon-reload
       - name: Verify native user-session runtime
-        # GitHub-hosted macOS jobs do not provide a durable employee login session for LaunchAgent lifecycle E2E.
-        # macOS native startup is verified later on a real logged-in Mac; hosted CI still builds both native PKGs here.
+        # macOS hosted runners do not expose a durable employee LaunchAgent session. Linux gets a real
+        # per-user systemd manager above; Windows uses the logged-in Task Scheduler session.
         if: ${{ matrix.native_startup }}
         run: npm run test:native
+      - name: Clean Linux lifecycle test session
+        if: ${{ always() && matrix.target == 'linux-x64' }}
+        shell: bash
+        run: sudo loginctl disable-linger "$USER" || true
       - name: Verify actual isolated Windows installer transaction
         if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
         run: npm run test:installer
@@ -146,7 +198,7 @@ jobs:
         run: ./scripts/sign-internal-windows.ps1
 
       - name: Upload complete native layout and entrypoint
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: team-devspace-${{ matrix.target }}
           path: release/offline/**
@@ -165,13 +217,13 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ needs.metadata.outputs.node }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: team-devspace-*
           path: release/offline

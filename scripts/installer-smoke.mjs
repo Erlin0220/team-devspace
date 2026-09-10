@@ -82,6 +82,33 @@ async function execute(file, args, timeout = 240000) {
     child.once('exit', code => { clearTimeout(timer); resolve(code); });
   });
 }
+async function taskCommand(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), args,
+      { env, windowsHide: true, stdio: 'ignore' });
+    child.once('error', reject);
+    child.once('exit', code => resolve(code));
+  });
+}
+async function testTaskNames() {
+  try {
+    const { deviceId } = await readJson(join(home, 'state.json'));
+    if (!/^[a-f0-9-]{36}$/i.test(deviceId ?? '')) return [];
+    const compact = deviceId.replaceAll('-', '');
+    return ['runtime', 'tunnel', 'tray'].map(component => `com.teamdevspace.${compact}.${component}`);
+  } catch { return []; }
+}
+async function cleanupTestTasks() {
+  for (const name of await testTaskNames()) {
+    await taskCommand(['/End', '/TN', name]).catch(() => {});
+    await taskCommand(['/Delete', '/TN', name, '/F']).catch(() => {});
+  }
+}
+async function assertNoTestTasks() {
+  for (const name of await testTaskNames()) {
+    assert.notEqual(await taskCommand(['/Query', '/TN', name]), 0, `Installer smoke left startup task behind: ${name}`);
+  }
+}
 async function installAttempt() {
   const requestFile = join(work, 'setup-request.json');
   await atomicJson(requestFile, { gateway: `http://127.0.0.1:${server.address().port}`, accessKey: key, roots: [project] });
@@ -110,11 +137,13 @@ try {
   assert.equal(await exists(join(install, 'cache')), false, 'The self-contained installer must not create a persistent payload cache');
 
   enrollmentUnavailable = false;
-  const enrolled = await installAttempt();
-  assert.equal(enrolled.deviceId, pending.deviceId, 'Enrollment retry must reuse the pending local identity');
+  assert.equal(await repair(), 0, 'Pending Enrollment must resume through the product Repair path without reinstalling payloads');
+  const enrolled = await readJson(join(home, 'state.json'));
+  assert.equal(enrolled.deviceId, pending.deviceId, 'Enrollment repair must reuse the pending local identity');
   assert.equal(enrolled.bindingId, bindingId);
   assert.equal(enrollmentCalls, 2);
   const firstActive = await readJson(join(install, 'active.json'));
+  assert.equal(firstActive.path, pendingActive.path, 'Enrollment recovery must not reinstall or switch the local application payload');
   const upstream = await readJson(join(firstActive.path, 'node_modules', '@waishnav', 'devspace', 'package.json'));
   assert.equal(upstream.version, release.devspaceVersion);
   assert.equal(await exists(join(firstActive.path, 'git', 'cmd', 'git.exe')), true);
@@ -158,11 +187,12 @@ try {
   assert.equal(uninstallCode, 0, await readFile(join(install, 'bootstrap-error.log'), 'utf8').catch(() => `Uninstall.exe exited ${uninstallCode} without bootstrap-error.log`));
   const uninstallMs = Date.now() - uninstallStarted;
   canUninstall = false;
+  await assertNoTestTasks();
   assert.equal(await exists(join(install, 'v')), false);
   assert.equal((await readJson(join(home, 'state.json'))).bindingId, bindingId);
   assert.equal(await exists(project), true);
   console.log(JSON.stringify({ passed: true, actualInstaller: true, selfContainedInstaller: true,
-    installSurvivesEnrollmentFailure: true, enrollmentRetryReusesIdentity: true, upgradeSkipsEnrollment: true,
+    installSurvivesEnrollmentFailure: true, pendingEnrollmentRepairReusesIdentity: true, upgradeSkipsEnrollment: true,
     healthyRepairIsLocalOnly: true, missingTunnelCredentialIsRecoverable: true,
     rerunInstallerRepairsPayload: true, noPersistentPayloadCache: true,
     officialGitFallbackExecuted: true, retiredVersionsCollected: true, damagedClientUninstallFallback: true,
@@ -171,6 +201,7 @@ try {
   if (canUninstall || await exists(join(install, 'Uninstall.exe'))) {
     await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000).catch(() => {});
   }
+  await cleanupTestTasks();
   await new Promise(resolve => server.close(resolve));
   await rm(work, { recursive: true, force: true }).catch(() => {});
   await rm(install, { recursive: true, force: true }).catch(() => {});

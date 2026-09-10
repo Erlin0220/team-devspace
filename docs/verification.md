@@ -2,6 +2,12 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
+## Linux lifecycle hardening: 0.2.1 candidate
+
+- [x] Local Windows checkout passed `npm run check`, all 51 tests, `npm run test:distribution`, POSIX shell syntax checks, a fresh `0.2.1` bundle preparation, and `npm run test:native` against that rebuilt bundle after the Linux lifecycle hardening. Pure contract tests cover fixed Linux unit names, `active-path` resolution, journald output, bounded restart policy, removal of the ineffective user `network-online.target`, and absence of version-specific executable paths or credentials in unit text.
+- [x] Linux bootstrap now rejects root before extraction, enforces the actual glibc 2.34 runtime floor, installs an owned stable `~/.local/bin/team-devspace` command, and automatically refreshes fixed systemd user units for an already-enrolled reinstall/upgrade even when no setup mode is passed. The isolated Unix installer transaction will verify that stable command on its next native Linux package run.
+- [ ] The new Linux `systemd --user` lifecycle gate is wired into the native `linux-x64` package job but has not yet run on an Ubuntu runner from this checkout. Do not report logged-in/systemd lifecycle acceptance until that workflow step passes.
+
 ## Team control and Admin Web verification: 0.2.0
 
 - [x] Local `npm run check`, all 49 tests, `npm run deploy -- --dry-run`, `npm run test:distribution`, dependency audit, native Windows tray/runtime smoke and the actual Installer V2 transaction passed on 2026-09-10. Tests cover the shared Admin Service, HTML escaping/CSP/CSRF, browser-only credential generation and same-credential retry, Access resource ownership, fail-closed protection probes, control API compatibility, suspended Gateway and startup restoration routing, tray controller state/action delegation and optional macOS signing configuration.

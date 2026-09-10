@@ -30,19 +30,23 @@ export function trayState(status, { busy = false, notice } = {}) {
   const gatewayState = status.gateway ?? status.remoteAccess;
   const desiredRemoteAccess = status.desiredRemoteAccess ?? status.remoteAccess;
   const suspended = gatewayState === 'suspended';
-  const suspensionUnconfirmed = desiredRemoteAccess === 'suspended' && !['active', 'suspended'].includes(gatewayState);
+  const desiredSuspended = desiredRemoteAccess === 'suspended';
+  const legacyResumeNeeded = desiredSuspended && gatewayState === 'active';
+  const suspensionUnconfirmed = desiredSuspended && !['active', 'suspended'].includes(gatewayState);
   const visual = suspended ? 'suspended' : status.ready ? 'ready' : stopped ? 'stopped' : 'partial';
   const summary = suspensionUnconfirmed
     ? (stopped ? '○ Team DevSpace 本机已停止，网关状态未知' : '● Team DevSpace 暂停未完成')
-    : ({ ready: '● Team DevSpace 正常', partial: '● Team DevSpace 部分异常',
-      suspended: '● Team DevSpace 远程访问已暂停', stopped: '○ Team DevSpace 已停止' })[visual];
+    : legacyResumeNeeded && stopped ? '○ Team DevSpace 已停止，可恢复连接'
+      : ({ ready: '● Team DevSpace 正常', partial: '● Team DevSpace 部分异常',
+        suspended: '● Team DevSpace 远程访问已暂停', stopped: '○ Team DevSpace 已停止' })[visual];
   const enrolled = status.remoteAccess !== 'not-enrolled';
   const controllable = enrolled && gatewayState !== 'disabled';
   return {
     status: visual,
     summary,
-    remoteText: suspended ? '恢复远程访问' : suspensionUnconfirmed ? '重试暂停远程访问' : '暂停远程访问',
-    remoteAction: suspended ? 'resume' : 'suspend',
+    remoteText: suspended || legacyResumeNeeded ? '恢复远程访问'
+      : suspensionUnconfirmed ? '重试暂停远程访问' : '暂停远程访问',
+    remoteAction: suspended || legacyResumeNeeded ? 'resume' : 'suspend',
     remoteEnabled: !busy && controllable,
     checkEnabled: !busy,
     restartEnabled: !busy && controllable && !suspended && desiredRemoteAccess !== 'suspended',
@@ -136,7 +140,7 @@ export async function runTray(home = stateHome(), options = {}) {
         if (action === 'exit') {
           exiting = true;
           if (interval) clearInterval(interval);
-          send(trayState(currentStatus, { busy: true, notice: '全部服务已停止，正在退出…' }));
+          send(trayState(currentStatus, { busy: true, notice: '本地服务已停止，正在退出…' }));
           child.stdin.end();
           return result;
         }

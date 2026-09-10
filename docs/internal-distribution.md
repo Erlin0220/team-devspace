@@ -53,7 +53,11 @@ For an unsigned package this is an explicit internal exception, not Developer ID
 
 ## Linux
 
-Linux handoff remains the fixed-version offline `.tar.gz` plus SHA-256 verification. No new signing subsystem is introduced by the free internal profile.
+Linux handoff remains the fixed-version x64 offline `.tar.gz` plus SHA-256 verification. No new signing subsystem is introduced by the free internal profile. The current runtime baseline is `x86_64`, glibc 2.34 or newer, and a working systemd user manager.
+
+Employees run `install.sh` as their normal account, never through `sudo`. The installer keeps versioned payloads private, installs the stable `~/.local/bin/team-devspace` command, and uses fixed `team-devspace-runtime.service` / `team-devspace-tunnel.service` user units that resolve the current payload through `active-path`. A first installation without retained Enrollment is completed with `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`; an enrolled upgrade only needs the new `install.sh` and refreshes the same fixed units without another device binding. Linux service output is owned by journald and can be read with `team-devspace logs` or followed with `team-devspace logs --follow`.
+
+On a headless server, keeping a user service alive after logout is an explicit administrator choice (`loginctl enable-linger <user>`). The installer never enables linger or installs a root daemon on its own.
 
 ## Release policy
 

@@ -4,7 +4,7 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, delimiter } from 'node:path';
+import { join, delimiter, resolve } from 'node:path';
 import { installRoot, privateDirectory, stateHome } from './state.mjs';
 
 const exec = promisify(execFile);
@@ -15,7 +15,7 @@ export const enabledStartupComponents = state => state.remoteAccess === 'suspend
   ? STARTUP_COMPONENTS.filter(component => component === 'tray') : STARTUP_COMPONENTS;
 export const xml = value => String(value).replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]);
 const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
-const systemdQuoted = value => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+const systemdQuoted = value => `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%')}"`;
 
 export async function executablePaths(root = installRoot) {
   const node = process.platform === 'win32' ? join(root, 'runtime', 'node.exe') : join(root, 'runtime', 'bin', 'node');
@@ -30,8 +30,9 @@ export function componentArguments(component, home, state, root = installRoot) {
   return [join(root, 'client', 'cli.mjs'), 'run', component, '--home', home];
 }
 
-export function serviceLabel(state, component) {
+export function serviceLabel(state, component, platform = process.platform) {
   if (!STARTUP_COMPONENTS.includes(component)) throw new Error('Unknown component');
+  if (platform === 'linux') return `team-devspace-${component}`;
   return `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.${component}`;
 }
 
@@ -73,14 +74,28 @@ export function windowsTaskXml(state, component, home, sid, root = installRoot) 
 }
 
 export function systemdUserUnit(state, component, home, paths, root = installRoot) {
-  const program = component === 'tunnel' ? paths.cloudflared : paths.node;
-  const arguments_ = [program, ...componentArguments(component, home, state, root)].map(systemdQuoted).join(' ');
-  const path = [process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin', join(root, 'runtime', 'bin'), join(root, 'bin')].join(':');
-  return `[Unit]\nDescription=Team DevSpace ${component}\nAfter=network-online.target\nWants=network-online.target\n\n` +
-    `[Service]\nType=simple\nWorkingDirectory=${systemdQuoted(root)}\nExecStart=${arguments_}\n` +
-    `Environment=${systemdQuoted(`TEAM_DEVSPACE_HOME=${home}`)}\nEnvironment=${systemdQuoted('NODE_OPTIONS=')}\nEnvironment=${systemdQuoted(`PATH=${path}`)}\n` +
-    `Restart=always\nRestartSec=15\nStandardOutput=append:${systemdQuoted(join(home, 'logs', `${component}.log`))}\n` +
-    `StandardError=append:${systemdQuoted(join(home, 'logs', `${component}.error.log`))}\n\n[Install]\nWantedBy=default.target\n`;
+  const distributionRoot = resolve(process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT ?? join(root, '..', '..'));
+  const activePath = join(distributionRoot, 'active-path');
+  const path = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin';
+  const command = component === 'tunnel'
+    ? `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; exec "$active/bin/cloudflared" --no-autoupdate tunnel --metrics "127.0.0.1:${state.ports.metrics}" --loglevel warn run --token-file "$TEAM_DEVSPACE_HOME/tunnel.token"`
+    : `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; exec "$active/runtime/bin/node" "$active/client/cli.mjs" run runtime --home "$TEAM_DEVSPACE_HOME"`;
+  // ':' is the systemd executable prefix that disables Exec*= $variable expansion. The shell must
+  // receive $active/$TEAM_DEVSPACE_* literally because it resolves active-path at process start.
+  const arguments_ = `/bin/sh -c ${systemdQuoted(command)}`;
+  return `[Unit]\nDescription=Team DevSpace ${component}\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n` +
+    `[Service]\nType=simple\nWorkingDirectory=${systemdQuoted(home)}\nExecStart=:${arguments_}\n` +
+    `Environment=${systemdQuoted(`TEAM_DEVSPACE_HOME=${home}`)}\nEnvironment=${systemdQuoted(`TEAM_DEVSPACE_DISTRIBUTION_ROOT=${distributionRoot}`)}\n` +
+    `Environment=${systemdQuoted(`TEAM_DEVSPACE_ACTIVE_PATH=${activePath}`)}\nEnvironment=${systemdQuoted('NODE_OPTIONS=')}\nEnvironment=${systemdQuoted(`PATH=${path}`)}\n` +
+    `Restart=on-failure\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n`;
+}
+
+export function systemdUserDirectory() {
+  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'systemd', 'user');
+}
+
+function legacyLinuxServiceLabel(state, component) {
+  return `com.teamdevspace.${state.deviceId.replaceAll('-', '')}.${component}`;
 }
 
 async function native(command, args, allowMissing = false) {
@@ -139,16 +154,24 @@ export async function installServices(state, home = stateHome(), root = installR
     }
   } else if (process.platform === 'linux') {
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
-    const directory = join(homedir(), '.config', 'systemd', 'user');
+    await native('systemctl', ['--user', 'show-environment']);
+    const directory = systemdUserDirectory();
     await mkdir(directory, { recursive: true });
-    if (components.includes('runtime')) await access(join(root, 'runtime', 'bin', 'node'));
-    if (disabled.length) await serviceAction('remove', state, home, disabled);
-    for (const component of components) {
+    if (scope.includes('runtime')) await access(join(root, 'runtime', 'bin', 'node'));
+    if (scope.includes('tunnel')) await access(paths.cloudflared);
+    for (const component of scope) {
+      const legacy = `${legacyLinuxServiceLabel(state, component)}.service`;
+      await native('systemctl', ['--user', 'disable', '--now', legacy], true);
+      await rm(join(directory, legacy), { force: true });
       const unit = `${serviceLabel(state, component)}.service`;
       await writeFile(join(directory, unit), systemdUserUnit(state, component, home, paths, root), { mode: 0o600 });
-      await native('systemctl', ['--user', 'enable', unit]);
     }
     await native('systemctl', ['--user', 'daemon-reload']);
+    for (const component of scope) {
+      const unit = `${serviceLabel(state, component)}.service`;
+      if (desired.includes(component)) await native('systemctl', ['--user', 'enable', unit]);
+      else await native('systemctl', ['--user', 'disable', '--now', unit], true);
+    }
   } else throw new Error('Only Windows, macOS and Linux user-login startup are supported');
 }
 
@@ -172,12 +195,13 @@ async function waitForStopped(state, components) {
 }
 
 export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS) {
-  if (!['start', 'stop', 'restart', 'remove'].includes(action)) throw new Error('Unknown service action');
+  if (!['start', 'stop', 'restart', 'disable', 'remove'].includes(action)) throw new Error('Unknown service action');
+  if (action === 'disable' && process.platform !== 'linux') throw new Error('Disable without removing startup is only supported on Linux');
   if (action === 'restart') {
     await serviceAction('stop', state, home, components);
     return serviceAction('start', state, home, components);
   }
-  const ordered = action === 'stop' || action === 'remove' ? [...components].reverse() : components;
+  const ordered = ['stop', 'disable', 'remove'].includes(action) ? [...components].reverse() : components;
   for (const component of ordered) {
     const label = serviceLabel(state, component);
     if (process.platform === 'win32') {
@@ -202,14 +226,23 @@ export async function serviceAction(action, state, home = stateHome(), component
       }
     } else if (process.platform === 'linux') {
       const unit = `${label}.service`;
-      const unitFile = join(homedir(), '.config', 'systemd', 'user', unit);
+      const unitFile = join(systemdUserDirectory(), unit);
+      const legacyUnit = `${legacyLinuxServiceLabel(state, component)}.service`;
       if (action === 'start') await native('systemctl', ['--user', 'start', unit]);
-      else if (action === 'remove') {
+      else if (action === 'disable') {
         await native('systemctl', ['--user', 'disable', '--now', unit], true);
+        await native('systemctl', ['--user', 'disable', '--now', legacyUnit], true);
+      } else if (action === 'remove') {
+        await native('systemctl', ['--user', 'disable', '--now', unit], true);
+        await native('systemctl', ['--user', 'disable', '--now', legacyUnit], true);
         await rm(unitFile, { force: true });
-      } else await native('systemctl', ['--user', 'stop', unit], true);
+        await rm(join(systemdUserDirectory(), legacyUnit), { force: true });
+      } else {
+        await native('systemctl', ['--user', 'stop', unit], true);
+        await native('systemctl', ['--user', 'stop', legacyUnit], true);
+      }
     } else throw new Error('Unsupported runtime platform');
   }
   if (process.platform === 'linux' && action === 'remove') await native('systemctl', ['--user', 'daemon-reload']);
-  if (action === 'stop' || action === 'remove') await waitForStopped(state, components);
+  if (['stop', 'disable', 'remove'].includes(action)) await waitForStopped(state, components);
 }

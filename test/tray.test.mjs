@@ -39,7 +39,10 @@ test('tray presentation derives menu capabilities from the existing health resul
   const conflict = trayState({ ready: false, devspace: false, bridge: false, tunnel: false,
     gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'suspended' });
   assert.equal(conflict.status, 'stopped');
-  assert.equal(conflict.remoteText, '暂停远程访问');
+  assert.equal(conflict.summary, '○ Team DevSpace 已停止，可恢复连接');
+  assert.equal(conflict.remoteText, '恢复远程访问');
+  assert.equal(conflict.remoteAction, 'resume');
+  assert.equal(conflict.remoteEnabled, true);
   assert.equal(conflict.restartEnabled, false);
 
   const gatewaySuspended = trayState({ ready: false, devspace: true, bridge: true, tunnel: true,
@@ -87,13 +90,13 @@ test('tray controller delegates fixed menu actions and exits only after services
       repair: async () => { calls.push('repair'); },
       logs: async () => { calls.push('logs'); },
       diagnostics: async () => { calls.push('diagnostics'); },
-      exit: async () => { calls.push('exit'); await new Promise(resolve => setTimeout(resolve, 10)); stopped = true; },
+      exit: async () => { calls.push('exit'); await new Promise(resolve => setTimeout(resolve, 10)); stopped = true; return { startupRetained: true }; },
     } });
   assert.equal(stopped, true);
   assert.deepEqual(calls, actions);
 });
 
-test('failed exit keeps the tray controller alive instead of pretending shutdown succeeded', async () => {
+test('local shutdown failure keeps the tray controller alive instead of pretending shutdown succeeded', async () => {
   let exitCalls = 0;
   const fake = `
     console.log(JSON.stringify({event:'ready'}));
@@ -112,7 +115,7 @@ test('failed exit keeps the tray controller alive instead of pretending shutdown
     helperArgs: ['--input-type=module', '-e', fake], refreshInterval: 60000,
     operations: {
       status: async () => status,
-      exit: async () => { exitCalls++; throw new Error('Gateway suspension could not be confirmed'); },
+      exit: async () => { exitCalls++; throw new Error('Local service shutdown failed'); },
     } });
   assert.equal(exitCalls, 1);
 });
