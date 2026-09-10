@@ -26,33 +26,41 @@ function Invoke-SignTool([string]$Executable, [string[]]$Arguments, [string]$Sta
   finally { $process.Dispose() }
 }
 
-function Add-CurrentUserCertificate([string]$StoreName, [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate) {
-  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-    $StoreName,
-    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-  )
+function Invoke-CertUtil([string[]]$Arguments, [string]$Stage, [switch]$AllowFailure) {
+  $certutil = Join-Path $env:SystemRoot 'System32\certutil.exe'
+  $startInfo = [Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $certutil
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+  foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+  $process = [Diagnostics.Process]::Start($startInfo)
+  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+  $stderrTask = $process.StandardError.ReadToEndAsync()
   try {
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    $store.Add($Certificate)
+    if (-not $process.WaitForExit(30000)) {
+      try { $process.Kill($true) } catch {}
+      throw "certutil $Stage exceeded 30s"
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    if ($stdout) { Write-Host $stdout.TrimEnd() }
+    if ($stderr) { Write-Host $stderr.TrimEnd() }
+    if ($process.ExitCode -ne 0 -and -not $AllowFailure) {
+      throw "certutil $Stage failed with exit code $($process.ExitCode)"
+    }
+    return $process.ExitCode
   }
-  finally { $store.Dispose() }
+  finally { $process.Dispose() }
+}
+
+function Add-CurrentUserCertificate([string]$StoreName, [string]$CertificatePath) {
+  [void](Invoke-CertUtil -Arguments @('-user', '-f', '-addstore', $StoreName, $CertificatePath) -Stage "add $StoreName")
 }
 
 function Remove-CurrentUserCertificate([string]$StoreName, [string]$Thumbprint) {
-  $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
-    $StoreName,
-    [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
-  )
-  try {
-    $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-    $matches = $store.Certificates.Find(
-      [System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-      $Thumbprint,
-      $false
-    )
-    foreach ($match in $matches) { $store.Remove($match) }
-  }
-  finally { $store.Dispose() }
+  [void](Invoke-CertUtil -Arguments @('-user', '-delstore', $StoreName, $Thumbprint) -Stage "remove $StoreName" -AllowFailure)
 }
 
 $required = @(
@@ -152,9 +160,9 @@ try {
   }
 
   Write-Host '::notice::Internal signing: temporarily trusting publisher certificate for policy verification'
-  Add-CurrentUserCertificate -StoreName 'Root' -Certificate $publicCertificate
+  Add-CurrentUserCertificate -StoreName 'Root' -CertificatePath $cerPath
   $importedRoot = $true
-  Add-CurrentUserCertificate -StoreName 'TrustedPublisher' -Certificate $publicCertificate
+  Add-CurrentUserCertificate -StoreName 'TrustedPublisher' -CertificatePath $cerPath
   $importedPublisher = $true
 
   Write-Host '::notice::Internal signing: verifying Authenticode policy'
