@@ -1,11 +1,7 @@
 {
   "version": "0.2.0",
   "gateway": "https://team-devspace.568920429.xyz",
-  "cloudflare": {
-    "accountId": "4498bbe09d0c6dc868f53aff6391ca6e",
-    "zoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
-    "deviceDomain": "568920429.xyz"
-  },
+  "cloudflareZoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
   "devspaceVersion": "1.0.8",
   "nodeVersion": "22.23.0",
   "cloudflaredVersion": "2026.8.3",

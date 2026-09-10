@@ -4,7 +4,7 @@
 
 使用有权管理的 Cloudflare Account 与 DNS Zone；该 Zone 已在 Cloudflare 正常解析。准备一个**全新的单层子域名**作为 Team Gateway，例如 `team-devspace.example.com`。每台设备自动获得另一个同级子域名 `tds-<随机绑定标识>.example.com`，避免依赖多级通配证书。
 
-本项目的固定目标在 `release.config.json`。目标域名与员工安装包内的配置必须一致。部署脚本发现域名已指向其他 Worker 或已有不属于本项目的 DNS 时会停止，不覆盖现有个人服务。
+本项目的固定目标在 `release.config.json`。这里只声明员工安装包真正需要的 Gateway，以及不可可靠推导的 Cloudflare Zone ID；Account ID 与设备域名在部署时从该 Zone 的实际元数据解析，不再重复手填。目标域名与员工安装包内的配置必须一致。部署脚本还会确认 Gateway 是该 Zone 下的单层子域名；发现域名已指向其他 Worker 或已有不属于本项目的 DNS 时会停止，不覆盖现有个人服务。
 
 ## 两种 Cloudflare API 令牌
 
@@ -19,7 +19,7 @@
 
 在自己电脑的项目终端运行 `npm run configure`。输入使用密码框；不要通过聊天、环境变量截图、GitHub Issue 或提交文件传递秘密。配置文件所在目录会限制为当前用户可访问。
 
-Cloudflare 账号、Zone、设备域名和 Gateway 唯一读取 `release.config.json`；本机配置保存令牌和允许登录 Admin 的邮箱列表，CI 使用 `ADMIN_ACCESS_EMAILS`（逗号分隔）变量。`deployment.config.json` 只保存项目明确拥有的 D1 ID 与 Access Application ID。这些公开元数据不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
+Gateway 与 Zone ID 唯一读取 `release.config.json`；Cloudflare Account ID 与设备域名从 Zone 查询结果派生。本机配置只保存令牌和允许登录 Admin 的邮箱列表，CI 使用 `ADMIN_ACCESS_EMAILS`（逗号分隔）变量。`deployment.config.json` 只保存项目明确拥有的 D1 ID 与 Access Application ID。这些公开元数据不代表 Worker/D1 已获授权。拥有旧的 cloudflared 证书，也不代表有 Worker 部署权限。
 
 ## 可重复的部署动作
 

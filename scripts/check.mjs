@@ -102,13 +102,16 @@ if (release.distribution.trustProfile === 'internal-free' &&
   throw new Error('Internal-free publication must keep fixed Windows signing and an optional, non-gating protected macOS signing path');
 }
 if (manifest.dependencies['@clack/prompts']) throw new Error('Administrator-only prompts must not ship as an employee runtime dependency');
-if (!/^[a-f0-9]{32}$/.test(release.cloudflare?.accountId ?? '') || !/^[a-f0-9]{32}$/.test(release.cloudflare?.zoneId ?? '') ||
-    !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(release.cloudflare?.deviceDomain ?? '')) {
-  throw new Error('Release Cloudflare metadata is incomplete');
+if (!/^[a-f0-9]{32}$/.test(release.cloudflareZoneId ?? '')) {
+  throw new Error('Release Cloudflare Zone ID is incomplete');
+}
+if ('cloudflare' in release) {
+  throw new Error('Release Cloudflare metadata must stay thin: use cloudflareZoneId only; Account and device domain are derived from the Zone');
 }
 const gateway = new URL(release.gateway);
-if (gateway.protocol !== 'https:' || !gateway.hostname.endsWith(`.${release.cloudflare.deviceDomain}`) || gateway.pathname !== '/') {
-  throw new Error('Release gateway must be a bare HTTPS subdomain of the configured Cloudflare zone');
+if (gateway.protocol !== 'https:' || gateway.username || gateway.password || gateway.pathname !== '/' || gateway.search || gateway.hash ||
+    gateway.hostname.split('.').length < 3) {
+  throw new Error('Release gateway must be a bare HTTPS single-label subdomain; deployment verifies it against the configured Zone');
 }
 execFileSync('git', ['diff', '--check'], { stdio: 'inherit' });
 console.log('Syntax, release/upstream pins, dependency boundary, private GitHub release policy, Cloudflare gateway metadata, and diff whitespace checks passed.');

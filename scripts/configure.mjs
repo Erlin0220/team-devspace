@@ -13,7 +13,7 @@ const answer = async promise => {
   if (prompts.isCancel(value)) { prompts.cancel('No credentials were changed.'); process.exit(1); }
   return value;
 };
-prompts.note(`Deployment target comes only from release.config.json:\n${release.gateway}\nAccount: ${release.cloudflare.accountId}\nZone: ${release.cloudflare.zoneId}\nChange that declaration deliberately before moving infrastructure.`);
+prompts.note(`Deployment target comes only from release.config.json:\n${release.gateway}\nZone: ${release.cloudflareZoneId}\nCloudflare Account and device domain are resolved from that Zone during deploy. Change the Gateway or Zone deliberately before moving infrastructure.`);
 const token = message => answer(prompts.password({ message,
   validate: value => typeof value === 'string' && value.trim().length >= 32 ? undefined : 'Paste the token into this local protected field' }));
 prompts.note('Deployment token: Account Workers Scripts Edit + D1 Edit + Access Apps and Policies Write; Zone Workers Routes Edit + DNS Edit + Zone Read.\nRuntime token: Account Cloudflare Tunnel Edit; Zone DNS Edit.\nRestrict both tokens to the selected account and zone. Tokens remain local/Worker secrets, never in installers or Git.');

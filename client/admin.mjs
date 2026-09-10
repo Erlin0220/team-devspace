@@ -8,10 +8,18 @@ import { atomicJson, normalizeGateway, randomSecret, readJson, secureStateDirect
 import { control } from './http.mjs';
 
 export async function administrator(configPath) {
-  const path = resolve(configPath ?? process.env.TEAM_DEVSPACE_ADMIN_CONFIG ?? join(homedir(), '.team-devspace-admin', 'config.json'));
-  const config = await readJson(path);
-  if (!/^[A-Za-z0-9_-]{32,256}$/.test(config.adminToken ?? '')) throw new Error('Invalid administrator credential file');
-  return { ...config, gateway: normalizeGateway(config.gateway), directory: dirname(path) };
+  const configured = configPath ?? process.env.TEAM_DEVSPACE_ADMIN_CONFIG;
+  const projectDefault = resolve(fileURLToPath(new URL('..', import.meta.url)), '.runtime', 'admin.json');
+  const candidates = configured
+    ? [resolve(configured)]
+    : [projectDefault, join(homedir(), '.team-devspace-admin', 'config.json')];
+  for (const path of candidates) {
+    const config = await readJson(path, null);
+    if (!config) continue;
+    if (!/^[A-Za-z0-9_-]{32,256}$/.test(config.adminToken ?? '')) throw new Error('Invalid administrator credential file');
+    return { ...config, gateway: normalizeGateway(config.gateway), directory: dirname(path) };
+  }
+  throw new Error(`Administrator configuration not found. Deploy locally once or provide --config/TEAM_DEVSPACE_ADMIN_CONFIG.`);
 }
 
 export async function createAccessKey(config, label, output) {
@@ -34,7 +42,7 @@ export async function createAccessKey(config, label, output) {
   });
   if (row.state === 'revoked') throw new Error('This label belongs to a revoked key; use a new employee/device label');
   if (output) {
-    const target = resolve(output);
+    const target = isAbsolute(output) ? resolve(output) : resolve(config.directory, output);
     const rel = relative(resolve(config.directory), target);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
       throw new Error('Credential exports must stay inside the private administrator configuration directory');
@@ -51,7 +59,7 @@ export async function adminMain(argv = process.argv.slice(2)) {
   } });
   const [group, action, argument] = positionals;
   if (values.help || !group) {
-    console.log('Team DevSpace administrator\n  key create <employee-label> [--output private-file.json]\n  key list\n  key revoke <id-or-label>\n  device reset <id-or-label>\n  --config <private-admin-config.json>\n\nNever give administrator credentials to employees. Access Key is a bearer credential.');
+    console.log('Team DevSpace administrator\n  key create <employee-label> [--output private-file.json]\n  key list\n  key revoke <id-or-label>\n  device reset <id-or-label>\n  --config <private-admin-config.json>  Optional override\n\nUses the project .runtime/admin.json by default, with the per-user administrator config as a fallback. Never give administrator credentials to employees. Access Key is a bearer credential.');
     return;
   }
   const config = await administrator(values.config);

@@ -62,13 +62,13 @@ npm run deploy -- --dry-run
 管理员可在通过 Cloudflare Access 登录后打开 `https://team-devspace.568920429.xyz/admin`。页面与下列 CLI 共用同一个 Admin Service：浏览器本地用 Web Crypto 生成 Access Key，只把 `id`、`label` 和 SHA-256 发给 Worker；明文仅在当前 `sessionStorage` 中保留到管理员确认已复制。网络失败时使用同一 credential 重试。
 
 ```sh
-npm run admin -- --config .runtime/admin.json key create "张三-Windows" --output .runtime/zhangsan.json
-npm run admin -- --config .runtime/admin.json key list
-npm run admin -- --config .runtime/admin.json key revoke "张三-Windows"
-npm run admin -- --config .runtime/admin.json device reset "张三-Windows"
+npm run admin -- key create "张三-Windows" --output zhangsan.json
+npm run admin -- key list
+npm run admin -- key revoke "张三-Windows"
+npm run admin -- device reset "张三-Windows"
 ```
 
-`--output` 将员工凭据写入本机私有文件，控制台只输出文件位置。创建请求可重试，不会因网络超时丢失第一次签发的 Key。重复使用一个已有标签返回同一签发记录；已撤销标签不能重新激活，应为新凭据使用新标签。
+CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还保留旧的 `~/.team-devspace-admin/config.json`，会自动回退读取，不需要每条命令重复传 `--config`。显式 `--config` / `TEAM_DEVSPACE_ADMIN_CONFIG` 只保留给自动化或特殊环境覆盖。相对 `--output` 路径会写入当前管理员配置所在的私有目录；控制台只输出文件位置。创建请求可重试，不会因网络超时丢失第一次签发的 Key。重复使用一个已有标签返回同一签发记录；已撤销标签不能重新激活，应为新凭据使用新标签。
 
 撤销先在数据库拒绝后续访问，再禁用隧道入口、断开连接并删除隧道。Cloudflare 清理失败时保持拒绝访问并返回 `cleanup_pending`，重复同一命令完成清理，不会假报撤销全部成功。
 
