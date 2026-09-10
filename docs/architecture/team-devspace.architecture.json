@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Team DevSpace 项目架构图",
+    "locale": "zh-CN",
+    "output": "docs/architecture/team-devspace-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Erlin0220/team-devspace",
+      "revision": "23af37c0b60943ed850931cf4fba654a48b979d7"
+    },
+    "views": [
+      {
+        "id": "mcp-request",
+        "label": "ChatGPT → 本机 MCP",
+        "focus": ["chatgpt", "gateway", "d1", "cloudflared", "runtime", "devspace"],
+        "note": "共享 App 的 Access Key 在 D1 映射到唯一 Device Binding，再经设备专属 Tunnel 到本机 Bridge 与官方 DevSpace。"
+      },
+      {
+        "id": "enrollment",
+        "label": "设备 Enrollment",
+        "focus": ["local_lifecycle", "gateway", "d1", "cf_control", "cloudflared", "local_state"],
+        "note": "首次安装生成设备身份，由 Gateway 建立 Binding、Tunnel 和 DNS，并把 Tunnel Token 交给该设备。"
+      },
+      {
+        "id": "admin-plane",
+        "label": "管理员控制面",
+        "focus": ["admin", "admin_web", "gateway", "d1", "cf_control"],
+        "note": "Admin Web 与 Admin CLI 共用 Gateway/Admin Service；浏览器 /admin* 由 Cloudflare Access 保护。"
+      },
+      {
+        "id": "device-runtime",
+        "label": "员工设备运行时",
+        "focus": ["cloudflared", "runtime", "devspace", "local_state", "local_lifecycle"],
+        "note": "Bridge 与官方 DevSpace 在同一 Node runtime；cloudflared 独立出站；Tray 只是薄控制面。"
+      },
+      {
+        "id": "release-install",
+        "label": "发布与安装",
+        "focus": ["release_pipeline", "local_lifecycle", "local_state", "runtime", "cloudflared", "devspace"],
+        "note": "五平台原生构建形成离线包，经 private GitHub Release 交由管理员分发，员工机不在线拉 runtime。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "chatgpt",
+      "type": "external",
+      "label": "共享 ChatGPT Workspace App",
+      "sublabel": "Team DevSpace App · 员工 Access Key",
+      "pos": [40, 230],
+      "size": [220, 76],
+      "tag": "用户入口",
+      "sources": [{ "path": "README.md", "line": 1, "label": "共享 App 主链" }]
+    },
+    {
+      "id": "admin",
+      "type": "external",
+      "label": "Administrator",
+      "sublabel": "Admin Web + Admin CLI",
+      "pos": [40, 470],
+      "size": [220, 74],
+      "tag": "管理员入口",
+      "sources": [{ "path": "README.md", "line": 45, "label": "管理员凭据管理" }]
+    },
+    {
+      "id": "gateway",
+      "type": "cloud",
+      "label": "Cloudflare Worker Gateway",
+      "sublabel": "/mcp · enroll · device · admin",
+      "pos": [340, 227],
+      "size": [200, 82],
+      "tag": "单 Worker",
+      "sources": [
+        { "path": "gateway/index.mjs", "line": 182, "label": "MCP Proxy" },
+        { "path": "gateway/index.mjs", "line": 251, "label": "HTTP Routes" }
+      ]
+    },
+    {
+      "id": "admin_web",
+      "type": "frontend",
+      "label": "Admin Web",
+      "sublabel": "Worker Assets · Access 保护",
+      "pos": [340, 466],
+      "size": [200, 82],
+      "tag": "共用 Admin Service",
+      "sources": [
+        { "path": "gateway/admin-web.mjs", "line": 1, "label": "Admin Web" },
+        { "path": "docs/deployment.md", "line": 29, "label": "Access 边界" }
+      ]
+    },
+    {
+      "id": "cf_control",
+      "type": "cloud",
+      "label": "Tunnel + DNS Control Plane",
+      "sublabel": "Tunnel · DNS · Token · Cleanup",
+      "pos": [600, 80],
+      "size": [210, 82],
+      "tag": "Cloudflare 官方能力",
+      "sources": [{ "path": "gateway/cloudflare.mjs", "line": 49, "label": "Tunnel/DNS 管理" }]
+    },
+    {
+      "id": "d1",
+      "type": "database",
+      "label": "Cloudflare D1",
+      "sublabel": "Key Hash · Binding · Lifecycle",
+      "pos": [600, 330],
+      "size": [210, 82],
+      "tag": "云端事实源",
+      "sources": [
+        { "path": "gateway/store.mjs", "line": 23, "label": "KeyStore" },
+        { "path": "migrations/0001_access_keys.sql", "line": 1, "label": "Schema" }
+      ]
+    },
+    {
+      "id": "cloudflared",
+      "type": "backend",
+      "label": "cloudflared",
+      "sublabel": "Outbound Tunnel connector",
+      "pos": [910, 170],
+      "size": [180, 74],
+      "tag": "独立进程",
+      "sources": [{ "path": "docs/deployment.md", "line": 55, "label": "设备网络条件" }]
+    },
+    {
+      "id": "runtime",
+      "type": "backend",
+      "label": "Team DevSpace Runtime / Bridge",
+      "sublabel": "Auth · Binding · Root rewrite",
+      "pos": [900, 330],
+      "size": [200, 86],
+      "tag": "Node 进程",
+      "sources": [
+        { "path": "client/runtime.mjs", "line": 70, "label": "Runtime" },
+        { "path": "client/bridge.mjs", "line": 63, "label": "Bridge" }
+      ]
+    },
+    {
+      "id": "devspace",
+      "type": "backend",
+      "label": "官方 @waishnav/devspace 1.0.8",
+      "sublabel": "MCP · OAuth · Allowed Roots",
+      "pos": [1130, 330],
+      "size": [200, 86],
+      "tag": "上游原版",
+      "sources": [
+        { "path": "client/runtime.mjs", "line": 37, "label": "启动上游" },
+        { "path": "client/state.mjs", "line": 98, "label": "上游配置" }
+      ]
+    },
+    {
+      "id": "local_lifecycle",
+      "type": "frontend",
+      "label": "本地控制与生命周期",
+      "sublabel": "Setup/Repair · CLI/Tray · Startup",
+      "pos": [900, 470],
+      "size": [200, 86],
+      "tag": "薄控制面",
+      "sources": [
+        { "path": "client/cli.mjs", "line": 35, "label": "CLI" },
+        { "path": "client/tray.mjs", "line": 64, "label": "Tray Controller" },
+        { "path": "client/platform.mjs", "line": 171, "label": "OS Service Actions" }
+      ]
+    },
+    {
+      "id": "local_state",
+      "type": "database",
+      "label": "设备私有状态",
+      "sublabel": "state.json · tunnel.token · OAuth",
+      "pos": [1130, 470],
+      "size": [200, 86],
+      "tag": "当前用户权限保护",
+      "sources": [
+        { "path": "client/state.mjs", "line": 15, "label": "状态目录" },
+        { "path": "client/setup.mjs", "line": 78, "label": "Enrollment 持久化" }
+      ]
+    },
+    {
+      "id": "release_pipeline",
+      "type": "external",
+      "label": "CI / Private Release",
+      "sublabel": "5 native targets · SHA-256 · offline",
+      "pos": [600, 570],
+      "size": [210, 82],
+      "tag": "管理员离线分发",
+      "sources": [
+        { "path": ".github/workflows/build-installers.yml", "line": 1, "label": "Release CI" },
+        { "path": "docs/distribution.md", "line": 1, "label": "离线发行模型" },
+        { "path": "release.config.json", "line": 1, "label": "版本事实源" }
+      ]
+    }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Cloudflare 云端", "wraps": ["gateway", "admin_web", "d1", "cf_control"], "pad": 20 },
+    { "kind": "region", "label": "员工 Device", "wraps": ["cloudflared", "runtime", "devspace", "local_state", "local_lifecycle"], "pad": 20 },
+    { "kind": "security-group", "label": "Loopback-only", "wraps": ["runtime", "devspace"], "pad": 10 }
+  ],
+  "connections": [
+    { "from": "chatgpt", "to": "gateway", "label": "/mcp · Access Key", "variant": "emphasis", "route": "orthogonal-h", "labelAt": [300, 216] },
+    { "from": "gateway", "to": "d1", "label": "Binding lookup", "variant": "security", "labelAt": [650, 316] },
+    { "from": "gateway", "to": "cloudflared", "label": "per-device hostname / Tunnel", "variant": "emphasis", "labelAt": [720, 320] },
+    { "from": "cloudflared", "to": "runtime", "label": "127.0.0.1:<bridgePort>", "route": "orthogonal-v", "fromSide": "bottom", "toSide": "top", "labelAt": [1035, 285] },
+    { "from": "runtime", "to": "devspace", "label": "loopback MCP · Owner OAuth", "variant": "security", "route": "orthogonal-h", "labelAt": [1215, 450] },
+    { "from": "runtime", "to": "local_state", "label": "Binding / Secret / Roots" },
+    { "from": "local_lifecycle", "to": "runtime", "label": "start / stop / repair", "route": "orthogonal-v", "fromSide": "top", "toSide": "bottom", "labelAt": [1020, 450] },
+    { "from": "local_lifecycle", "to": "local_state", "label": "保存本地状态", "route": "orthogonal-h", "labelAt": [1110, 570] },
+    { "from": "local_lifecycle", "to": "gateway", "label": "Enroll / Device Control", "variant": "security", "labelAt": [830, 445] },
+    { "from": "gateway", "to": "cf_control", "label": "Tunnel / DNS lifecycle", "variant": "security", "labelAt": [570, 185] },
+    { "from": "cf_control", "to": "cloudflared", "label": "Tunnel token", "labelAt": [850, 245] },
+    { "from": "admin", "to": "admin_web", "label": "Cloudflare Access", "variant": "security", "route": "orthogonal-h", "labelAt": [300, 565] },
+    { "from": "admin_web", "to": "gateway", "label": "Admin Service", "route": "orthogonal-v", "fromSide": "top", "toSide": "bottom", "labelAt": [455, 410] },
+    { "from": "admin", "to": "gateway", "label": "Admin CLI · ADMIN_TOKEN", "variant": "security" },
+    { "from": "release_pipeline", "to": "local_lifecycle", "label": "完整离线包", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "运行、认证与事实源",
+      "items": [
+        "Access Key → D1 Device Binding → Device Secret → Bridge → Owner OAuth → 官方 DevSpace。",
+        "D1 是云端绑定事实源，state.json 是设备状态；四类凭据职责分离。",
+        "云端不持久化 MCP body/源码/Prompt/Shell；Allowed Roots 不是 Shell 沙箱。"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "薄实现与离线交付",
+      "items": [
+        "官方 DevSpace 保持原版；cloudflared、OS 启动和 Tray 均复用成熟能力，Tray 不做 supervisor。",
+        "5 个原生目标构建 SHA-256 离线包，由 private GitHub Release 交给管理员分发。",
+        "安装验证候选后再切 active slot；失败保留当前版本，员工机不在线安装 runtime。"
+      ]
+    }
+  ]
+}
