@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -71,17 +71,23 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   for (const name of ['open_workspace', 'read', 'write', 'edit', 'bash']) {
     assert.ok(tools.tools.some(tool => tool.name === name), `Missing upstream tool ${name}`);
   }
+  const openWorkspaceTool = tools.tools.find(tool => tool.name === 'open_workspace');
+  assert.equal(openWorkspaceTool?._meta?.ui, undefined, 'Team DevSpace must not attach the workspace widget');
   const resources = await client.listResources();
   assert.ok(resources.resources.some(resource => resource.uri === 'ui://devspace/workspace-app.html'));
   const widget = await client.readResource({ uri: 'ui://devspace/workspace-app.html' });
   const widgetHtml = widget.contents.find(content => content.uri === 'ui://devspace/workspace-app.html')?.text;
   assert.ok(widgetHtml?.includes('https://team.example.test/mcp-app-assets/'), 'Widget assets must use the public Team gateway');
   assert.ok(!widgetHtml?.includes('127.0.0.1'), 'Widget HTML must not expose a local employee origin');
-  const opened = await client.callTool({ name: 'open_workspace', arguments: { path: root, mode: 'checkout' } });
+  const accidentalChild = join(root, 'team-devspace');
+  const opened = await client.callTool({ name: 'open_workspace', arguments: { path: accidentalChild, mode: 'checkout' } });
   assert.ok(!opened.isError, JSON.stringify(opened));
   const openedData = resultObject(opened);
   const workspaceId = openedData.workspaceId ?? openedData.result?.workspaceId;
+  const openedRoot = openedData.root ?? openedData.result?.root;
   assert.ok(workspaceId, JSON.stringify(openedData));
+  assert.equal(openedRoot, root, 'The installer-selected project directory must be the workspace root');
+  await assert.rejects(access(accidentalChild), { code: 'ENOENT' });
   const read = await client.callTool({ name: 'read', arguments: { workspaceId, path: 'readme.txt' } });
   assert.ok(JSON.stringify(read).includes('runtime proof'));
   const denied = await client.callTool({ name: 'read', arguments: { workspaceId, path: join(home, 'outside.txt') } });

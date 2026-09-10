@@ -109,7 +109,7 @@ export async function writeUpstreamConfig(state, home = stateHome()) {
 export function upstreamEnvironment(home = stateHome()) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('DEVSPACE_') && !['PORT', 'HOST'].includes(key)));
   return { ...env, DEVSPACE_CONFIG_DIR: join(home, 'devspace'), DEVSPACE_TOOL_MODE: 'minimal',
-    DEVSPACE_STATE_DIR: join(home, 'upstream-state'), DEVSPACE_WORKTREE_ROOT: join(home, 'worktrees'),
+    DEVSPACE_WIDGETS: 'off', DEVSPACE_STATE_DIR: join(home, 'upstream-state'), DEVSPACE_WORKTREE_ROOT: join(home, 'worktrees'),
     DEVSPACE_AGENT_DIR: join(home, 'agents'), DEVSPACE_SUBAGENTS: 'false',
     DEVSPACE_LOG_LEVEL: 'error', DEVSPACE_LOG_REQUESTS: 'false', DEVSPACE_LOG_TOOL_CALLS: 'false',
     DEVSPACE_LOG_SHELL_COMMANDS: 'false', DEVSPACE_ARTIFACTS: 'false',

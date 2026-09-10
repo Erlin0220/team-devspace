@@ -173,6 +173,7 @@ test('private upstream environment cannot inherit a personal DevSpace public URL
     assert.equal(env.DEVSPACE_ALLOWED_ROOTS, undefined);
     assert.equal(env.DEVSPACE_PUBLIC_BASE_URL, undefined);
     assert.equal(env.DEVSPACE_TOOL_MODE, 'minimal');
+    assert.equal(env.DEVSPACE_WIDGETS, 'off');
     assert.equal(env.DEVSPACE_LOG_TOOL_CALLS, 'false');
   } finally {
     if (old === undefined) delete process.env.DEVSPACE_ALLOWED_ROOTS; else process.env.DEVSPACE_ALLOWED_ROOTS = old;
