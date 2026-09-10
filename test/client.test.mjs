@@ -173,8 +173,9 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
 
 test('opening logs delegates to the desktop shell without waiting for its exit code', async () => {
   let launched;
-  const directory = String.raw`C:\Users\employee\AppData\Local\TeamDevSpace\logs`;
-  assert.equal(await openLogs(String.raw`C:\Users\employee\AppData\Local\TeamDevSpace`, {
+  const home = join(homedir(), 'TeamDevSpace');
+  const directory = join(home, 'logs');
+  assert.equal(await openLogs(home, {
     launch: async (command, args) => { launched = { command, args }; },
   }), directory);
   assert.equal(launched.args.at(-1), directory);
