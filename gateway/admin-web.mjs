@@ -79,9 +79,9 @@ async function smallJson(request) {
 
 function stateText(key) {
   return ({
-    issued: 'Issued', provisioning: 'Provisioning', active: 'Active', suspended: 'Suspended',
-    resetting: 'Resetting', revoked: 'Revoked',
-  })[key.state] ?? 'Unknown';
+    issued: '已签发', provisioning: '配置中', active: '正常', suspended: '已暂停',
+    resetting: '重置中', revoked: '已吊销',
+  })[key.state] ?? '未知';
 }
 
 export function renderAdmin(keys) {
@@ -89,27 +89,27 @@ export function renderAdmin(keys) {
     const id = escapeHtml(key.id);
     const device = key.deviceId ? `${String(key.deviceId).slice(0, 8)}…` : '—';
     const actions = key.state === 'revoked' ? '—' : [
-      key.bindingId ? `<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}">Reset device</button>` : '',
-      `<button type="button" class="contrast outline" data-key-action="revoke" data-key-id="${id}">Revoke</button>`,
+      key.bindingId ? `<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}">重置设备</button>` : '',
+      `<button type="button" class="contrast outline" data-key-action="revoke" data-key-id="${id}">吊销</button>`,
     ].filter(Boolean).join(' ');
     return `<tr><td>${escapeHtml(key.label)}</td><td><span class="state state-${escapeHtml(key.state)}">${stateText(key)}</span></td>` +
       `<td><code>${escapeHtml(device)}</code></td><td>${escapeHtml(key.updatedAt ?? '—')}</td>` +
-      `<td>${key.cleanupPending ? 'Pending' : '—'}</td><td class="actions">${actions}</td></tr>`;
+      `<td>${key.cleanupPending ? '待清理' : '—'}</td><td class="actions">${actions}</td></tr>`;
   }).join('');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<title>Team DevSpace Admin</title><link rel="stylesheet" href="/admin/assets/pico.min.css">` +
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<title>Team DevSpace 管理后台</title><link rel="stylesheet" href="/admin/assets/pico.min.css">` +
     `<link rel="stylesheet" href="/admin/assets/admin.css">` +
     `<script type="module" src="/admin/assets/admin.js"></script></head><body><main class="container">` +
-    `<header><div><h1>Team DevSpace Admin</h1><p>Access Keys and Device Bindings</p></div>` +
-    `<button type="button" id="show-create">Create Access Key</button></header>` +
-    `<section id="create-panel" hidden><form id="create-key"><label>Name<input name="label" maxlength="100" required></label>` +
-    `<button type="submit">Create</button><button type="button" class="secondary" id="cancel-create">Cancel</button></form></section>` +
-    `<section id="credential-panel" hidden><h2>Access Key created</h2><code id="credential"></code>` +
-    `<p>This key is shown only this time.</p><button type="button" id="retry-key">Retry creation</button>` +
-    `<button type="button" id="copy-key">Copy</button>` +
-    `<button type="button" class="secondary" id="dismiss-key">I saved it</button></section>` +
-    `<p id="notice" role="alert" hidden></p><div class="table-wrap"><table><thead><tr><th>Name</th><th>State</th>` +
-    `<th>Device</th><th>Updated</th><th>Cleanup</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No Access Keys</td></tr>'}</tbody></table></div>` +
+    `<header><div><h1>Team DevSpace 管理后台</h1><p>访问密钥与设备绑定管理</p></div>` +
+    `<button type="button" id="show-create">创建访问密钥</button></header>` +
+    `<section id="create-panel" hidden><form id="create-key"><label>名称<input name="label" maxlength="100" required></label>` +
+    `<button type="submit">创建</button><button type="button" class="secondary" id="cancel-create">取消</button></form></section>` +
+    `<section id="credential-panel" hidden><h2>访问密钥已创建</h2><code id="credential"></code>` +
+    `<p>该密钥只显示一次，请立即保存。</p><button type="button" id="retry-key">重试创建</button>` +
+    `<button type="button" id="copy-key">复制</button>` +
+    `<button type="button" class="secondary" id="dismiss-key">我已保存</button></section>` +
+    `<p id="notice" role="alert" hidden></p><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th>` +
+    `<th>设备</th><th>更新时间</th><th>清理状态</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="6">暂无访问密钥</td></tr>'}</tbody></table></div>` +
     `</main></body></html>`;
 }
 

@@ -39,13 +39,25 @@ export function clearPendingCredential(storage) {
   storage.removeItem(PENDING_KEY);
 }
 
+function errorText(code) {
+  return ({
+    key_label_or_id_conflict: '名称或密钥 ID 已存在',
+    key_not_found: '未找到该访问密钥',
+    revoked_key_cannot_be_reset: '已吊销的密钥不能重置设备',
+    connectivity_cleanup_pending: '远程连接已禁用，但云端清理尚未完成',
+    access_lifecycle_changed: '访问密钥状态已发生变化，请刷新页面后重试',
+    invalid_key_request: '访问密钥请求无效',
+    request_failed: '请求失败',
+  })[code] ?? code ?? '未知错误';
+}
+
 async function adminJson(path, options) {
   const response = await fetch(path, { ...options, redirect: 'manual' });
   if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403) {
-    throw new Error('Admin session expired. Reload this page to sign in again.');
+    throw new Error('管理员登录已过期，请刷新页面后重新登录。');
   }
   if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
-    throw new Error('Unexpected admin response. Reload this page and sign in again.');
+    throw new Error('管理服务返回了异常响应，请刷新页面后重新登录。');
   }
   return { response, result: await response.json() };
 }
@@ -55,7 +67,7 @@ async function issueCredential(credential) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(credentialRequest(credential)),
   });
-  if (!response.ok) throw new Error(result.error ?? 'request_failed');
+  if (!response.ok) throw new Error(errorText(result.error));
   return result;
 }
 
@@ -76,7 +88,7 @@ function initialize() {
   let pending = loadPendingCredential(sessionStorage);
   if (pending) {
     showCredential(pending);
-    showNotice('A pending credential was recovered. Retry with the same key; do not generate another.');
+    showNotice('检测到上次未完成的访问密钥，请使用同一密钥重试，不要重新生成。');
   }
   document.querySelector('#show-create').addEventListener('click', () => {
     if (pending) { showCredential(pending); return; }
@@ -93,18 +105,18 @@ function initialize() {
       await issueCredential(pending);
       showCredential(pending);
       notice.hidden = true;
-    } catch (error) { showNotice(`Creation failed: ${error.message}. The same pending key will be reused.`); }
+    } catch (error) { showNotice(`创建失败：${error.message}。再次重试时会继续使用同一个待创建密钥。`); }
   });
   document.querySelector('#retry-key').addEventListener('click', async () => {
     if (!pending) return;
     try {
       await issueCredential(pending);
       notice.hidden = true;
-    } catch (error) { showNotice(`Retry failed: ${error.message}`); }
+    } catch (error) { showNotice(`重试失败：${error.message}`); }
   });
   document.querySelector('#copy-key').addEventListener('click', async () => {
     await navigator.clipboard.writeText(credentialOutput.textContent);
-    showNotice('Access Key copied.');
+    showNotice('访问密钥已复制。');
   });
   document.querySelector('#dismiss-key').addEventListener('click', () => {
     clearPendingCredential(sessionStorage);
@@ -117,18 +129,18 @@ function initialize() {
     button.addEventListener('click', async () => {
       const action = button.dataset.keyAction;
       if (!confirm(action === 'revoke'
-        ? 'Revoke this Access Key and disconnect its Device?'
-        : 'Reset this Device Binding and require a new Enrollment?')) return;
+        ? '确定吊销此访问密钥并断开对应设备吗？'
+        : '确定重置此设备绑定吗？重置后该设备需要重新绑定。')) return;
       button.disabled = true;
       try {
         const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(button.dataset.keyId)}/${action}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
         });
-        if (!response.ok && !result.retryable) throw new Error(result.error ?? 'request_failed');
+        if (!response.ok && !result.retryable) throw new Error(errorText(result.error));
         location.reload();
       } catch (error) {
         button.disabled = false;
-        showNotice(`Action failed: ${error.message}`);
+        showNotice(`操作失败：${error.message}`);
       }
     });
   }

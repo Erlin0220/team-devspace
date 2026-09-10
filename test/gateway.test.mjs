@@ -229,7 +229,7 @@ test('Admin Web is Access-gated and its assets stay inside /admin/assets/*', asy
   const access = await f.accessHeaders();
   const page = await f.mf.dispatchFetch('https://team.example.test/admin', { headers: access });
   assert.equal(page.status, 200);
-  assert.ok((await page.text()).includes('Team DevSpace Admin'));
+  assert.ok((await page.text()).includes('Team DevSpace 管理后台'));
   const asset = await f.mf.dispatchFetch('https://team.example.test/admin/assets/admin.js', { headers: access });
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('Content-Type'), 'text/javascript');
