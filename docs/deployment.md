@@ -12,7 +12,7 @@
 
 | 用途 | Account 权限 | Zone 权限 | 保存位置 |
 | --- | --- | --- | --- |
-| 管理员部署 | Workers Scripts Edit、D1 Edit、Access: Apps and Policies Write | Workers Routes Edit、DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` 或 GitHub `production` 环境 |
+| 管理员部署 | Workers Scripts Edit、D1 Edit、Access: Apps and Policies Write、Access: Organizations, Identity Providers, and Groups Read | Workers Routes Edit、DNS Edit、Zone Read | 本机 `.runtime/cloudflare.json` 或 GitHub `production` 环境 |
 | Worker 运行时建 Tunnel | Cloudflare Tunnel Edit | DNS Edit | Worker Secret `CF_API_TOKEN` |
 
 这些是 Cloudflare 管理令牌，**不是员工的 Access Key**。员工安装包和 Employee 电脑只得到自己 Tunnel 的运行 token，不得到以上账号级令牌。
@@ -23,7 +23,7 @@ Gateway 与 Zone ID 唯一读取 `release.config.json`；Cloudflare Account ID �
 
 ## 可重复的部署动作
 
-`npm run deploy` 按以下顺序处理：校验域名和 D1 归属；按 `deployment.config.json` 确认或创建唯一的 `Team DevSpace Admin` Access Application（精确覆盖 `<gateway-host>/admin*`），确认管理员邮箱 allow policy；保存可复用的管理员密钥与主密钥；用运行时令牌执行 Tunnel/DNS 只读 preflight；记录当前 Worker 版本和旧静态资源路由；应用数据库迁移；单次部署 Gateway、静态资源和 Secret；验证固定 release/upstream 版本、Admin/D1 和真实资源，最后从无 Access 会话的请求确认 `/admin` 只会 redirect/challenge/deny。所有探测通过才输出 `deployed: true`。
+`npm run deploy` 按以下顺序处理：校验域名和 D1 归属；按 `deployment.config.json` 确认或创建唯一的 `Team DevSpace Admin` Access Application（精确覆盖 `<gateway-host>/admin*`），把 allow policy 收敛为且仅为配置的管理员邮箱，并读取 Access organization 的签发域名和 Application AUD；保存可复用的管理员密钥与主密钥；用运行时令牌执行 Tunnel/DNS 只读 preflight；记录当前 Worker 版本和旧静态资源路由；应用数据库迁移；单次部署 Gateway、静态资源和 Secret；验证固定 release/upstream 版本、Admin/D1 和真实资源，最后从无 Access 会话的请求确认 `/admin` 只会 redirect/challenge/deny。Worker 自身还会用 Cloudflare Access 公钥验证 JWT 的签名、issuer 与 AUD。所有探测通过才输出 `deployed: true`。
 
 部署脚本不会按名称接管现有 Access Application，也不会删除未知 policy。首次创建后立即记录 Application ID；策略失败会使新 Application 保持无 allow policy，并在 Worker 上传前停止。`workers.dev` 和 preview URL 均关闭，防止绕过 custom domain 上的 Access。管理员在 Access 登录后打开 `<gateway>/admin`；浏览器页面从不接收 `ADMIN_TOKEN`，CLI `/v1/admin/*` 仍继续使用它。
 

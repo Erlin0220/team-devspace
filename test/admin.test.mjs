@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, webcrypto } from 'node:crypto';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { AdminService } from '../gateway/admin-service.mjs';
 import { adminWeb, escapeHtml, renderAdmin } from '../gateway/admin-web.mjs';
 import { clearPendingCredential, createPendingCredential, credentialRequest,
@@ -40,9 +41,28 @@ test('Admin Service is the single issue/list/revoke/reset lifecycle owner', asyn
   await assert.rejects(revoked.resetDevice(id), error => error.status === 409 && error.code === 'revoked_key_cannot_be_reset');
 });
 
-function accessHeaders(extra = {}) {
-  return { 'Cf-Access-Authenticated-User-Email': 'admin@example.test',
-    'Cf-Access-Jwt-Assertion': 'signed-access-assertion', ...extra };
+const ACCESS_ISSUER = 'https://admin-access.example.test';
+const ACCESS_AUD = 'team-devspace-admin-unit';
+const { publicKey: accessPublicKey, privateKey: accessPrivateKey } = await generateKeyPair('RS256');
+const ACCESS_JWK = { ...await exportJWK(accessPublicKey), kid: 'admin-test-key', alg: 'RS256', use: 'sig' };
+
+async function accessHeaders(extra = {}) {
+  const token = await new SignJWT({ email: 'admin@example.test' })
+    .setProtectedHeader({ alg: 'RS256', kid: ACCESS_JWK.kid })
+    .setIssuer(ACCESS_ISSUER).setAudience(ACCESS_AUD).setIssuedAt().setExpirationTime('5m').sign(accessPrivateKey);
+  return { 'Cf-Access-Jwt-Assertion': token, ...extra };
+}
+
+function accessEnv() {
+  return { PUBLIC_ORIGIN: 'https://team.example.test', ACCESS_TEAM_DOMAIN: ACCESS_ISSUER, ACCESS_AUD,
+    ASSETS: { fetch: async () => new Response('asset') } };
+}
+
+function stubAccessKeys(t) {
+  const original = globalThis.fetch;
+  globalThis.fetch = async input => new URL(input instanceof Request ? input.url : input).origin === ACCESS_ISSUER
+    ? Response.json({ keys: [ACCESS_JWK] }) : original(input);
+  t.after(() => { globalThis.fetch = original; });
 }
 
 function webService() {
@@ -56,12 +76,16 @@ function webService() {
     } };
 }
 
-test('Admin Web requires Access, escapes D1 fields, omits secrets and applies browser security headers', async () => {
+test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets and applies browser security headers', async t => {
+  stubAccessKeys(t);
   const fixture = webService();
-  const env = { PUBLIC_ORIGIN: 'https://team.example.test', ASSETS: { fetch: async () => new Response('asset') } };
+  const env = accessEnv();
   await assert.rejects(adminWeb(new Request('https://team.example.test/admin'), env, fixture.service),
     error => error.status === 403 && error.code === 'access_required');
-  const response = await adminWeb(new Request('https://team.example.test/admin', { headers: accessHeaders() }), env, fixture.service);
+  await assert.rejects(adminWeb(new Request('https://team.example.test/admin', {
+    headers: { 'Cf-Access-Jwt-Assertion': 'signed-access-assertion' },
+  }), env, fixture.service), error => error.status === 403 && error.code === 'access_required');
+  const response = await adminWeb(new Request('https://team.example.test/admin', { headers: await accessHeaders() }), env, fixture.service);
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
@@ -72,10 +96,11 @@ test('Admin Web requires Access, escapes D1 fields, omits secrets and applies br
   assert.ok(renderAdmin([]).includes('No Access Keys'));
 });
 
-test('Admin Web accepts only same-origin hash-only POSTs and never performs lifecycle actions through GET', async () => {
+test('Admin Web accepts only same-origin hash-only POSTs and never performs lifecycle actions through GET', async t => {
+  stubAccessKeys(t);
   const fixture = webService();
-  const env = { PUBLIC_ORIGIN: 'https://team.example.test', ASSETS: { fetch: async () => new Response('asset') } };
-  const mutationHeaders = accessHeaders({ Origin: env.PUBLIC_ORIGIN, 'Sec-Fetch-Site': 'same-origin',
+  const env = accessEnv();
+  const mutationHeaders = await accessHeaders({ Origin: env.PUBLIC_ORIGIN, 'Sec-Fetch-Site': 'same-origin',
     'Content-Type': 'application/json' });
   const create = await adminWeb(new Request('https://team.example.test/admin/keys', {
     method: 'POST', headers: mutationHeaders, body: JSON.stringify({ id, label: 'Alice', keyHash: 'a'.repeat(64) }),
@@ -87,7 +112,7 @@ test('Admin Web accepts only same-origin hash-only POSTs and never performs life
     body: JSON.stringify({ id, label: 'Alice', keyHash: 'a'.repeat(64), accessKey: 'tds_plaintext' }),
   }), env, fixture.service), error => error.status === 400);
   await assert.rejects(adminWeb(new Request('https://team.example.test/admin/keys', {
-    method: 'POST', headers: accessHeaders({ Origin: 'https://evil.test', 'Sec-Fetch-Site': 'cross-site',
+    method: 'POST', headers: await accessHeaders({ Origin: 'https://evil.test', 'Sec-Fetch-Site': 'cross-site',
       'Content-Type': 'application/json' }), body: '{}',
   }), env, fixture.service), error => error.status === 403);
   await assert.rejects(adminWeb(new Request('https://team.example.test/admin/keys', {
@@ -95,7 +120,7 @@ test('Admin Web accepts only same-origin hash-only POSTs and never performs life
     body: JSON.stringify({ id, label: 'x'.repeat(17000), keyHash: 'a'.repeat(64) }),
   }), env, fixture.service), error => error.status === 413 && error.code === 'body_too_large');
   await assert.rejects(adminWeb(new Request(`https://team.example.test/admin/keys/${id}/revoke`, {
-    headers: accessHeaders(),
+    headers: await accessHeaders(),
   }), env, fixture.service), error => error.status === 404);
   const revoke = await adminWeb(new Request(`https://team.example.test/admin/keys/${id}/revoke`, {
     method: 'POST', headers: mutationHeaders, body: '{}',

@@ -27,7 +27,8 @@
     "admin": "node client/admin.mjs"
   },
   "dependencies": {
-    "@waishnav/devspace": "1.0.8"
+    "@waishnav/devspace": "1.0.8",
+    "jose": "6.2.12"
   },
   "allowScripts": {
     "@google/genai@1.52.0": false,
@@ -54,6 +55,7 @@
   },
   "devDependencies": {
     "@clack/prompts": "1.5.1",
+    "esbuild": "0.28.1",
     "npm": "11.19.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "miniflare": "4.20260730.0",

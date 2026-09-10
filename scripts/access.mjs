@@ -18,16 +18,19 @@ function applicationMatches(application, hostname) {
   const domain = domainFor(hostname);
   const destinations = application?.destinations ?? [];
   return application?.name === ACCESS_APP_NAME && application?.type === 'self_hosted' &&
+    application?.session_duration === '8h' && application?.app_launcher_visible === false &&
     (application.domain === domain || destinations.some(item => item.type === 'public' && item.uri === domain));
 }
 
-function policyEmails(policy) {
-  return (policy?.include ?? []).map(rule => rule.email?.email).filter(Boolean).map(email => email.toLowerCase()).sort();
-}
-
 function policyMatches(policy, emails) {
-  return policy?.name === ACCESS_POLICY_NAME && policy?.decision === 'allow' &&
-    JSON.stringify(policyEmails(policy)) === JSON.stringify(emails);
+  const include = policy?.include ?? [];
+  const policyEmails = include.map(rule => {
+    if (Object.keys(rule ?? {}).length !== 1 || Object.keys(rule?.email ?? {}).length !== 1) return null;
+    return typeof rule.email.email === 'string' ? rule.email.email.toLowerCase() : null;
+  }).sort();
+  return policy?.name === ACCESS_POLICY_NAME && policy?.decision === 'allow' && policy?.precedence === 1 &&
+    !(policy?.exclude?.length) && !(policy?.require?.length) && include.length === emails.length &&
+    !policyEmails.includes(null) && JSON.stringify(policyEmails) === JSON.stringify(emails);
 }
 
 export async function ensureAdminAccess({ api, accountId, hostname, administratorEmails,
@@ -69,13 +72,15 @@ export async function ensureAdminAccess({ api, accountId, hostname, administrato
   if (!policy) policy = await api(policiesPath, 'POST', desired);
   else if (!policyMatches(policy, emails)) policy = await api(`${policiesPath}/${policy.id}`, 'PUT', desired);
   if (!policyMatches(policy, emails)) throw new Error('Cloudflare Access policy verification failed');
-  return { applicationId: application.id, policyId: policy.id, domain: domainFor(hostname), administratorEmails: emails };
+  if (typeof application.aud !== 'string' || !application.aud) throw new Error('Cloudflare Access Application has no audience tag');
+  return { applicationId: application.id, policyId: policy.id, audience: application.aud,
+    domain: domainFor(hostname), administratorEmails: emails };
 }
 
 export async function verifyAdminProtection(gateway, fetcher = fetch) {
   const response = await fetcher(new URL('/admin', gateway), { redirect: 'manual', signal: AbortSignal.timeout(15000) });
   const body = await response.text();
-  const reachedWorker = response.headers.has('X-Team-Request-Id') || body.includes('access_required');
+  const reachedWorker = response.headers.has('X-Request-Id') || body.includes('access_required');
   if (![302, 303, 401, 403].includes(response.status) || reachedWorker || body.includes('Team DevSpace Admin')) {
     throw new Error('Cloudflare Access is not fail-closed for /admin');
   }

@@ -1,3 +1,4 @@
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { AdminServiceError } from './admin-service.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -27,9 +28,22 @@ function headers(contentType) {
   });
 }
 
-function requireAccess(request) {
-  if (!request.headers.get('Cf-Access-Authenticated-User-Email') ||
-      !request.headers.get('Cf-Access-Jwt-Assertion')) throw new AdminWebError(403, 'access_required');
+const accessKeys = new Map();
+
+async function requireAccess(request, env) {
+  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) throw new AdminWebError(503, 'access_not_configured');
+  const token = request.headers.get('Cf-Access-Jwt-Assertion');
+  if (!token) throw new AdminWebError(403, 'access_required');
+  let keys = accessKeys.get(env.ACCESS_TEAM_DOMAIN);
+  if (!keys) {
+    keys = createRemoteJWKSet(new URL(`${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`));
+    accessKeys.set(env.ACCESS_TEAM_DOMAIN, keys);
+  }
+  try {
+    await jwtVerify(token, keys, { issuer: env.ACCESS_TEAM_DOMAIN, audience: env.ACCESS_AUD });
+  } catch {
+    throw new AdminWebError(403, 'access_required');
+  }
 }
 
 function requireMutation(request, env) {
@@ -104,7 +118,7 @@ function json(value, status = 200) {
 }
 
 export async function adminWeb(request, env, service) {
-  requireAccess(request);
+  await requireAccess(request, env);
   const pathname = new URL(request.url).pathname;
   if (pathname.startsWith('/admin/assets/')) {
     if (!['GET', 'HEAD'].includes(request.method)) throw new AdminWebError(405, 'method_not_allowed');

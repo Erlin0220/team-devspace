@@ -16,7 +16,7 @@ const answer = async promise => {
 prompts.note(`Deployment target comes only from release.config.json:\n${release.gateway}\nZone: ${release.cloudflareZoneId}\nCloudflare Account and device domain are resolved from that Zone during deploy. Change the Gateway or Zone deliberately before moving infrastructure.`);
 const token = message => answer(prompts.password({ message,
   validate: value => typeof value === 'string' && value.trim().length >= 32 ? undefined : 'Paste the token into this local protected field' }));
-prompts.note('Deployment token: Account Workers Scripts Edit + D1 Edit + Access Apps and Policies Write; Zone Workers Routes Edit + DNS Edit + Zone Read.\nRuntime token: Account Cloudflare Tunnel Edit; Zone DNS Edit.\nRestrict both tokens to the selected account and zone. Tokens remain local/Worker secrets, never in installers or Git.');
+prompts.note('Deployment token: Account Workers Scripts Edit + D1 Edit + Access Apps and Policies Write + Access Organizations/Identity Providers/Groups Read; Zone Workers Routes Edit + DNS Edit + Zone Read.\nRuntime token: Account Cloudflare Tunnel Edit; Zone DNS Edit.\nRestrict both tokens to the selected account and zone. Tokens remain local/Worker secrets, never in installers or Git.');
 const deployToken = await token('Deployment API token (masked)');
 const runtimeToken = await token('Runtime Tunnel/DNS API token (masked)');
 const adminEmails = await answer(prompts.text({ message: 'Cloudflare Access administrator emails (comma separated)',

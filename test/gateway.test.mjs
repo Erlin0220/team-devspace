@@ -3,8 +3,25 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { reconcileCleanup, requestOperation } from '../gateway/index.mjs';
+
+const gatewayScript = (await build({ entryPoints: [resolve('gateway/index.mjs')], bundle: true,
+  format: 'esm', platform: 'browser', write: false, sourcemap: false })).outputFiles[0].text;
+
+const ACCESS_ISSUER = 'https://access.example.test';
+const ACCESS_AUD = 'team-devspace-admin-test';
+const { publicKey: accessPublicKey, privateKey: accessPrivateKey } = await generateKeyPair('RS256');
+const ACCESS_JWK = { ...await exportJWK(accessPublicKey), kid: 'test-access-key', alg: 'RS256', use: 'sig' };
+
+async function accessHeaders() {
+  const token = await new SignJWT({ email: 'admin@example.test' })
+    .setProtectedHeader({ alg: 'RS256', kid: ACCESS_JWK.kid })
+    .setIssuer(ACCESS_ISSUER).setAudience(ACCESS_AUD).setIssuedAt().setExpirationTime('5m').sign(accessPrivateKey);
+  return { 'Cf-Access-Jwt-Assertion': token };
+}
 
 const secret = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -18,7 +35,7 @@ async function fixture(t) {
   const switches = { offline: false, cleanupFailure: false, configureFailure: false };
   const envelope = (result, status = 200) => Response.json({ success: status < 400, result, errors: [] }, { status });
   const mf = new Miniflare({
-    modules: true, scriptPath: resolve('gateway/index.mjs'), compatibilityDate: '2026-06-01',
+    modules: true, script: gatewayScript, compatibilityDate: '2026-06-01',
     d1Databases: { DB: 'team-devspace-test' }, log: new Log(LogLevel.ERROR),
     serviceBindings: { ASSETS: async request => {
       const pathname = new URL(request.url).pathname;
@@ -32,9 +49,11 @@ async function fixture(t) {
     } },
     bindings: { ADMIN_TOKEN: adminToken, MASTER_KEY: secret(), CF_API_TOKEN: secret(),
       CF_ACCOUNT_ID: 'a'.repeat(32), CF_ZONE_ID: 'b'.repeat(32), DEVICE_DOMAIN: 'example.test',
-      PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8' },
+      PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8',
+      ACCESS_TEAM_DOMAIN: ACCESS_ISSUER, ACCESS_AUD },
     outboundService: async request => {
       const url = new URL(request.url);
+      if (url.origin === ACCESS_ISSUER && url.pathname === '/cdn-cgi/access/certs') return Response.json({ keys: [ACCESS_JWK] });
       if (url.hostname !== 'api.cloudflare.com') {
         if (switches.offline) return new Response('tunnel offline', { status: 530 });
         const tunnel = [...tunnels.values()].find(item => item.config?.ingress[0]?.hostname === url.hostname);
@@ -110,7 +129,7 @@ async function fixture(t) {
     return { id, accessKey };
   }
   function device() { return { deviceId: randomUUID(), deviceSecret: secret(), bridgePort: 47671 }; }
-  return { mf, db, request, issue, device, adminToken, tunnels, records, forwarded, apiTrace, switches };
+  return { mf, db, request, issue, device, adminToken, tunnels, records, forwarded, apiTrace, switches, accessHeaders };
 }
 
 test('one Worker serves health and public assets with consistent headers without weakening control routes', async t => {
@@ -203,8 +222,11 @@ test('Device suspend is fail-closed before local stop and resume waits for the e
 test('Admin Web is Access-gated and its assets stay inside /admin/assets/*', async t => {
   const f = await fixture(t);
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin')).status, 403);
-  const access = { 'Cf-Access-Authenticated-User-Email': 'admin@example.test',
-    'Cf-Access-Jwt-Assertion': 'signed-access-assertion' };
+  const fake = await f.mf.dispatchFetch('https://team.example.test/admin', {
+    headers: { 'Cf-Access-Jwt-Assertion': 'signed-access-assertion' },
+  });
+  assert.equal(fake.status, 403);
+  const access = await f.accessHeaders();
   const page = await f.mf.dispatchFetch('https://team.example.test/admin', { headers: access });
   assert.equal(page.status, 200);
   assert.ok((await page.text()).includes('Team DevSpace Admin'));

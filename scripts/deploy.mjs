@@ -91,6 +91,12 @@ if (values['dry-run']) {
       await atomicJson('deployment.config.json', deployment);
     },
   });
+  const organization = await api(`/accounts/${accountId}/access/organizations`);
+  const authDomain = organization?.auth_domain;
+  if (typeof authDomain !== 'string' || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+cloudflareaccess\.com$/i.test(authDomain)) {
+    throw new Error('Cloudflare Access organization has no valid auth domain');
+  }
+  const accessTeamDomain = `https://${authDomain}`;
   if (values.provision) {
     console.log(JSON.stringify({ provisioned: true, gateway, databaseId: database.uuid,
       accessApplicationId: access.applicationId, accessPolicyId: access.policyId, paidPlanChanges: false }, null, 2));
@@ -102,7 +108,8 @@ if (values['dry-run']) {
     assets: { ...base.assets, directory: resolve('assets') },
     vars: { ...base.vars, RELEASE_VERSION: release.version, DEVSPACE_VERSION: release.devspaceVersion,
       CF_ACCOUNT_ID: accountId, CF_ZONE_ID: config.zoneId,
-      DEVICE_DOMAIN: deviceDomain, PUBLIC_ORIGIN: gateway },
+      DEVICE_DOMAIN: deviceDomain, PUBLIC_ORIGIN: gateway,
+      ACCESS_TEAM_DOMAIN: accessTeamDomain, ACCESS_AUD: access.audience },
     d1_databases: [{ binding: 'DB', database_name: workerName, database_id: database.uuid,
       migrations_dir: resolve('migrations') }],
   };

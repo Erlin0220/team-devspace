@@ -39,13 +39,22 @@ export function clearPendingCredential(storage) {
   storage.removeItem(PENDING_KEY);
 }
 
+async function adminJson(path, options) {
+  const response = await fetch(path, { ...options, redirect: 'manual' });
+  if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403) {
+    throw new Error('Admin session expired. Reload this page to sign in again.');
+  }
+  if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
+    throw new Error('Unexpected admin response. Reload this page and sign in again.');
+  }
+  return { response, result: await response.json() };
+}
+
 async function issueCredential(credential) {
-  const response = await fetch('/admin/keys', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const { response, result } = await adminJson('/admin/keys', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(credentialRequest(credential)),
   });
-  const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? 'request_failed');
   return result;
 }
@@ -112,10 +121,9 @@ function initialize() {
         : 'Reset this Device Binding and require a new Enrollment?')) return;
       button.disabled = true;
       try {
-        const response = await fetch(`/admin/keys/${encodeURIComponent(button.dataset.keyId)}/${action}`, {
+        const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(button.dataset.keyId)}/${action}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
         });
-        const result = await response.json();
         if (!response.ok && !result.retryable) throw new Error(result.error ?? 'request_failed');
         location.reload();
       } catch (error) {
