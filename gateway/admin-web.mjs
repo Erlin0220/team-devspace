@@ -122,7 +122,10 @@ export async function adminWeb(request, env, service) {
   const pathname = new URL(request.url).pathname;
   if (pathname.startsWith('/admin/assets/')) {
     if (!['GET', 'HEAD'].includes(request.method)) throw new AdminWebError(405, 'method_not_allowed');
-    const asset = await env.ASSETS.fetch(request);
+    const assetUrl = new URL(request.url);
+    assetUrl.pathname = pathname.replace('/admin/assets/', '/admin/');
+    const assetRequest = new Request(assetUrl, { method: request.method, headers: request.headers });
+    const asset = await env.ASSETS.fetch(assetRequest);
     const output = headers(asset.headers.get('Content-Type') ?? 'application/octet-stream');
     return new Response(request.method === 'HEAD' ? null : asset.body, { status: asset.status, headers: output });
   }

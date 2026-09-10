@@ -42,7 +42,7 @@ async function fixture(t) {
       if (pathname === '/mcp-app-assets/test.js') {
         return new Response('export const fixture = true;', { headers: { 'Content-Type': 'text/javascript' } });
       }
-      if (pathname === '/admin/assets/admin.js') {
+      if (pathname === '/admin/admin.js') {
         return new Response('export const admin = true;', { headers: { 'Content-Type': 'text/javascript' } });
       }
       return new Response('Not found', { status: 404 });
@@ -232,6 +232,7 @@ test('Admin Web is Access-gated and its assets stay inside /admin/assets/*', asy
   assert.ok((await page.text()).includes('Team DevSpace Admin'));
   const asset = await f.mf.dispatchFetch('https://team.example.test/admin/assets/admin.js', { headers: access });
   assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get('Content-Type'), 'text/javascript');
   assert.equal(await asset.text(), 'export const admin = true;');
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin.js', { headers: access })).status, 404);
 });
