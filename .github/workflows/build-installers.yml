@@ -76,7 +76,8 @@ jobs:
     needs: [metadata, verify]
     environment: production
     strategy:
-      fail-fast: true
+      # Collect all native platform results in one run; one failing target must not hide the others.
+      fail-fast: false
       max-parallel: 3
       matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}

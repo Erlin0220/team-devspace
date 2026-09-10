@@ -245,6 +245,7 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(systemd.includes('exec \\"$active/runtime/bin/node\\"') || systemd.includes('exec "$active/runtime/bin/node"'));
   assert.ok(systemd.includes('StandardOutput=journal') && systemd.includes('Restart=on-failure'));
   assert.ok(systemd.includes('StartLimitBurst=5'));
+  assert.ok(!systemd.includes('WorkingDirectory='), 'systemd user services must not quote arbitrary state-home paths as WorkingDirectory');
   assert.ok(!systemd.includes('network-online.target') && !systemd.includes('append:'));
   assert.ok(!systemd.includes('/old/version/node') && !systemd.includes(state.deviceSecret) && !systemd.includes(state.accessKey));
   assert.throws(() => serviceLabel(state, 'arbitrary-process'));

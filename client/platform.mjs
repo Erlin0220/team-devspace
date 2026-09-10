@@ -149,7 +149,7 @@ export function systemdUserUnit(state, component, home, paths, root = installRoo
   // receive $active/$TEAM_DEVSPACE_* literally because it resolves active-path at process start.
   const arguments_ = `/bin/sh -c ${systemdQuoted(command)}`;
   return `[Unit]\nDescription=Team DevSpace ${component}\nStartLimitIntervalSec=60\nStartLimitBurst=5\n\n` +
-    `[Service]\nType=simple\nWorkingDirectory=${systemdQuoted(home)}\nExecStart=:${arguments_}\n` +
+    `[Service]\nType=simple\nExecStart=:${arguments_}\n` +
     `Environment=${systemdQuoted(`TEAM_DEVSPACE_HOME=${home}`)}\nEnvironment=${systemdQuoted(`TEAM_DEVSPACE_DISTRIBUTION_ROOT=${distributionRoot}`)}\n` +
     `Environment=${systemdQuoted(`TEAM_DEVSPACE_ACTIVE_PATH=${activePath}`)}\nEnvironment=${systemdQuoted('NODE_OPTIONS=')}\nEnvironment=${systemdQuoted(`PATH=${path}`)}\n` +
     `Restart=on-failure\nRestartSec=5\nStandardOutput=journal\nStandardError=journal\n\n[Install]\nWantedBy=default.target\n`;
