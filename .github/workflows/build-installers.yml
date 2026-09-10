@@ -91,7 +91,7 @@ jobs:
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: node scripts/macos-signing.mjs prepare
-      - name: Build native component artifacts, offline layout and bootstrapper
+      - name: Build native component artifacts and self-contained platform package
         run: npm run package
       - name: Record macOS package trust mode
         if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
@@ -174,8 +174,13 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=$(node -p "require('./release.config.json').version")
-          mkdir -p release/publish
-          (cd "release/offline/$VERSION/win32-x64" && zip -qr "../../../publish/Team-DevSpace-$VERSION-windows-x64-offline.zip" .)
+          mkdir -p release/publish release/windows-handoff
+          cp "release/offline/$VERSION/win32-x64/Team-DevSpace-$VERSION-windows-x64-setup.exe" release/windows-handoff/
+          if test "${{ inputs.publish }}" = true; then
+            cp "release/offline/$VERSION/win32-x64/Team-DevSpace-Internal-Publisher.cer" release/windows-handoff/
+            cp "release/offline/$VERSION/win32-x64/Trust-Team-DevSpace-Internal-Publisher.ps1" release/windows-handoff/
+          fi
+          (cd release/windows-handoff && zip -q "../publish/Team-DevSpace-$VERSION-windows-x64.zip" ./*)
           cp "release/offline/$VERSION/darwin-arm64/Team-DevSpace-$VERSION-macos-arm64.pkg" release/publish/
           cp "release/offline/$VERSION/darwin-x64/Team-DevSpace-$VERSION-macos-x64.pkg" release/publish/
           cp "release/offline/$VERSION/linux-x64/Team-DevSpace-$VERSION-linux-x64-offline.tar.gz" release/publish/
@@ -197,4 +202,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Team DevSpace $VERSION" \
-            --notes "Private internal administrator handoff. Windows uses the bundled Team DevSpace self-signed publisher certificate and current-user trust helper. macOS packages use Developer ID/notarization only when protected Apple credentials were supplied; otherwise they are explicitly unsigned/unnotarized. Follow INTERNAL-DISTRIBUTION.md and verify SHA256SUMS. Employees install only administrator-supplied complete offline packages."
+            --notes "Private internal administrator handoff. Windows uses one self-contained installer EXE plus the bundled Team DevSpace self-signed publisher certificate/current-user trust helper; no external runtime objects are required. macOS packages use Developer ID/notarization only when protected Apple credentials were supplied; otherwise they are explicitly unsigned/unnotarized. Follow INTERNAL-DISTRIBUTION.md and verify SHA256SUMS."

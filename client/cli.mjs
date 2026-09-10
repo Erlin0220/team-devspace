@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
 import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, readJson, RELEASE_VERSION,
   stateHome, writeUpstreamConfig } from './state.mjs';
-import { configureDevice, deviceStatus, macSetupDialog, requestFromFile } from './setup.mjs';
+import { configureDevice, deviceStatus, macSetupDialog, repairDevice, requestFromFile } from './setup.mjs';
 import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace,
@@ -17,6 +17,7 @@ const HELP = `Team DevSpace
   setup --request-file <private-installer-request.json>
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
+  repair                            Recreate local startup or resume pending Enrollment
   start | stop | restart            Control your user-session runtime
   suspend | resume                  Fail-closed remote access safety switch
   diagnostics                       Print stable redacted diagnostics
@@ -57,6 +58,7 @@ export async function main(argv = process.argv.slice(2)) {
       onProgress: values['installer-progress'] ? message => console.log(`[Team DevSpace] ${message}`) : undefined });
   } else if (command === 'setup-gui') result = await macSetupDialog(home);
   else if (command === 'status') result = await deviceStatus(home);
+  else if (command === 'repair') result = await repairDevice(home);
   else if (command === 'suspend') result = await suspendRemoteAccess(home);
   else if (command === 'resume') result = await resumeRemoteAccess(home);
   else if (command === 'diagnostics') result = await diagnosticReport(home);
@@ -110,8 +112,9 @@ export async function main(argv = process.argv.slice(2)) {
     } else throw new Error('Unknown command; run team-devspace --help');
   }
   if (values['installer-progress']) {
-    const message = command === 'setup' ? (result.ready ? 'Device setup is complete.'
-      : result.remoteAccess === 'suspended' ? 'Upgrade complete; remote access remains suspended.' : 'Device setup is saved.')
+    const message = command === 'setup' ? (result.remoteAccess === 'suspended'
+      ? 'Device setup is complete; remote access remains suspended.'
+      : 'Device setup is complete; connection starts independently.')
       : command === 'uninstall' ? 'Current-user startup entries were removed.'
       : `${command[0].toUpperCase()}${command.slice(1)} complete.`;
     console.log(`[Team DevSpace] ${message}`);

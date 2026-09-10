@@ -1,5 +1,5 @@
 param(
-  [ValidateSet('Install', 'Repair', 'Uninstall')][string]$Mode = 'Install',
+  [ValidateSet('Install', 'Uninstall')][string]$Mode = 'Install',
   [string]$InstallPath,
   [string]$ManifestPath,
   [string]$OfflineRoot,
@@ -17,9 +17,7 @@ $InstallPath = [IO.Path]::GetFullPath($InstallPath)
 $ManifestPath = [IO.Path]::GetFullPath($ManifestPath)
 $versionsRoot = Join-Path $InstallPath 'v'
 $stagingRoot = Join-Path $InstallPath 's'
-$cacheRoot = Join-Path $InstallPath 'cache\sha256'
 $activeFile = Join-Path $InstallPath 'active.json'
-$legacyRoot = Join-Path $InstallPath 'a'
 $shaPattern = '^[a-f0-9]{64}$'
 
 function Write-Step([string]$Message) {
@@ -53,22 +51,12 @@ function Test-ChildPath([string]$Parent, [string]$Child) {
 }
 
 function Get-Active {
-  if (Test-Path -LiteralPath $activeFile) {
-    $value = Read-Json $activeFile
-    if (-not $value.path -or -not (Test-ChildPath $versionsRoot ([string]$value.path))) {
-      throw 'The active version pointer is invalid. Run Repair from a trusted installer.'
-    }
-    return $value
+  if (-not (Test-Path -LiteralPath $activeFile)) { return $null }
+  $value = Read-Json $activeFile
+  if (-not $value.path -or -not (Test-ChildPath $versionsRoot ([string]$value.path))) {
+    throw 'The active version pointer is invalid. Re-run the trusted Team DevSpace installer.'
   }
-  $legacyNode = Join-Path $legacyRoot 'runtime\node.exe'
-  $legacyClient = Join-Path $legacyRoot 'client\cli.mjs'
-  if ((Test-Path -LiteralPath $legacyNode) -and (Test-Path -LiteralPath $legacyClient)) {
-    return [pscustomobject]@{ release = 'legacy'; path = $legacyRoot; manifestSha256 = ''; previous = $null }
-  }
-  if ((Test-Path -LiteralPath $legacyNode) -or (Test-Path -LiteralPath $legacyClient)) {
-    Write-Warning 'Incomplete legacy payload ignored; the verified candidate will replace it.'
-  }
-  return $null
+  return $value
 }
 
 function Invoke-Client([string]$Root, [string[]]$Arguments, [switch]$AllowFailure) {
@@ -79,20 +67,18 @@ function Invoke-Client([string]$Root, [string[]]$Arguments, [switch]$AllowFailur
     throw "Installed client is incomplete: $Root"
   }
   $clientArguments = @($Arguments) + '--installer-progress'
-  & $node $cli @clientArguments | Out-Host
+  $output = @(& $node $cli @clientArguments 2>&1)
   $code = $LASTEXITCODE
-  if ($code -ne 0 -and -not $AllowFailure) { throw "Team DevSpace client exited $code" }
+  foreach ($line in $output) { Write-Host $line }
+  if ($code -ne 0 -and -not $AllowFailure) {
+    $detail = if ($output.Count) { [string]$output[$output.Count - 1] } else { 'No client diagnostic was produced.' }
+    throw "Team DevSpace client exited $code. $detail"
+  }
   return $code
 }
 
 function Test-NeedGitFallback {
-  $git = Get-Command git.exe -ErrorAction SilentlyContinue
-  $bash = Get-Command bash.exe -ErrorAction SilentlyContinue
-  if ($git -and -not $bash) {
-    $candidate = [IO.Path]::GetFullPath((Join-Path (Split-Path $git.Source) '..\bin\bash.exe'))
-    if (Test-Path -LiteralPath $candidate) { $bash = $candidate }
-  }
-  return -not ($git -and $bash)
+  return -not (Get-Command git.exe -ErrorAction SilentlyContinue)
 }
 
 function Assert-Manifest([object]$Manifest) {
@@ -129,37 +115,14 @@ function Assert-Artifact([string]$Path, [object]$Component) {
   if ($actual -ne [string]$Component.sha256) { throw "Artifact SHA-256 mismatch: $($Component.name)" }
 }
 
-function Receive-Artifact([object]$Manifest, [object]$Component) {
-  $directory = Join-Path $cacheRoot ([string]$Component.sha256)
-  $fileName = Split-Path ([string]$Component.path) -Leaf
-  $destination = Join-Path $directory $fileName
-  New-Item -ItemType Directory -Path $directory -Force | Out-Null
-  if (Test-Path -LiteralPath $destination) {
-    try { Assert-Artifact $destination $Component; return $destination }
-    catch { Remove-Item -LiteralPath $destination -Force }
+function Receive-Artifact([object]$Component) {
+  if (-not $OfflineRoot) { throw 'The embedded offline payload is unavailable.' }
+  $artifact = Join-Path $OfflineRoot (([string]$Component.path) -replace '/', '\')
+  if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+    throw "Embedded artifact is missing: $($Component.name)"
   }
-  $temporary = "$destination.$([guid]::NewGuid().ToString('N')).partial"
-  try {
-    $offlineArtifact = if ($OfflineRoot) { Join-Path $OfflineRoot (([string]$Component.path) -replace '/', '\') } else { '' }
-    if ($offlineArtifact -and (Test-Path -LiteralPath $offlineArtifact)) {
-      Copy-Item -LiteralPath $offlineArtifact -Destination $temporary
-    } else {
-      throw "Artifact $($Component.name) is missing from the offline release package. Re-run setup from the complete package supplied by your administrator."
-    }
-    Assert-Artifact $temporary $Component
-    Move-Item -LiteralPath $temporary -Destination $destination
-    return $destination
-  } finally {
-    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-  }
-}
-
-function Resolve-OfflineRoot([string]$Root, [object]$Manifest) {
-  if (-not $Root) { return '' }
-  if (Test-Path -LiteralPath (Join-Path $Root 'objects') -PathType Container) { return $Root }
-  $nested = Join-Path $Root (Join-Path 'offline' (Join-Path ([string]$Manifest.release) ([string]$Manifest.target)))
-  if (Test-Path -LiteralPath (Join-Path $nested 'objects') -PathType Container) { return $nested }
-  return $Root
+  Assert-Artifact $artifact $Component
+  return $artifact
 }
 
 function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
@@ -193,25 +156,13 @@ function Expand-PortableGit([string]$Archive, [string]$Destination) {
   } finally { Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-function Remove-UnreferencedPayload([string]$Current, [object]$Manifest) {
-  # Cleanup is post-commit and best effort. A locked old file must not report a
-  # successful activation as failed; a later repair retries the same cleanup.
-  $hashes = @($Manifest.components | ForEach-Object { [string]$_.sha256 })
+function Remove-PreviousPayload([string]$Current) {
+  # Cleanup is post-commit and best effort. A locked old version must not turn a
+  # successful activation into an installation failure.
   foreach ($directory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory)) {
-    if ($directory.FullName -ne $Current) {
+    if ([IO.Path]::GetFullPath($directory.FullName) -ne [IO.Path]::GetFullPath($Current)) {
       try { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
       catch { Write-Warning "Old version cleanup deferred: $($directory.Name)" }
-    }
-  }
-  if ((Test-Path -LiteralPath $legacyRoot) -and
-      [IO.Path]::GetFullPath($legacyRoot) -ne [IO.Path]::GetFullPath($Current)) {
-    try { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
-    catch { Write-Warning 'Legacy payload cleanup deferred until next repair.' }
-  }
-  foreach ($directory in @(Get-ChildItem -LiteralPath $cacheRoot -Directory)) {
-    if ($directory.Name -match $shaPattern -and $hashes -notcontains $directory.Name) {
-      try { Remove-Item -LiteralPath $directory.FullName -Recurse -Force }
-      catch { Write-Warning 'Unused artifact cache cleanup deferred.' }
     }
   }
 }
@@ -267,26 +218,41 @@ try {
   Write-Step 'Verifying the installer manifest...'
   $manifest = Read-Json $ManifestPath
   Assert-Manifest $manifest
-  $OfflineRoot = Resolve-OfflineRoot $OfflineRoot $manifest
-  New-Item -ItemType Directory -Path $versionsRoot, $stagingRoot, $cacheRoot -Force | Out-Null
+  if (-not $OfflineRoot -or -not (Test-Path -LiteralPath (Join-Path $OfflineRoot 'objects') -PathType Container)) {
+    throw 'The installer embedded payload is unavailable.'
+  }
+  New-Item -ItemType Directory -Path $versionsRoot, $stagingRoot -Force | Out-Null
   $manifestSha = Get-Sha256 $ManifestPath
+  $stateHome = if ($env:TEAM_DEVSPACE_HOME) { [IO.Path]::GetFullPath($env:TEAM_DEVSPACE_HOME) }
+    else { Join-Path $env:LOCALAPPDATA 'TeamDevSpace' }
+  $stateFile = Join-Path $stateHome 'state.json'
+  $hasEnrollment = $false
+  if (Test-Path -LiteralPath $stateFile) {
+    try {
+      $savedState = Read-Json $stateFile
+      $hasEnrollment = -not [string]::IsNullOrWhiteSpace([string]$savedState.bindingId) -and
+        -not [string]::IsNullOrWhiteSpace([string]$savedState.keyId)
+    } catch {
+      Write-Warning 'Existing device state is unreadable. The local application can still be installed; Repair connection will report the state problem.'
+    }
+  }
   $stage = $stagingRoot
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Path $stage | Out-Null
   try {
     foreach ($component in @($manifest.components)) {
       $condition = if ($component.PSObject.Properties['condition']) { [string]$component.condition } else { '' }
-      if ($condition -eq 'git-and-bash-unavailable' -and -not (Test-NeedGitFallback)) { continue }
+      if ($condition -eq 'git-unavailable' -and -not (Test-NeedGitFallback)) { continue }
       $componentName = switch ([string]$component.name) {
         'app' { 'Team DevSpace application' }
         'devspace-runtime' { 'DevSpace runtime dependency set' }
         'node' { 'Node.js runtime' }
         'cloudflared' { 'Cloudflare connection helper' }
-        'git-fallback' { 'Git and Bash fallback' }
+        'git-fallback' { 'Git fallback' }
         default { [string]$component.name }
       }
       Write-Step "Verifying and unpacking $componentName..."
-      $archive = Receive-Artifact $manifest $component
+      $archive = Receive-Artifact $component
       if ($component.format -eq '7z-sfx') { Expand-PortableGit $archive $stage }
       else { Expand-VerifiedArchive $archive $stage }
       Write-Step "$componentName is ready."
@@ -295,9 +261,8 @@ try {
     Write-Step 'Checking executable and native dependency versions...'
     Assert-Version $stage $manifest
 
-    # Fixed short A/B slots keep the unmodified upstream dependency tree under Windows MAX_PATH.
-    # Full release/hash identity stays in active.json. Keep current until setup
-    # succeeds; retire it only after the active pointer is committed.
+    # Keep one verified previous slot only until the new local application is committed.
+    # The short A/B paths preserve compatibility with the unmodified upstream dependency tree under MAX_PATH.
     $slot0 = Join-Path $versionsRoot '0'
     $slot1 = Join-Path $versionsRoot '1'
     $candidate = if ($active -and [IO.Path]::GetFullPath([string]$active.path) -eq [IO.Path]::GetFullPath($slot0)) { $slot1 } else { $slot0 }
@@ -306,55 +271,62 @@ try {
     $stage = $null
 
     if ($active) {
-      Write-Step 'Stopping the active version before the atomic upgrade switch...'
+      Write-Step 'Stopping the active local version before the atomic switch...'
       if ((Invoke-Client ([string]$active.path) @('stop') -AllowFailure) -ne 0) {
         $restartCode = Invoke-Client ([string]$active.path) @('start') -AllowFailure
         Remove-Item -LiteralPath $candidate -Recurse -Force
         if ($restartCode -eq 0) {
-          throw 'Could not fully stop the current Team DevSpace version; its startup entries were restarted and the upgrade was cancelled.'
+          throw 'Could not fully stop the current Team DevSpace version; it was restarted and the local upgrade was cancelled.'
         }
-        throw 'Could not fully stop or restart the current Team DevSpace version; the upgrade was cancelled before activation.'
+        throw 'Could not fully stop or restart the current Team DevSpace version; the local upgrade was cancelled before activation.'
       }
     }
+
     $setup = @('setup')
     if ($RequestFile) { $setup += @('--request-file', $RequestFile) }
     if ($NoStartup) { $setup += '--no-startup' }
-    try {
-      Write-Step 'Configuring Enrollment and current-user background startup...'
-      [void](Invoke-Client $candidate $setup)
-      $next = [ordered]@{
-        schema = 1; release = [string]$manifest.release; target = [string]$manifest.target
-        manifestSha256 = $manifestSha; path = $candidate
-        previous = $null
+
+    if ($hasEnrollment) {
+      try {
+        Write-Step 'Reusing the existing Enrollment and refreshing local startup entries...'
+        [void](Invoke-Client $candidate $setup)
+      } catch {
+        $setupFailure = $_.Exception.Message
+        [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
+        if ($active) { Restore-Previous $active $candidate }
+        Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
+        throw $setupFailure
       }
-      Write-AtomicJson $activeFile $next
-      Write-Step "Team DevSpace $($manifest.release) is now active."
-    } catch {
-      $setupFailure = $_.Exception.Message
-      $cleanupCode = Invoke-Client $candidate @('uninstall') -AllowFailure
-      $restoreFailure = $null
-      if ($active) {
-        try { Restore-Previous $active $candidate }
-        catch { $restoreFailure = $_.Exception.Message }
-      }
-      Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
-      if ($restoreFailure -and $cleanupCode -ne 0) {
-        throw "$setupFailure Candidate startup cleanup also failed. Previous startup restoration also failed: $restoreFailure"
-      }
-      if ($restoreFailure) { throw "$setupFailure Previous startup restoration also failed: $restoreFailure" }
-      if ($cleanupCode -ne 0) {
-        if ($active) {
-          throw "$setupFailure Candidate startup cleanup also failed. Previous startup entries were reinstalled, but running state is not confirmed."
-        }
-        throw "$setupFailure Candidate startup cleanup also failed; run Uninstall from this package before retrying."
-      }
-      throw $setupFailure
     }
 
-    Write-Step 'Removing the previous version and unused verified cache; this can take a moment...'
-    try { Remove-UnreferencedPayload $candidate $manifest }
-    catch { Write-Warning 'Post-activation cleanup deferred until next repair.' }
-    Write-Step 'Installation complete. Payload source: verified offline package/cache.'
+    $next = [ordered]@{
+      schema = 1; release = [string]$manifest.release; target = [string]$manifest.target
+      manifestSha256 = $manifestSha; path = $candidate
+      previous = $null
+    }
+    Write-AtomicJson $activeFile $next
+    Write-Step "Team DevSpace $($manifest.release) local application is installed."
+
+    if (-not $hasEnrollment) {
+      try {
+        Write-Step 'Completing first-run Enrollment after the local installation commit...'
+        [void](Invoke-Client $candidate $setup)
+        Remove-Item -LiteralPath (Join-Path $InstallPath 'onboarding-error.log') -Force -ErrorAction SilentlyContinue
+      } catch {
+        $setupFailure = $_.Exception.Message
+        [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
+        $failure = "Team DevSpace is installed, but connection setup did not complete: $setupFailure"
+        [IO.File]::AppendAllText((Join-Path $InstallPath 'onboarding-error.log'), "$(Get-Date -Format o) $failure`r`n")
+        Write-Warning $failure
+        Write-Warning 'Use Repair connection after network or credential issues are resolved. The installed application will not be rolled back.'
+        exit 10
+      }
+    }
+
+    Write-Step 'Removing the previous local version...'
+    try { Remove-PreviousPayload $candidate }
+    catch { Write-Warning 'Old version cleanup was deferred; the active version remains installed.' }
+    Write-Step 'Installation complete. Runtime connectivity is reported separately by Status/Tray.'
   } finally {
     if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
   }

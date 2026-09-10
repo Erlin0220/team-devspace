@@ -236,7 +236,8 @@ if (!values['prepare-only']) {
     artifact = join(outputDirectory, `Team-DevSpace-${release.version}-windows-x64-setup.exe`);
     await run(join(compilerRoot, directory.name, 'makensis.exe'), ['/V2', '/NOCD',
       `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${distribution.manifestPath}`,
-      `/DPLATFORM_DIR=${resolve('platform/windows')}`, `/DAPP_VERSION=${release.version}`,
+      `/DOFFLINE_OBJECTS=${join(distribution.layout, 'objects')}`, `/DPLATFORM_DIR=${resolve('platform/windows')}`,
+      `/DAPP_VERSION=${release.version}`,
       `/DAPP_VERSION_NUM=${release.version.split('-')[0]}.0`, `/DDEVSPACE_VERSION=${release.devspaceVersion}`, `/DOUTPUT=${artifact}`,
       resolve('platform/windows/installer.nsi')], { timeout: 600000 });
   } else if (process.platform === 'darwin') {
@@ -294,7 +295,7 @@ if (!values['prepare-only']) {
   const checksum = await sha256File(artifact);
   await writeFile(`${artifact}.sha256`, `${checksum}  ${artifact.split(/[\\/]/).pop()}\n`);
   await cp(`${artifact}.sha256`, join(distribution.layout, `${artifact.split(/[\\/]/).pop()}.sha256`));
-  // Native smoke tests still use bundle/ and the small NSIS compiler; expanded
+  // Native smoke tests still use bundle/ and the NSIS compiler; expanded
   // packaging intermediates are neither caches nor release outputs.
   for (const path of [`build/distribution-${target}`, `build/pkg-root-${target}`, `build/pkg-scripts-${target}`,
     `build/pkg-components-${target}.plist`, `build/bootstrap-${target}`]) {

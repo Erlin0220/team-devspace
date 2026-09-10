@@ -22,6 +22,9 @@ ${StrRep}
 !ifndef MANIFEST
 !error "MANIFEST must point to the embedded immutable release manifest"
 !endif
+!ifndef OFFLINE_OBJECTS
+!error "OFFLINE_OBJECTS must point to the verified component object tree"
+!endif
 !ifndef PLATFORM_DIR
 !error "PLATFORM_DIR must point to platform/windows"
 !endif
@@ -48,7 +51,7 @@ ShowUninstDetails show
 BrandingText "Team DevSpace offline installer - official DevSpace ${DEVSPACE_VERSION}"
 VIProductVersion "${APP_VERSION_NUM}"
 VIAddVersionKey "ProductName" "Team DevSpace"
-VIAddVersionKey "FileDescription" "Team DevSpace verified offline bootstrapper"
+VIAddVersionKey "FileDescription" "Team DevSpace self-contained offline installer"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 
 Var Dialog
@@ -62,6 +65,7 @@ Var ResultCode
 Var Arguments
 Var NoStartup
 Var ProgressStyle
+Var SetupPending
 
 !define PBS_MARQUEE 0x08
 
@@ -161,12 +165,17 @@ FunctionEnd
 
 Section "Install"
   SetShellVarContext current
+  StrCpy $SetupPending "0"
   ${If} ${Silent}
   ${AndIf} $PreviousEnrollment != "1"
   ${AndIf} $RequestFile == ""
     SetErrorLevel 2
     Abort "A fresh unattended installation requires /REQUEST=<private setup JSON file>."
   ${EndIf}
+
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR\offline\objects"
+  File /r "${OFFLINE_OBJECTS}\*.*"
 
   CreateDirectory "$INSTDIR"
   SetOutPath "$INSTDIR"
@@ -188,7 +197,7 @@ Section "Install"
     FileClose $0
   ${EndIf}
 
-  StrCpy $Arguments '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\bootstrap.ps1$\" -Mode Install -InstallPath $\"$INSTDIR$\" -ManifestPath $\"$INSTDIR\release-manifest.json$\" -OfflineRoot $\"$EXEDIR$\"'
+  StrCpy $Arguments '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\bootstrap.ps1$\" -Mode Install -InstallPath $\"$INSTDIR$\" -ManifestPath $\"$INSTDIR\release-manifest.json$\" -OfflineRoot $\"$PLUGINSDIR\offline$\"'
   ${If} $RequestFile != ""
     StrCpy $Arguments '$Arguments -RequestFile $\"$RequestFile$\"'
   ${EndIf}
@@ -201,9 +210,11 @@ Section "Install"
   Pop $ResultCode
   Call StopBootstrapProgress
   StrCpy $AccessKey ""
-  ${If} $ResultCode != 0
+  ${If} $ResultCode == 10
+    StrCpy $SetupPending "1"
+  ${ElseIf} $ResultCode != 0
     SetErrorLevel 4
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Offline payload verification or startup failed. The previously active version and Enrollment were retained. Re-run setup from the complete package supplied by your administrator." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Local Team DevSpace installation failed before activation. The previous installed version and Enrollment were retained. Re-run this trusted installer." /SD IDOK
     Abort
   ${EndIf}
 
@@ -220,7 +231,10 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Status.lnk" "$INSTDIR\status.cmd" "" "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Repair connection.lnk" "$INSTDIR\repair.cmd"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
-  DetailPrint "Team DevSpace installation is complete."
+  DetailPrint "Team DevSpace local installation is complete."
+  ${If} $SetupPending == "1"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Team DevSpace was installed successfully, but connection setup did not complete. Use 'Repair connection' after checking your Access Key and network. The installed application does not need to be reinstalled." /SD IDOK
+  ${EndIf}
 SectionEnd
 
 Section "Uninstall"

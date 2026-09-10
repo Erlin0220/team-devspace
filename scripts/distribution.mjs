@@ -78,7 +78,7 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
   if (target === 'win32-x64') {
     if (!gitFallbackArchive) throw new Error('Windows requires the pinned official PortableGit self-extractor');
     components.push(await componentArtifact({ name: 'git-fallback', version: release.gitFallbackVersion,
-      archive: gitFallbackArchive, layout, format: '7z-sfx', required: false, condition: 'git-and-bash-unavailable' }));
+      archive: gitFallbackArchive, layout, format: '7z-sfx', required: false, condition: 'git-unavailable' }));
   }
 
   const manifest = {

@@ -4,13 +4,17 @@ import { join } from 'node:path';
 import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { approvedRoots, atomicJson, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
   readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
-import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
+import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
 const exec = promisify(execFile);
+
+async function hasTunnelCredential(home) {
+  try { return Boolean((await readFile(join(home, 'tunnel.token'), 'utf8')).trim()); }
+  catch { return false; }
+}
 
 async function availablePort(preferred) {
   for (let port = preferred; port < preferred + 100; port++) {
@@ -47,6 +51,26 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     state = await loadState(home);
     if (state.gateway !== gateway || state.accessKey !== accessKey) throw new Error('Another setup already enrolled this installation with different credentials');
   }
+  if (previous?.bindingId && previous?.keyId && previous?.hostname && await hasTunnelCredential(home)) {
+    onProgress('Existing Enrollment found. Reusing the current Device Binding without contacting the Gateway...');
+    state = { ...state, keyId: previous.keyId, bindingId: previous.bindingId, hostname: previous.hostname,
+      endpoint: previous.endpoint ?? `${gateway}/mcp`, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
+      remoteAccess: previous.remoteAccess === 'suspended' ? 'suspended' : 'active' };
+    await writeUpstreamConfig(state, home);
+    await atomicJson(join(home, 'state.json'), state);
+    if (startup) {
+      await serviceAction('stop', previous, home);
+      onProgress('Refreshing current-user login startup entries...');
+      await installServices(state, home);
+      const startComponents = enabledStartupComponents(state);
+      if (startComponents.length) await serviceAction('start', state, home, startComponents);
+    }
+    return { enrolled: true, reusedEnrollment: true, ready: false, connection: startup ? 'starting' : 'not-started',
+      remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
+      endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,
+      startup: startup ? 'installed' : 'not-installed' };
+  }
+
   onProgress('Contacting the Team Gateway and confirming Enrollment...');
   const binding = await control(gateway, '/v1/enroll', accessKey, {
     body: { deviceId: state.deviceId, deviceSecret: state.deviceSecret, bridgePort: state.ports.bridge },
@@ -56,7 +80,6 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
       typeof binding.tunnelToken !== 'string' || !binding.tunnelToken || binding.endpoint !== `${gateway}/mcp` ||
       binding.devspaceVersion !== DEVSPACE_VERSION) throw new Error('Gateway returned an incompatible Enrollment');
   onProgress('Enrollment confirmed. Preparing the local runtime...');
-  if (previous?.bindingId && startup) await serviceAction('stop', previous, home);
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
     remoteAccess: binding.state === 'suspended' ? 'suspended' : 'active' };
@@ -72,32 +95,31 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     await installServices(state, home);
     const startComponents = enabledStartupComponents(state);
     if (startComponents.length) await serviceAction('start', state, home, startComponents);
-    if (state.remoteAccess === 'suspended') {
-      onProgress('Upgrade complete. Remote access remains safely suspended.');
-      return { enrolled: true, ready: false, remoteAccess: 'suspended', deviceId: state.deviceId,
-        bindingId: state.bindingId, endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION,
-        roots: state.roots, startup: 'installed' };
-    }
-    onProgress('Starting Team DevSpace and waiting for connection health...');
-    let health;
-    let lastProgress = 0;
-    const deadline = Date.now() + 60000;
-    do {
-      health = await deviceStatus(home);
-      if (health.ready) break;
-      if (health.gateway === 'disabled') throw new Error('This Device Binding was disabled during startup');
-      if (Date.now() - lastProgress >= 5000) {
-        onProgress(`Still starting: DevSpace=${health.devspace}, Bridge=${health.bridge}, Tunnel=${health.tunnel}, Gateway=${health.gateway}`);
-        lastProgress = Date.now();
-      }
-      await sleep(1000);
-    } while (Date.now() < deadline);
-    if (!health.ready) throw new Error(`Enrollment is saved, but runtime is not ready (DevSpace=${health.devspace}, Bridge=${health.bridge}, Tunnel=${health.tunnel}, Gateway=${health.gateway}). Use status and repair; do not reconnect with a different key.`);
-    onProgress('Runtime, Tunnel and Gateway are ready.');
+    onProgress(state.remoteAccess === 'suspended'
+      ? 'Enrollment is complete. Remote access remains safely suspended.'
+      : 'Enrollment is complete. Team DevSpace is connecting in the background.');
   }
-  return { enrolled: true, ready: startup, remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
+  return { enrolled: true, ready: false, connection: startup ? 'starting' : 'not-started',
+    remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
     endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,
     startup: startup ? 'installed' : 'not-installed' };
+}
+
+export async function repairDevice(home = stateHome(), { preserveTray = false } = {}) {
+  const previous = await readJson(join(home, 'state.json'), null);
+  if (!previous) throw new Error('Team DevSpace is installed but has not been configured yet; run setup with the administrator-issued Access Key and project directory');
+  const recoveredEnrollment = !previous.bindingId || !await hasTunnelCredential(home);
+  if (recoveredEnrollment) await configureDevice({}, { home, startup: false });
+  const state = await loadState(home);
+  const scope = preserveTray ? COMPONENTS : undefined;
+  await serviceAction('remove', state, home, scope);
+  await writeUpstreamConfig(state, home);
+  await installServices(state, home, undefined, scope);
+  const startComponents = enabledStartupComponents(state).filter(component => !preserveTray || component !== 'tray');
+  if (startComponents.length) await serviceAction('start', state, home, startComponents);
+  return { repaired: true, enrolled: true, recoveredEnrollment,
+    connection: state.remoteAccess === 'suspended' ? 'suspended' : 'starting',
+    deviceId: state.deviceId, bindingId: state.bindingId, startup: 'installed' };
 }
 
 export async function deviceStatus(home = stateHome()) {
@@ -116,10 +138,13 @@ export async function deviceStatus(home = stateHome()) {
       ? result.state : 'invalid-response',
       error => error.status === 403 ? 'disabled' : 'unreachable') : Promise.resolve('not-enrolled'),
   ]);
+  const desiredRemoteAccess = state.remoteAccess === 'suspended' ? 'suspended' : 'active';
+  const remoteAccess = !state.bindingId ? 'not-enrolled'
+    : ['active', 'suspended'].includes(gateway) ? gateway : desiredRemoteAccess;
   return { deviceId: state.deviceId, devspaceVersion: DEVSPACE_VERSION, releaseVersion: state.releaseVersion,
     devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, roots: state.roots,
-    localReady: devspace && bridge && tunnel, remoteAccess: gateway === 'suspended' ? 'suspended' : 'active',
-    ready: devspace && bridge && tunnel && gateway === 'active' };
+    localReady: devspace && bridge && tunnel, desiredRemoteAccess, remoteAccess,
+    ready: Boolean(state.bindingId) && devspace && bridge && tunnel && gateway === 'active' && desiredRemoteAccess === 'active' };
 }
 
 export async function macSetupDialog(home = stateHome()) {

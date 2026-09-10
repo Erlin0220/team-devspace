@@ -9,6 +9,7 @@ import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, r
 import { configureDevice, requestFromFile } from '../client/setup.mjs';
 import { createAccessKey } from '../client/admin.mjs';
 import { launchAgentXml, windowsTaskXml, serviceLabel } from '../client/platform.mjs';
+import { openLogs, rollbackResumeFailure } from '../client/control.mjs';
 
 async function fixture(t) {
   const home = await mkdtemp(join(tmpdir(), 'team-devspace-client-'));
@@ -52,9 +53,16 @@ test('installation retry/repair preserves identity, key, roots and upstream stat
   assert.equal(state.deviceSecret, pending.deviceSecret);
   assert.equal(state.ownerToken, pending.ownerToken);
   assert.equal(ready.bindingId, f.bindingId);
+  const enrollmentRequests = f.requests.length;
   const repaired = await configureDevice({}, { home: f.home, startup: false });
+  assert.equal(f.requests.length, enrollmentRequests, 'Existing Enrollment must be reused without another Gateway call');
+  assert.equal(repaired.reusedEnrollment, true);
   assert.equal(repaired.deviceId, ready.deviceId);
   assert.deepEqual(repaired.roots, ready.roots);
+  await rm(join(f.home, 'tunnel.token'));
+  const recovered = await configureDevice({}, { home: f.home, startup: false });
+  assert.equal(f.requests.length, enrollmentRequests + 1, 'Missing Tunnel credential must trigger one idempotent Enrollment repair');
+  assert.equal(recovered.bindingId, ready.bindingId);
   const config = await readJson(join(f.home, 'devspace', 'config.json'));
   assert.equal(config.stateDir, join(f.home, 'upstream-state'));
   assert.equal(config.subagents.enabled, false);
@@ -161,6 +169,24 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(!launch.includes('<key>UserName</key>'));
   assert.ok(!launch.includes(state.deviceSecret) && !launch.includes(state.accessKey));
   assert.throws(() => serviceLabel(state, 'arbitrary-process'));
+});
+
+test('opening logs delegates to the desktop shell without waiting for its exit code', async () => {
+  let launched;
+  const directory = String.raw`C:\Users\employee\AppData\Local\TeamDevSpace\logs`;
+  assert.equal(await openLogs(String.raw`C:\Users\employee\AppData\Local\TeamDevSpace`, {
+    launch: async (command, args) => { launched = { command, args }; },
+  }), directory);
+  assert.equal(launched.args.at(-1), directory);
+});
+
+test('resume rollback reports dual failure instead of claiming local services stopped', async () => {
+  const calls = [];
+  await assert.rejects(rollbackResumeFailure(new Error('resume failed'),
+    async () => { calls.push('gateway'); throw new Error('gateway rollback failed'); },
+    async () => { calls.push('local'); throw new Error('local cleanup failed'); }),
+  /neither Gateway suspension nor local service shutdown could be confirmed/);
+  assert.deepEqual(calls, ['gateway', 'local']);
 });
 
 test('private upstream environment cannot inherit a personal DevSpace public URL or roots', () => {

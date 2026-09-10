@@ -21,6 +21,7 @@ const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
+const clientSetup = await readFile('client/setup.mjs', 'utf8');
 const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
 const macosPreinstall = await readFile('platform/macos/preinstall', 'utf8');
 const windowsLauncher = await readFile('platform/windows/tds-launcher.c', 'utf8');
@@ -64,18 +65,22 @@ if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('
     windowsInstaller.includes('Var ProgressControl') || !windowsBootstrap.includes('function Write-Step')) {
   throw new Error('Windows bootstrap must show indeterminate progress and readable installation stages');
 }
-if (!windowsBootstrap.includes("@('uninstall')") ||
-    !windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [string]$Previous.path)") ||
-    !unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
-    !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
-    !windowsBootstrap.includes('Candidate startup cleanup also failed') ||
-    !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
-  throw new Error('Failed candidate activation must remove partial startup entries and restore the previous version offline');
+if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [string]$Previous.path)") ||
+    !windowsBootstrap.includes("Write-AtomicJson $activeFile $next") || !windowsBootstrap.includes('exit 10') ||
+    !windowsInstaller.includes('$ResultCode == 10') ||
+    !windowsInstaller.includes('File /r "${OFFLINE_OBJECTS}\\*.*"') ||
+    !windowsInstaller.includes('$PLUGINSDIR\\offline') ||
+    windowsBootstrap.includes('$cacheRoot') || windowsBootstrap.includes('$legacyRoot')) {
+  throw new Error('Windows Installer V2 must embed its payload, keep local A/B recovery, and treat first-run connection failure as post-install state');
 }
-if (!windowsBootstrap.includes("Join-Path $legacyRoot 'client\\cli.mjs'") ||
-    !windowsBootstrap.includes('Incomplete legacy payload ignored') ||
-    !windowsBootstrap.includes('Remove-Item -LiteralPath $legacyRoot -Recurse -Force')) {
-  throw new Error('Windows bootstrap must ignore and retire an incomplete legacy payload instead of blocking activation');
+if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device Binding without contacting the Gateway') ||
+    !clientSetup.includes("connection: startup ? 'starting' : 'not-started'")) {
+  throw new Error('Existing Enrollment must be reused locally and runtime connectivity must not gate setup success');
+}
+if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
+    !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
+    !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
+  throw new Error('Unix failed candidate activation must still restore the previous local version');
 }
 if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
   throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
@@ -86,8 +91,9 @@ if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('
 }
 if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.includes('winit = "=0.30.12"') ||
     !trayToolchain.includes('channel = "1.85.1"') || !trayLock.includes('name = "tray-icon"') ||
-    !trayBuild.includes("'--release', '--locked'") || !releaseWorkflow.includes('npm run package')) {
-  throw new Error('Native tray must use exact Rust/crate locks and enter the existing native package matrix');
+    !trayBuild.includes("'test', '--locked'") || !trayBuild.includes("'--release', '--locked'") ||
+    !releaseWorkflow.includes('npm run package')) {
+  throw new Error('Native tray must use exact Rust/crate locks, run native tests, and enter the existing native package matrix');
 }
 if (wrangler.workers_dev !== false || wrangler.preview_urls !== false ||
     !adminWeb.includes("default-src 'none'") || !adminWeb.includes('/admin/assets/admin.js') ||

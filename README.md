@@ -80,9 +80,9 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 ## 员工安装和使用
 
-管理员先完成云端部署，再从 private GitHub Release 下载并分发对应的完整离线包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
+管理员先完成云端部署，再从 private GitHub Release 下载并分发对应平台包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
 
-**Windows x64：**解压管理员提供的完整离线 ZIP，先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行 `Team-DevSpace-0.2.0-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 使用内部自签 Authenticode，不把私钥交给员工；公开 `.cer` 只用于建立当前用户信任。EXE 只携带固定版本 manifest 和 bootstrapper，不能脱离同目录的 `objects` 单独分发。Node、DevSpace runtime、cloudflared 和可选 Git/Bash 均从离线介质或已校验缓存取得；Git 直接使用官方 PortableGit 自解压包，不再解压重打包。应用使用 `%LOCALAPPDATA%\TDS` 下的 cache、staging 和短版本槽，Enrollment/配置单独保存在 `%LOCALAPPDATA%\TeamDevSpace`。失败不会切换当前可用版本。
+**Windows x64：**管理员分发 `Team-DevSpace-0.2.0-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.0-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
 
 **macOS：**分别使用 arm64 或 x64 的自包含 `.pkg`，包内已包含离线 runtime 组件。`internal-free` 不要求 Apple 付费凭据；凭据齐全的 production job 会签名、公证并 staple，未配置时明确保持 unsigned/unnotarized。管理员只通过 private GitHub Release 交付并核对 SHA-256；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime。
 

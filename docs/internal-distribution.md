@@ -17,16 +17,15 @@ WINDOWS_INTERNAL_SIGNING_PFX_BASE64
 WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD
 ```
 
-The workflow rejects a PFX that is not self-signed with the exact subject, lacks the Code Signing EKU, is a CA certificate, uses RSA below 3072 bits, or has less than six months of validity remaining. The Windows offline ZIP contains:
+The workflow rejects a PFX that is not self-signed with the exact subject, lacks the Code Signing EKU, is a CA certificate, uses RSA below 3072 bits, or has less than six months of validity remaining. The Windows administrator handoff ZIP contains only:
 
 ```text
 Team-DevSpace-<version>-windows-x64-setup.exe
 Team-DevSpace-Internal-Publisher.cer
 Trust-Team-DevSpace-Internal-Publisher.ps1
-objects/...
-manifest.json
-...
 ```
+
+The installer EXE is self-contained: its fixed manifest and verified Node, DevSpace runtime, cloudflared and conditional PortableGit payload are embedded at build time. Employees do not need an `objects/` directory, a GitHub credential or a runtime download during installation.
 
 On each managed Windows user account, establish trust once before running the installer:
 
