@@ -93,7 +93,11 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   assert.match(response.headers.get('Content-Security-Policy'), /default-src 'none'/);
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   assert.equal(escapeHtml(`<&"' `), '&lt;&amp;&quot;&#39; ');
-  assert.ok(renderAdmin([]).includes('暂无访问密钥'));
+  const emptyAdmin = renderAdmin([]);
+  assert.ok(emptyAdmin.includes('暂无访问密钥'));
+  assert.ok(emptyAdmin.includes('<dialog id="create-dialog">'));
+  assert.ok(emptyAdmin.includes('id="copy-key"'));
+  assert.ok(emptyAdmin.includes('placeholder="例如：张三-Windows"'));
 });
 
 test('Admin Web accepts only same-origin hash-only POSTs and never performs lifecycle actions through GET', async t => {

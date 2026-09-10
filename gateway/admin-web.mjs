@@ -87,29 +87,36 @@ function stateText(key) {
 export function renderAdmin(keys) {
   const rows = keys.map(key => {
     const id = escapeHtml(key.id);
+    const fullDevice = key.deviceId ? escapeHtml(key.deviceId) : '';
     const device = key.deviceId ? `${String(key.deviceId).slice(0, 8)}…` : '—';
     const actions = key.state === 'revoked' ? '—' : [
       key.bindingId ? `<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}">重置设备</button>` : '',
       `<button type="button" class="contrast outline" data-key-action="revoke" data-key-id="${id}">吊销</button>`,
     ].filter(Boolean).join(' ');
-    return `<tr><td>${escapeHtml(key.label)}</td><td><span class="state state-${escapeHtml(key.state)}">${stateText(key)}</span></td>` +
-      `<td><code>${escapeHtml(device)}</code></td><td>${escapeHtml(key.updatedAt ?? '—')}</td>` +
-      `<td>${key.cleanupPending ? '待清理' : '—'}</td><td class="actions">${actions}</td></tr>`;
+    return `<tr><td class="key-name">${escapeHtml(key.label)}</td><td><span class="state state-${escapeHtml(key.state)}">${stateText(key)}</span></td>` +
+      `<td><code${fullDevice ? ` title="${fullDevice}"` : ''}>${escapeHtml(device)}</code></td>` +
+      `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
+      `<td>${key.cleanupPending ? '<span class="cleanup-pending">待清理</span>' : '—'}</td><td class="actions">${actions}</td></tr>`;
   }).join('');
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>Team DevSpace 管理后台</title><link rel="stylesheet" href="/admin/assets/pico.min.css">` +
     `<link rel="stylesheet" href="/admin/assets/admin.css">` +
     `<script type="module" src="/admin/assets/admin.js"></script></head><body><main class="container">` +
-    `<header><div><h1>Team DevSpace 管理后台</h1><p>访问密钥与设备绑定管理</p></div>` +
+    `<header class="page-header"><div><h1>Team DevSpace 管理后台</h1><p>访问密钥与设备绑定管理</p></div>` +
     `<button type="button" id="show-create">创建访问密钥</button></header>` +
-    `<section id="create-panel" hidden><form id="create-key"><label>名称<input name="label" maxlength="100" required></label>` +
-    `<button type="submit">创建</button><button type="button" class="secondary" id="cancel-create">取消</button></form></section>` +
-    `<section id="credential-panel" hidden><h2>访问密钥已创建</h2><code id="credential"></code>` +
-    `<p>该密钥只显示一次，请立即保存。</p><button type="button" id="retry-key">重试创建</button>` +
-    `<button type="button" id="copy-key">复制</button>` +
-    `<button type="button" class="secondary" id="dismiss-key">我已保存</button></section>` +
-    `<p id="notice" role="alert" hidden></p><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th>` +
-    `<th>设备</th><th>更新时间</th><th>清理状态</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="6">暂无访问密钥</td></tr>'}</tbody></table></div>` +
+    `<p id="notice" class="notice" role="alert" hidden></p>` +
+    `<section class="table-card" aria-label="访问密钥列表"><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th>` +
+    `<th>设备</th><th>更新时间</th><th>清理状态</th><th>操作</th></tr></thead><tbody>${rows || '<tr class="empty-row"><td colspan="6">暂无访问密钥</td></tr>'}</tbody></table></div></section>` +
+    `<dialog id="create-dialog"><article><header class="dialog-header"><div><h2 id="dialog-title">创建访问密钥</h2>` +
+    `<p>为员工或设备生成一个独立的连接密钥。</p></div><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
+    `<p id="dialog-notice" class="notice" role="alert" hidden></p>` +
+    `<section id="create-panel"><form id="create-key"><label>名称<input name="label" maxlength="100" autocomplete="off" placeholder="例如：张三-Windows" required>` +
+    `<small>建议使用“人员-设备”格式，方便后续识别和吊销。</small></label><footer class="dialog-actions">` +
+    `<button type="button" class="secondary" id="cancel-create">取消</button><button type="submit" id="create-submit">创建密钥</button></footer></form></section>` +
+    `<section id="credential-panel" hidden><h3>访问密钥</h3><div class="credential-row"><code id="credential"></code>` +
+    `<button type="button" id="copy-key" class="secondary">复制</button></div><p class="credential-hint">该密钥只显示一次，请保存后再关闭。</p>` +
+    `<footer class="dialog-actions"><button type="button" class="secondary" id="retry-key" hidden>重试同步</button>` +
+    `<button type="button" id="dismiss-key">我已保存并关闭</button></footer></section></article></dialog>` +
     `</main></body></html>`;
 }
 

@@ -67,71 +67,160 @@ async function issueCredential(credential) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(credentialRequest(credential)),
   });
-  if (!response.ok) throw new Error(errorText(result.error));
+  if (!response.ok) {
+    const error = new Error(errorText(result.error));
+    error.code = result.error;
+    error.retryable = Boolean(result.retryable);
+    throw error;
+  }
   return result;
 }
 
 function initialize() {
+  const dialog = document.querySelector('#create-dialog');
   const createPanel = document.querySelector('#create-panel');
   const credentialPanel = document.querySelector('#credential-panel');
   const credentialOutput = document.querySelector('#credential');
-  const notice = document.querySelector('#notice');
-  const showNotice = message => {
-    notice.textContent = message;
-    notice.hidden = false;
+  const pageNotice = document.querySelector('#notice');
+  const dialogNotice = document.querySelector('#dialog-notice');
+  const dialogTitle = document.querySelector('#dialog-title');
+  const createForm = document.querySelector('#create-key');
+  const createSubmit = document.querySelector('#create-submit');
+  const retryButton = document.querySelector('#retry-key');
+
+  const showNotice = (target, message) => {
+    target.textContent = message;
+    target.hidden = false;
   };
-  const showCredential = credential => {
+  const clearNotice = target => {
+    target.textContent = '';
+    target.hidden = true;
+  };
+  const setBusy = (button, busy) => {
+    button.disabled = busy;
+    if (busy) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  };
+  const openDialog = () => {
+    if (!dialog.open) dialog.showModal();
+  };
+  const showCreateForm = () => {
+    dialogTitle.textContent = '创建访问密钥';
+    credentialPanel.hidden = true;
+    createPanel.hidden = false;
+    retryButton.hidden = true;
+    clearNotice(dialogNotice);
+    createForm.reset();
+    openDialog();
+    requestAnimationFrame(() => createForm.elements.label?.focus());
+  };
+  const showCredential = (credential, needsRetry = false) => {
+    dialogTitle.textContent = needsRetry ? '继续创建访问密钥' : '访问密钥已创建';
     credentialOutput.textContent = credential.accessKey;
     credentialPanel.hidden = false;
     createPanel.hidden = true;
+    retryButton.hidden = !needsRetry;
+    openDialog();
   };
+
+  for (const time of document.querySelectorAll('.local-time')) {
+    const date = new Date(time.dateTime);
+    if (!Number.isNaN(date.getTime())) {
+      time.title = time.dateTime;
+      time.textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+    }
+  }
+
   let pending = loadPendingCredential(sessionStorage);
   if (pending) {
-    showCredential(pending);
-    showNotice('检测到上次未完成的访问密钥，请使用同一密钥重试，不要重新生成。');
+    showCredential(pending, true);
+    showNotice(dialogNotice, '检测到上次未完成的访问密钥，请使用同一密钥重试，不要重新生成。');
   }
+
   document.querySelector('#show-create').addEventListener('click', () => {
-    if (pending) { showCredential(pending); return; }
-    createPanel.hidden = false;
+    if (pending) {
+      showCredential(pending, true);
+      showNotice(dialogNotice, '该密钥尚未确认保存，可以继续复制或重试同步。');
+      return;
+    }
+    showCreateForm();
   });
-  document.querySelector('#cancel-create').addEventListener('click', () => { createPanel.hidden = true; });
-  document.querySelector('#create-key').addEventListener('submit', async event => {
+  document.querySelector('#close-dialog').addEventListener('click', () => dialog.close());
+  document.querySelector('#cancel-create').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', event => {
+    if (event.target === dialog) dialog.close();
+  });
+
+  createForm.addEventListener('submit', async event => {
     event.preventDefault();
     const label = new FormData(event.currentTarget).get('label')?.trim();
     if (!label) return;
+    clearNotice(dialogNotice);
+    setBusy(createSubmit, true);
     try {
       pending ??= await createPendingCredential(label);
       savePendingCredential(sessionStorage, pending);
       await issueCredential(pending);
-      showCredential(pending);
-      notice.hidden = true;
-    } catch (error) { showNotice(`创建失败：${error.message}。再次重试时会继续使用同一个待创建密钥。`); }
+      showCredential(pending, false);
+    } catch (error) {
+      if (error.code === 'key_label_or_id_conflict') {
+        clearPendingCredential(sessionStorage);
+        pending = null;
+        dialogTitle.textContent = '创建访问密钥';
+        credentialPanel.hidden = true;
+        createPanel.hidden = false;
+        createForm.elements.label.value = label;
+        showNotice(dialogNotice, `创建失败：${error.message}，请更换名称后重试。`);
+        requestAnimationFrame(() => createForm.elements.label?.select());
+      } else {
+        if (pending) showCredential(pending, true);
+        showNotice(dialogNotice, `创建失败：${error.message}。再次重试时会继续使用同一个密钥。`);
+      }
+    } finally {
+      setBusy(createSubmit, false);
+    }
   });
-  document.querySelector('#retry-key').addEventListener('click', async () => {
+
+  retryButton.addEventListener('click', async () => {
     if (!pending) return;
+    clearNotice(dialogNotice);
+    setBusy(retryButton, true);
     try {
       await issueCredential(pending);
-      notice.hidden = true;
-    } catch (error) { showNotice(`重试失败：${error.message}`); }
+      showCredential(pending, false);
+    } catch (error) {
+      showNotice(dialogNotice, `重试失败：${error.message}`);
+    } finally {
+      setBusy(retryButton, false);
+    }
   });
+
   document.querySelector('#copy-key').addEventListener('click', async () => {
-    await navigator.clipboard.writeText(credentialOutput.textContent);
-    showNotice('访问密钥已复制。');
+    try {
+      await navigator.clipboard.writeText(credentialOutput.textContent);
+      showNotice(dialogNotice, '访问密钥已复制。');
+    } catch {
+      showNotice(dialogNotice, '复制失败，请手动选择并复制访问密钥。');
+    }
   });
+
   document.querySelector('#dismiss-key').addEventListener('click', () => {
     clearPendingCredential(sessionStorage);
     pending = null;
     credentialOutput.textContent = '';
     credentialPanel.hidden = true;
+    dialog.close();
     location.reload();
   });
+
   for (const button of document.querySelectorAll('[data-key-action]')) {
     button.addEventListener('click', async () => {
       const action = button.dataset.keyAction;
       if (!confirm(action === 'revoke'
         ? '确定吊销此访问密钥并断开对应设备吗？'
         : '确定重置此设备绑定吗？重置后该设备需要重新绑定。')) return;
-      button.disabled = true;
+      clearNotice(pageNotice);
+      setBusy(button, true);
       try {
         const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(button.dataset.keyId)}/${action}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
@@ -139,8 +228,8 @@ function initialize() {
         if (!response.ok && !result.retryable) throw new Error(errorText(result.error));
         location.reload();
       } catch (error) {
-        button.disabled = false;
-        showNotice(`操作失败：${error.message}`);
+        setBusy(button, false);
+        showNotice(pageNotice, `操作失败：${error.message}`);
       }
     });
   }
