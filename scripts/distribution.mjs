@@ -22,6 +22,10 @@ export function validateDistributionConfig(release) {
       !/^\d+\.\d+$/.test(distribution.macosMinimumVersion ?? '')) {
     throw new Error('release.config.json distribution.macosMinimumVersion must be an explicit macOS major.minor baseline');
   }
+  if (distribution.targets.some(target => target.startsWith('darwin-')) &&
+      (!/^[a-f0-9]{40}$/.test(release.cloudflaredSourceCommit ?? '') || !/^\d+\.\d+\.\d+$/.test(release.cloudflaredGoVersion ?? ''))) {
+    throw new Error('macOS cloudflared source builds require an immutable upstream commit and explicit Go version');
+  }
   if (!VERSION.test(release.version ?? '')) throw new Error('Release version must be explicit semver, never latest');
   return distribution;
 }

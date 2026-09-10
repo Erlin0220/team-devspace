@@ -121,6 +121,7 @@ let installed = false;
 let client;
 let foreignWindowsTask;
 let foreignLinuxUnit;
+let linuxDiagnosticUnit;
 try {
   await stateModule.secureStateDirectory(home);
   await stateModule.atomicJson(join(home, 'state.json'), state);
@@ -131,6 +132,7 @@ try {
     const directory = platform.systemdUserDirectory();
     const legacyDeviceId = randomUUID();
     const legacy = `com.teamdevspace.${legacyDeviceId.replaceAll('-', '')}.runtime.service`;
+    linuxDiagnosticUnit = legacy;
     const legacyPath = join(directory, legacy);
     const foreignDeviceId = randomUUID();
     foreignLinuxUnit = `com.teamdevspace.${foreignDeviceId.replaceAll('-', '')}.runtime.service`;
@@ -147,6 +149,7 @@ try {
     execFileSync('systemctl', ['--user', 'start', legacy], { stdio: 'inherit' });
     await waitForPorts(true);
     await platform.installServices(state, home);
+    linuxDiagnosticUnit = platform.serviceLabel(state, 'runtime');
     await waitForPorts(false);
     assert.equal(await access(legacyPath).then(() => true, () => false), false,
       'Fixed Linux startup migration must retire an unknown old device-specific unit owned by this state home');
@@ -242,14 +245,26 @@ try {
       } catch (diagnostic) {
         console.error(`systemctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
       }
-      try {
-        console.error(execFileSync('systemctl', ['--user', '--no-pager', '--full', '--all', 'status', 'com.teamdevspace.*.runtime.service'],
-          { encoding: 'utf8' }));
-      } catch (diagnostic) {
-        console.error(`legacy systemctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+      if (linuxDiagnosticUnit) {
+        try {
+          console.error(execFileSync('systemctl', ['--user', '--no-pager', '--full', 'status', linuxDiagnosticUnit], { encoding: 'utf8' }));
+        } catch (diagnostic) {
+          console.error(`exact systemctl diagnostic (${linuxDiagnosticUnit}): ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+        }
+        try {
+          console.error(execFileSync('systemctl', ['--user', 'show', linuxDiagnosticUnit,
+            '--property=ActiveState,SubState,MainPID,ExecMainCode,ExecMainStatus,NRestarts'], { encoding: 'utf8' }));
+        } catch (diagnostic) {
+          console.error(`systemctl show diagnostic (${linuxDiagnosticUnit}): ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+        }
+        try {
+          console.error(execFileSync('journalctl', ['--user', '--no-pager', '-u', linuxDiagnosticUnit, '-n', '120'], { encoding: 'utf8' }));
+        } catch (diagnostic) {
+          console.error(`exact journal diagnostic (${linuxDiagnosticUnit}): ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
+        }
       }
       try {
-        console.error(execFileSync('journalctl', ['--user', '--no-pager', '-n', '160'], { encoding: 'utf8' }));
+        console.error(execFileSync('journalctl', ['--user', '--no-pager', '-n', '80'], { encoding: 'utf8' }));
       } catch (diagnostic) {
         console.error(`journalctl diagnostic: ${diagnostic.stdout ?? ''}${diagnostic.stderr ?? ''}`);
       }

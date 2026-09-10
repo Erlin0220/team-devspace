@@ -32,15 +32,23 @@ export async function pruneRuntime(bundle, target) {
     await rm(join(bundle, relative), { recursive: true, force: true });
     removed.push(relative);
   }
-  const prebuilds = join(bundle, 'node_modules', 'node-pty', 'prebuilds');
-  const entries = await readdir(prebuilds, { withFileTypes: true }).catch(error => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  });
-  for (const entry of entries) {
-    if (entry.isDirectory() && /^(win32|darwin|linux)-(x64|arm64)$/.test(entry.name) && entry.name !== target) {
-      await rm(join(prebuilds, entry.name), { recursive: true, force: true });
-      removed.push(`node_modules/node-pty/prebuilds/${entry.name}`);
+  const prebuildRoots = [
+    { directory: join(bundle, 'node_modules', 'node-pty', 'prebuilds'), relative: 'node_modules/node-pty/prebuilds' },
+    ...(target.startsWith('darwin-') ? [{
+      directory: join(bundle, 'node_modules', '@earendil-works', 'pi-coding-agent', 'node_modules', '@earendil-works', 'pi-tui', 'native', 'darwin', 'prebuilds'),
+      relative: 'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds',
+    }] : []),
+  ];
+  for (const prebuilds of prebuildRoots) {
+    const entries = await readdir(prebuilds.directory, { withFileTypes: true }).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (entry.isDirectory() && /^(win32|darwin|linux)-(x64|arm64)$/.test(entry.name) && entry.name !== target) {
+        await rm(join(prebuilds.directory, entry.name), { recursive: true, force: true });
+        removed.push(`${prebuilds.relative}/${entry.name}`);
+      }
     }
   }
   return removed;

@@ -242,6 +242,7 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   assert.ok(!serviceLabel(state, 'runtime', 'win32').includes(state.ownerToken), 'Lifecycle labels must not expose the owner credential');
   assert.ok(systemd.includes('TEAM_DEVSPACE_ACTIVE_PATH=') && systemd.includes('active-path'));
   assert.ok(systemd.includes('ExecStart=:/bin/sh -c'));
+  assert.ok(systemd.includes('cd \\"$active\\"') || systemd.includes('cd "$active"'));
   assert.ok(systemd.includes('exec \\"$active/runtime/bin/node\\"') || systemd.includes('exec "$active/runtime/bin/node"'));
   assert.ok(systemd.includes('StandardOutput=journal') && systemd.includes('Restart=on-failure'));
   assert.ok(systemd.includes('StartLimitBurst=5'));

@@ -6,7 +6,6 @@
   },
   "cloudflared": {
     "win32-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-windows-amd64.exe", "sha256": "83e726ed18ea78c5ad5213c4c3a3a27051393950d2bc8ed4de69bec12d14eaae" },
-    "darwin-arm64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-darwin-arm64.tgz", "sha256": "40c9144d86df8937c5b43293a1f7d2d2107029aa74725023dd46b1b27154352f" },
     "linux-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64", "sha256": "f29324fe934d1e100617484c78deef803c4dc2cd351d645bbde42e96b4fccc5e" }
   },
   "git": {

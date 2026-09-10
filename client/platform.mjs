@@ -143,8 +143,8 @@ export function systemdUserUnit(state, component, home, paths, root = installRoo
   const activePath = join(distributionRoot, 'active-path');
   const path = process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin';
   const command = component === 'tunnel'
-    ? `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; exec "$active/bin/cloudflared" --no-autoupdate tunnel --metrics "127.0.0.1:${state.ports.metrics}" --loglevel warn run --token-file "$TEAM_DEVSPACE_HOME/tunnel.token"`
-    : `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; exec "$active/runtime/bin/node" "$active/client/cli.mjs" run runtime --home "$TEAM_DEVSPACE_HOME"`;
+    ? `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; cd "$active"; exec "$active/bin/cloudflared" --no-autoupdate tunnel --metrics "127.0.0.1:${state.ports.metrics}" --loglevel warn run --token-file "$TEAM_DEVSPACE_HOME/tunnel.token"`
+    : `active=$(sed -n '1p' "$TEAM_DEVSPACE_ACTIVE_PATH"); case "$active" in "$TEAM_DEVSPACE_DISTRIBUTION_ROOT"/versions/*) ;; *) echo 'Invalid Team DevSpace active path' >&2; exit 1 ;; esac; export PATH="$active/runtime/bin:$active/bin:$PATH"; cd "$active"; exec "$active/runtime/bin/node" "$active/client/cli.mjs" run runtime --home "$TEAM_DEVSPACE_HOME"`;
   // ':' is the systemd executable prefix that disables Exec*= $variable expansion. The shell must
   // receive $active/$TEAM_DEVSPACE_* literally because it resolves active-path at process start.
   const arguments_ = `/bin/sh -c ${systemdQuoted(command)}`;

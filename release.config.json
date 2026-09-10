@@ -6,6 +6,8 @@
   "controlApiVersion": 1,
   "nodeVersion": "22.23.0",
   "cloudflaredVersion": "2026.8.3",
+  "cloudflaredSourceCommit": "fe70e951a3c52d92abf9f6c4248e32937b2f42fc",
+  "cloudflaredGoVersion": "1.26.8",
   "gitFallbackVersion": "2.55.0.windows.5",
   "distribution": {
     "mode": "private-github-release",

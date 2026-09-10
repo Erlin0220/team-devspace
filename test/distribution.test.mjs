@@ -26,7 +26,8 @@ test('runtime cache ignores only app version metadata, not dependency or install
 
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
-  nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', gitFallbackVersion: '2.55.0.windows.5',
+  nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', cloudflaredSourceCommit: 'f'.repeat(40),
+  cloudflaredGoVersion: '1.26.8', gitFallbackVersion: '2.55.0.windows.5',
   distribution: { mode: 'private-github-release', trustProfile: 'internal-free', targets: ['win32-x64'] },
 };
 
@@ -103,7 +104,9 @@ test('Unix profile prunes only optional Claude executables and foreign PTYs, pre
     const bundle = join(work, target);
     const paths = ['node_modules/@anthropic-ai/claude-agent-sdk', 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64',
       'node_modules/node-pty/build/Release', ...['win32-x64', 'win32-arm64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']
-        .map(platform => `node_modules/node-pty/prebuilds/${platform}`)];
+        .map(platform => `node_modules/node-pty/prebuilds/${platform}`),
+      ...(target === 'darwin-arm64' ? ['node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64',
+        'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64'] : [])];
     for (const path of paths) {
       await mkdir(join(bundle, path), { recursive: true });
       await writeFile(join(bundle, path, 'payload'), 'fixture');
@@ -115,6 +118,11 @@ test('Unix profile prunes only optional Claude executables and foreign PTYs, pre
     await access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk/payload'));
     await access(join(bundle, 'node_modules/node-pty/build/Release/payload'));
     await access(join(bundle, `node_modules/node-pty/prebuilds/${target}/payload`));
+    if (target === 'darwin-arm64') {
+      const piPrebuilds = 'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds';
+      await access(join(bundle, piPrebuilds, 'darwin-arm64', 'payload'));
+      await assert.rejects(access(join(bundle, piPrebuilds, 'darwin-x64')));
+    }
     await assert.rejects(access(join(bundle, 'node_modules/node-pty/prebuilds/win32-x64')));
     await assert.rejects(access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64')));
     await mkdir(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-new-platform'));

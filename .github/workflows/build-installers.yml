@@ -25,6 +25,9 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       node: ${{ steps.release.outputs.node }}
       npm: ${{ steps.release.outputs.npm }}
+      cloudflared_version: ${{ steps.release.outputs.cloudflared_version }}
+      cloudflared_commit: ${{ steps.release.outputs.cloudflared_commit }}
+      cloudflared_go: ${{ steps.release.outputs.cloudflared_go }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,6 +96,31 @@ jobs:
         with:
           node-version: ${{ needs.metadata.outputs.node }}
           cache: npm
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        with:
+          go-version: ${{ needs.metadata.outputs.cloudflared_go }}
+          cache: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        with:
+          repository: cloudflare/cloudflared
+          ref: ${{ needs.metadata.outputs.cloudflared_commit }}
+          path: build/cloudflared-source
+          persist-credentials: false
+      - name: Build pinned cloudflared for the supported macOS baseline
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          minimum=$(node -p "require('./release.config.json').distribution.macosMinimumVersion")
+          output="$RUNNER_TEMP/team-devspace-cloudflared"
+          cd build/cloudflared-source
+          MACOSX_DEPLOYMENT_TARGET="$minimum" CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -mod=vendor -trimpath -ldflags "-X main.Version=${{ needs.metadata.outputs.cloudflared_version }}" \
+              -o "$output" github.com/cloudflare/cloudflared/cmd/cloudflared
+          "$output" --version
+          echo "TEAM_DEVSPACE_CLOUDFLARED_BINARY=$output" >> "$GITHUB_ENV"
       - name: Activate repository-pinned Rust toolchain
         if: ${{ matrix.target == 'win32-x64' || startsWith(matrix.target, 'darwin-') }}
         run: rustup show active-toolchain && rustc --version && cargo --version

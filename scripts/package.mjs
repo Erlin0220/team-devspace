@@ -46,7 +46,11 @@ for (const entry of await readdir(bundle)) {
 await rm(join(cache, 'PortableGit'), { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
 await mkdir(join(bundle, 'bin'), { recursive: true });
-const downloadKinds = ['node', 'cloudflared', ...(process.platform === 'win32' ? ['git'] : [])];
+const macosCloudflared = process.platform === 'darwin' ? process.env.TEAM_DEVSPACE_CLOUDFLARED_BINARY : undefined;
+if (process.platform === 'darwin' && !macosCloudflared) {
+  throw new Error('macOS packaging requires TEAM_DEVSPACE_CLOUDFLARED_BINARY built from the pinned cloudflared source commit');
+}
+const downloadKinds = ['node', ...(process.platform === 'darwin' ? [] : ['cloudflared']), ...(process.platform === 'win32' ? ['git'] : [])];
 const downloads = Object.fromEntries(await Promise.all(downloadKinds.map(async kind => [kind, await downloadPinned(binaries[kind][target], cache)])));
 const runtime = join(bundle, 'runtime');
 let trayBuild;
@@ -71,7 +75,8 @@ if (process.platform === 'win32') {
   // extracts and executes it using the same code path employees use.
   await cp('platform/windows/command.cmd', join(bundle, 'bin', 'team-devspace.cmd'));
 } else if (process.platform === 'darwin') {
-  await run(tar, ['-xzf', downloads.cloudflared, '-C', join(bundle, 'bin')]);
+  await access(macosCloudflared);
+  await cp(resolve(macosCloudflared), join(bundle, 'bin', 'cloudflared'));
   await chmod(join(bundle, 'bin', 'cloudflared'), 0o755);
 } else {
   await cp(downloads.cloudflared, join(bundle, 'bin', 'cloudflared'));
