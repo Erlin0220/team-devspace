@@ -196,7 +196,7 @@ await writeFile(join(bundle, 'sbom.cdx.json'), `${JSON.stringify(sbomDocument, n
 // npm's hidden install metadata is not runtime code and carries app-level data.
 await rm(join(bundle, 'node_modules', '.package-lock.json'), { force: true });
 await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
-  `Team DevSpace includes unmodified @waishnav/devspace ${release.devspaceVersion} and its locked npm dependencies.`,
+  `Team DevSpace includes @waishnav/devspace ${release.devspaceVersion} and its locked npm dependency versions; Windows runtime archives omit source maps and TypeScript declaration files only.`,
   'Each dependency retains its own copyright and license files in node_modules. The SBOM lists package licenses.',
   `Node.js ${release.nodeVersion}: https://nodejs.org/ (license and notices in runtime/LICENSE)`,
   `cloudflared ${release.cloudflaredVersion}: Apache-2.0, https://github.com/cloudflare/cloudflared`,

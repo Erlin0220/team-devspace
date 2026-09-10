@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: team-devspace-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   metadata:
@@ -45,12 +45,39 @@ jobs:
           done
           test "$missing" = 0
 
-  package:
+  verify:
+    name: Shared release verification
     needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      CI: 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ needs.metadata.outputs.node }}
+          cache: npm
+      - name: Install locked build dependencies
+        run: npx --yes ${{ needs.metadata.outputs.npm }} ci --no-fund --no-audit
+      - name: Verify source and distribution contracts
+        run: npm run check && npm run test:distribution
+      - name: Check locked dependency security
+        run: node node_modules/npm/bin/npm-cli.js audit
+      - name: Test gateway and actual upstream runtime
+        run: npm test
+      - name: Validate unified gateway and static assets without deploying
+        run: npm run deploy -- --dry-run
+
+  package:
+    needs: [metadata, verify]
     environment: production
     strategy:
-      fail-fast: false
-      max-parallel: 2
+      fail-fast: true
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -65,21 +92,8 @@ jobs:
         with:
           node-version: ${{ needs.metadata.outputs.node }}
           cache: npm
-      - name: Read canonical release metadata
-        id: release
-        shell: pwsh
-        run: |
-          node scripts/ci-metadata.mjs
       - name: Install locked build dependencies
         run: npx --yes ${{ needs.metadata.outputs.npm }} ci --no-fund --no-audit
-      - name: Verify source and distribution contracts
-        run: npm run check && npm run test:distribution
-      - name: Check locked dependency security
-        run: node node_modules/npm/bin/npm-cli.js audit
-      - name: Test gateway and actual upstream runtime
-        run: npm test
-      - name: Validate unified gateway and static assets without deploying
-        run: npm run deploy -- --dry-run
       - name: Prepare optional protected macOS signing identity
         if: ${{ inputs.publish && startsWith(matrix.target, 'darwin-') }}
         env:
@@ -115,7 +129,7 @@ jobs:
         if: ${{ matrix.native_startup }}
         run: npm run test:native
       - name: Verify actual isolated Windows installer transaction
-        if: ${{ matrix.target == 'win32-x64' }}
+        if: ${{ inputs.publish && matrix.target == 'win32-x64' }}
         run: npm run test:installer
 
       - name: Verify native Unix offline installer transaction
@@ -128,7 +142,7 @@ jobs:
         env:
           WINDOWS_INTERNAL_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_BASE64 }}
           WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD }}
-          TEAM_DEVSPACE_RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          TEAM_DEVSPACE_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: ./scripts/sign-internal-windows.ps1
 
       - name: Upload complete native layout and entrypoint
@@ -169,6 +183,11 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private')" = true
       - name: Verify complete offline layouts before publication
         run: npm run verify:release
+      - name: Require the live Gateway to match this client protocol
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module -e "import release from './release.config.json' with { type: 'json' }; import { healthMatches } from './scripts/deploy-checks.mjs'; const response = await fetch(new URL('/health', release.gateway), { signal: AbortSignal.timeout(10000), redirect: 'error' }); const health = await response.json().catch(() => null); if (!response.ok || !healthMatches(health, release)) throw new Error('Live Gateway release/control API does not match this installer release'); console.log(JSON.stringify({ gateway: release.gateway, release: health.release, controlApi: health.controlApi }));"
       - name: Assemble administrator handoff assets
         shell: bash
         run: |
@@ -182,9 +201,7 @@ jobs:
           fi
           (cd release/windows-handoff && zip -q "../publish/Team-DevSpace-$VERSION-windows-x64.zip" ./*)
           cp "release/offline/$VERSION/darwin-arm64/Team-DevSpace-$VERSION-macos-arm64.pkg" release/publish/
-          cp "release/offline/$VERSION/darwin-x64/Team-DevSpace-$VERSION-macos-x64.pkg" release/publish/
           cp "release/offline/$VERSION/linux-x64/Team-DevSpace-$VERSION-linux-x64-offline.tar.gz" release/publish/
-          cp "release/offline/$VERSION/linux-arm64/Team-DevSpace-$VERSION-linux-arm64-offline.tar.gz" release/publish/
           cp docs/internal-distribution.md release/publish/INTERNAL-DISTRIBUTION.md
           (cd release/publish && sha256sum * > SHA256SUMS)
       - name: Create immutable-by-policy private GitHub Release

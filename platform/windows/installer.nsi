@@ -249,12 +249,8 @@ Section "Uninstall"
     Abort "Could not remove user-login startup. Application versions were retained for repair."
   ${EndIf}
   RMDir /r "$SMPROGRAMS\${START_MENU_FOLDER}"
-  RMDir /r "$INSTDIR\versions"
-  RMDir /r "$INSTDIR\staging"
-  RMDir /r "$INSTDIR\v"
-  RMDir /r "$INSTDIR\s"
-  RMDir /r "$INSTDIR\cache"
-  RMDir /r "$INSTDIR\a"
+  ; bootstrap.ps1 removes large payload trees before returning so NSIS does not
+  ; enumerate tens of thousands of node_modules files in the uninstall UI.
   Delete "$INSTDIR\active.json"
   Delete "$INSTDIR\distribution.lock"
   Delete "$INSTDIR\release-manifest.json"

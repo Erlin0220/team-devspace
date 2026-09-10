@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import release from '../release.config.json' with { type: 'json' };
 
@@ -50,7 +51,15 @@ export async function atomicJson(path, value, { createOnly = false } = {}) {
     if (createOnly) {
       try { await link(temporary, path); }
       catch (error) { if (error.code === 'EEXIST') return false; throw error; }
-    } else await rename(temporary, path);
+    } else {
+      for (let attempt = 0; ; attempt++) {
+        try { await rename(temporary, path); break; }
+        catch (error) {
+          if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes(error.code) || attempt >= 9) throw error;
+          await sleep(10 * (attempt + 1));
+        }
+      }
+    }
     if (process.platform !== 'win32') await chmod(path, 0o600);
     return true;
   } finally { await rm(temporary, { force: true }).catch(() => {}); }

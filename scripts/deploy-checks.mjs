@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export function healthMatches(value, release) {
-  return value?.service === 'team-devspace' && value.release === release.version && value.devspace === release.devspaceVersion;
+  return value?.service === 'team-devspace' && value.release === release.version &&
+    value.devspace === release.devspaceVersion && value.controlApi === release.controlApiVersion;
 }
 
 // Read-only checks. These deliberately do not claim to prove Cloudflare write

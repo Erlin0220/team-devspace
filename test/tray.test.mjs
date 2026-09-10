@@ -42,6 +42,12 @@ test('tray presentation derives menu capabilities from the existing health resul
   assert.equal(conflict.remoteText, '暂停远程访问');
   assert.equal(conflict.restartEnabled, false);
 
+  const gatewaySuspended = trayState({ ready: false, devspace: true, bridge: true, tunnel: true,
+    gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'active' });
+  assert.equal(gatewaySuspended.remoteAction, 'resume');
+  assert.equal(gatewaySuspended.restartEnabled, false);
+  assert.equal(gatewaySuspended.repairEnabled, false);
+
   const missing = trayState(null);
   assert.equal(missing.remoteEnabled, false);
   assert.equal(missing.restartEnabled, false);

@@ -90,7 +90,8 @@ async function native(command, args, allowMissing = false) {
   try { return await exec(executable, args, { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 }); }
   catch (error) {
     if (allowMissing) return null;
-    const detail = String(error.stderr ?? error.stdout ?? '').trim().replace(/\s+/g, ' ').slice(0, 240);
+    const detail = process.platform === 'win32' ? ''
+      : String(error.stderr ?? error.stdout ?? '').trim().replace(/\s+/g, ' ').slice(0, 240);
     throw new Error(`${command} ${args.join(' ')} failed (${error.code ?? 'unknown'})${detail ? `: ${detail}` : ''}. Check local startup permissions; no SYSTEM/root fallback is used.`);
   }
 }

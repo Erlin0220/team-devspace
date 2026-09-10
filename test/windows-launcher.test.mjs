@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -44,6 +44,22 @@ test('Windows launcher is GUI-subsystem, preserves arguments/environment/logs an
   assert.deepEqual(result, { code: 7, signal: null });
   assert.equal(await readFile(stdout, 'utf8'), 'environment value|argument with spaces');
   assert.equal(await readFile(stderr, 'utf8'), 'stderr-proof');
+});
+
+test('Windows launcher truncates oversized service logs before a new child starts', windowsOnly, async t => {
+  const work = await mkdtemp(join(tmpdir(), 'tds launcher logs '));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const launcher = await buildWindowsLauncher(join(work, 'tds-launcher.exe'));
+  const stdout = join(work, 'out.log');
+  const stderr = join(work, 'error.log');
+  await writeFile(stdout, Buffer.alloc((5 * 1024 * 1024) + 1, 65));
+  await writeFile(stderr, Buffer.alloc((5 * 1024 * 1024) + 1, 66));
+  const result = await run(launcher, ['--cwd', work, '--stdout', stdout, '--stderr', stderr,
+    '--env', 'NODE_OPTIONS=', '--', process.execPath,
+    '-e', "process.stdout.write('fresh-out');process.stderr.write('fresh-error')"]);
+  assert.deepEqual(result, { code: 0, signal: null });
+  assert.equal(await readFile(stdout, 'utf8'), 'fresh-out');
+  assert.ok((await readFile(stderr, 'utf8')).startsWith('fresh-error'));
 });
 
 test('closing the Windows launcher job terminates its child process tree', windowsOnly, async t => {

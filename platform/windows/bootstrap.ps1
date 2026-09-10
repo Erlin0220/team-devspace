@@ -18,6 +18,8 @@ $ManifestPath = [IO.Path]::GetFullPath($ManifestPath)
 $versionsRoot = Join-Path $InstallPath 'v'
 $stagingRoot = Join-Path $InstallPath 's'
 $activeFile = Join-Path $InstallPath 'active.json'
+$stateHome = if ($env:TEAM_DEVSPACE_HOME) { [IO.Path]::GetFullPath($env:TEAM_DEVSPACE_HOME) }
+  else { Join-Path $env:LOCALAPPDATA 'TeamDevSpace' }
 $shaPattern = '^[a-f0-9]{64}$'
 
 function Write-Step([string]$Message) {
@@ -26,6 +28,60 @@ function Write-Step([string]$Message) {
 
 function Read-Json([string]$Path) {
   return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+
+function Get-DeviceTaskNames {
+  $stateFile = Join-Path $stateHome 'state.json'
+  if (-not (Test-Path -LiteralPath $stateFile)) { return @() }
+  try { $deviceId = [string](Read-Json $stateFile).deviceId } catch { return @() }
+  if ($deviceId -notmatch '^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$') { return @() }
+  $compact = $deviceId.Replace('-', '')
+  return @('runtime', 'tunnel', 'tray') | ForEach-Object { "com.teamdevspace.$compact.$_" }
+}
+
+function Test-LegacyTaskNeedsElevation([string]$Name) {
+  $taskFile = Join-Path (Join-Path $env:SystemRoot 'System32\Tasks') $Name
+  if (-not (Test-Path -LiteralPath $taskFile)) { return $false }
+  try {
+    $owner = (Get-Acl -LiteralPath $taskFile).Owner
+    $ownerSid = ([Security.Principal.NTAccount]::new($owner)).Translate([Security.Principal.SecurityIdentifier]).Value
+    return $ownerSid -in @('S-1-5-32-544', 'S-1-5-18')
+  } catch { return $false }
+}
+
+function Remove-KnownStartupEntries {
+  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  foreach ($name in @(Get-DeviceTaskNames)) {
+    # Windows PowerShell 5 can promote native stderr to a terminating error when
+    # ErrorActionPreference=Stop. Missing tasks are expected here, so inspect the
+    # native exit code explicitly instead of letting stderr bypass the fallback.
+    $savedPreference = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = 'Continue'
+      & $schtasks /Query /TN $name *> $null
+      $queryCode = $LASTEXITCODE
+      if ($queryCode -ne 0) { continue }
+      & $schtasks /End /TN $name *> $null
+      & $schtasks /Delete /TN $name /F *> $null
+      $deleteCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($deleteCode -ne 0) { throw "Could not remove Team DevSpace startup task: $name" }
+  }
+}
+
+function Invoke-LegacyTaskCleanupIfNeeded {
+  $legacy = @(Get-DeviceTaskNames | Where-Object { Test-LegacyTaskNeedsElevation $_ })
+  if ($legacy.Count -eq 0) { return }
+  Write-Step 'Migrating legacy administrator-owned startup tasks once...'
+  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+  $commands = foreach ($name in $legacy) {
+    # Names are derived only from a validated UUID and fixed component names.
+    "`"$schtasks`" /End /TN `"$name`" >nul 2>&1 & `"$schtasks`" /Delete /TN `"$name`" /F >nul 2>&1 || exit /b 1"
+  }
+  $arguments = "/d /s /c `"$($commands -join ' & ') & exit /b 0`""
+  $process = Start-Process -FilePath $cmd -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+  if ($process.ExitCode -ne 0) { throw 'Legacy Team DevSpace startup tasks require one-time administrator cleanup.' }
 }
 
 function Get-Sha256([string]$Path) {
@@ -167,6 +223,25 @@ function Remove-PreviousPayload([string]$Current) {
   }
 }
 
+function Remove-PayloadTree([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+  $deadline = [DateTime]::UtcNow.AddSeconds(5)
+  do {
+    try {
+      # Task Scheduler can report /End just before the process releases its executable files.
+      [IO.Directory]::Delete($Path, $true)
+      return
+    } catch {
+      if ([DateTime]::UtcNow -ge $deadline) { break }
+      Start-Sleep -Milliseconds 100
+    }
+  } while (Test-Path -LiteralPath $Path)
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  # One forceful final attempt also covers unusual read-only attributes.
+  Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+  if (Test-Path -LiteralPath $Path) { throw "Could not remove installed payload: $Path" }
+}
+
 function Assert-Version([string]$Root, [object]$Manifest) {
   $node = Join-Path $Root 'runtime\node.exe'
   $cloudflared = Join-Path $Root 'bin\cloudflared.exe'
@@ -207,11 +282,26 @@ $lock = $null
 try {
   $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
   Write-Step 'Checking the current installation and protected Enrollment state...'
-  $active = Get-Active
+  Invoke-LegacyTaskCleanupIfNeeded
+  $active = $null
+  try { $active = Get-Active }
+  catch {
+    if ($Mode -ne 'Uninstall') { throw }
+    Write-Warning 'The active version pointer is damaged; uninstall will use the retained device identity instead.'
+  }
   if ($Mode -eq 'Uninstall') {
     Write-Step 'Stopping Team DevSpace and removing current-user startup entries...'
-    if ($active) { [void](Invoke-Client ([string]$active.path) @('uninstall')) }
-    Write-Step 'Startup entries removed. Enrollment and project files are retained.'
+    $removedByClient = $false
+    if ($active) { $removedByClient = (Invoke-Client ([string]$active.path) @('uninstall') -AllowFailure) -eq 0 }
+    if (-not $removedByClient) {
+      Write-Warning 'The installed client is unavailable; removing only this device startup entries directly.'
+      Remove-KnownStartupEntries
+    }
+    Write-Step 'Removing local application payload...'
+    foreach ($name in @('versions', 'staging', 'v', 's', 'cache', 'a')) {
+      Remove-PayloadTree (Join-Path $InstallPath $name)
+    }
+    Write-Step 'Application payload and startup entries removed. Enrollment and project files are retained.'
     exit 0
   }
 
@@ -223,8 +313,6 @@ try {
   }
   New-Item -ItemType Directory -Path $versionsRoot, $stagingRoot -Force | Out-Null
   $manifestSha = Get-Sha256 $ManifestPath
-  $stateHome = if ($env:TEAM_DEVSPACE_HOME) { [IO.Path]::GetFullPath($env:TEAM_DEVSPACE_HOME) }
-    else { Join-Path $env:LOCALAPPDATA 'TeamDevSpace' }
   $stateFile = Join-Path $stateHome 'state.json'
   $hasEnrollment = $false
   if (Test-Path -LiteralPath $stateFile) {

@@ -90,9 +90,11 @@ async function enroll(request, env, store) {
     await cloud.remove({ ...row, dns_id: configured.dnsId });
     throw new HttpError(409, 'enrollment_cancelled');
   }
+  const controlApiVersion = Number(env.CONTROL_API_VERSION);
+  if (!Number.isInteger(controlApiVersion) || controlApiVersion < 1) throw new HttpError(503, 'release_not_configured');
   return json({ keyId: row.id, deviceId: row.device_id, bindingId: row.binding_id,
     hostname: row.hostname, tunnelToken: configured.tunnelToken,
-    endpoint: `${publicOrigin(env)}/mcp`, devspaceVersion: env.DEVSPACE_VERSION,
+    endpoint: `${publicOrigin(env)}/mcp`, devspaceVersion: env.DEVSPACE_VERSION, controlApiVersion,
     state: row.state === 'suspended' ? 'suspended' : 'active' });
 }
 
@@ -283,8 +285,12 @@ export default {
       else {
         if (new URL(request.url).search) throw new HttpError(400, 'query_parameters_not_supported');
         if (operation === 'health') {
-          if (!env.RELEASE_VERSION || !env.DEVSPACE_VERSION) throw new HttpError(503, 'release_not_configured');
-          response = json({ service: 'team-devspace', release: env.RELEASE_VERSION, devspace: env.DEVSPACE_VERSION });
+          const controlApiVersion = Number(env.CONTROL_API_VERSION);
+          if (!env.RELEASE_VERSION || !env.DEVSPACE_VERSION || !Number.isInteger(controlApiVersion) || controlApiVersion < 1) {
+            throw new HttpError(503, 'release_not_configured');
+          }
+          response = json({ service: 'team-devspace', release: env.RELEASE_VERSION,
+            devspace: env.DEVSPACE_VERSION, controlApi: controlApiVersion });
         } else {
           const store = new KeyStore(env.DB);
           if (pathname === '/mcp') response = await proxyMcp(request, env, store);

@@ -5,17 +5,30 @@ export class ControlError extends Error {
 }
 
 export async function control(origin, path, token, { method = 'POST', body, timeout = 120000 } = {}) {
-  let response;
+  const url = new URL(path, origin);
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  let status;
+  let text;
   try {
-    response = await fetch(new URL(path, origin), {
-      method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      redirect: 'error', signal: AbortSignal.timeout(timeout),
-    });
+    if (url.protocol === 'http:' && url.hostname === '127.0.0.1') {
+      const local = await loopbackRequest(Number(url.port || 80), `${url.pathname}${url.search}`, {
+        method, headers, body: payload, timeout,
+      });
+      status = local.status;
+      text = local.text;
+    } else {
+      const response = await fetch(url, {
+        method, headers, ...(payload === undefined ? {} : { body: payload }),
+        redirect: 'error', signal: AbortSignal.timeout(timeout),
+      });
+      status = response.status;
+      text = await response.text();
+    }
   } catch { throw new ControlError(0, 'gateway_unreachable'); }
   let value;
-  try { value = await response.json(); } catch { throw new ControlError(response.status, 'invalid_gateway_response'); }
-  if (!response.ok) throw new ControlError(response.status, value.error ?? 'gateway_rejected_request');
+  try { value = JSON.parse(text); } catch { throw new ControlError(status, 'invalid_gateway_response'); }
+  if (status < 200 || status >= 300) throw new ControlError(status, value.error ?? 'gateway_rejected_request');
   return value;
 }
 

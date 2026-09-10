@@ -45,8 +45,8 @@ export function trayState(status, { busy = false, notice } = {}) {
     remoteAction: suspended ? 'resume' : 'suspend',
     remoteEnabled: !busy && controllable,
     checkEnabled: !busy,
-    restartEnabled: !busy && controllable && desiredRemoteAccess !== 'suspended',
-    repairEnabled: !busy && controllable && desiredRemoteAccess !== 'suspended',
+    restartEnabled: !busy && controllable && !suspended && desiredRemoteAccess !== 'suspended',
+    repairEnabled: !busy && controllable && !suspended && desiredRemoteAccess !== 'suspended',
     exitEnabled: !busy,
     ...(notice ? { notice } : {}),
   };
@@ -57,7 +57,7 @@ function actionNotice(action, status) {
   if (action === 'suspend') return '远程访问已暂停';
   if (action === 'resume') return '远程访问已恢复';
   if (action === 'restart') return '连接服务已重新启动';
-  if (action === 'repair') return '连接已修复';
+  if (action === 'repair') return '修复操作已完成';
   if (action === 'logs') return '日志目录已打开';
   return '诊断信息已复制';
 }

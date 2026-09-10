@@ -18,7 +18,7 @@ test('runtime cache ignores only app version metadata, not dependency or install
   assert.equal(input.lockfile.version, '0.1.0', 'Computing a key must not mutate provenance input');
   for (const change of [value => { value.lockfile.packages['node_modules/dependency'].version = '1.2.4'; },
     value => { value.packageJson.scripts.postinstall = 'node changed.mjs'; },
-    value => { value.npmrc += '\nignore-scripts=true'; }, value => { value.target = 'darwin-x64'; }]) {
+    value => { value.npmrc += '\nignore-scripts=true'; }, value => { value.target = 'darwin-arm64'; }]) {
     const changed = structuredClone(input); change(changed);
     assert.notEqual(dependencyFingerprint(changed), before);
   }
@@ -51,7 +51,9 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   for (const directory of directories) await mkdir(join(bundle, directory), { recursive: true });
   const files = {
     'client/cli.mjs': 'client', 'platform/platform.txt': 'platform', 'node_modules/@waishnav/devspace/package.json': '{"version":"1.0.8"}',
-    'node_modules/example/index.js': 'dependency', 'runtime/node.exe': 'node', 'bin/cloudflared.exe': 'cloudflared',
+    'node_modules/example/index.js': 'dependency', 'node_modules/example/index.js.map': 'source-map',
+    'node_modules/example/index.d.ts': 'types', 'node_modules/example/index.d.mts': 'types', 'node_modules/example/index.d.cts': 'types',
+    'runtime/node.exe': 'node', 'bin/cloudflared.exe': 'cloudflared',
     'bin/team-devspace.cmd': 'command', 'git/git.exe': 'git', 'package.json': '{}', 'package-lock.json': '{}', '.npmrc': '',
     'release.config.json': '{}', 'README.md': 'readme', 'sbom.cdx.json': '{}', 'THIRD-PARTY-NOTICES.txt': 'notices',
     'release-provenance.json': '{}',
@@ -82,6 +84,9 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   assert.equal(git.sha256, await sha256File(gitFallbackArchive), 'The official self-extractor must not be recompressed');
   const runtime = built.components.find(component => component.name === 'devspace-runtime');
   const runtimeListing = (await run(tar, ['-tzf', join(built.layout, runtime.path)], { capture: true })).stdout;
+  assert.match(runtimeListing, /node_modules\/example\/index\.js/);
+  assert.doesNotMatch(runtimeListing, /\.map$|\.d\.ts$|\.d\.mts$|\.d\.cts$/m,
+    'Windows employee runtime must omit source maps and TypeScript declaration files');
   assert.doesNotMatch(runtimeListing, /^\.npmrc$|^package-lock\.json$/m);
   await assert.rejects(access(join(built.layout, '.staging')));
   await writeFile(join(bundle, 'package-lock.json'), '{"version":"9.9.9"}');
@@ -94,7 +99,7 @@ test('release layout separates app, upstream dependencies, runtimes and optional
 test('Unix profile prunes only optional Claude executables and foreign PTYs, preserving SDK and native build', async t => {
   const work = await mkdtemp(join(tmpdir(), 'tds-profile-'));
   t.after(() => rm(work, { recursive: true, force: true }));
-  for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) {
+  for (const target of ['darwin-arm64', 'linux-x64']) {
     const bundle = join(work, target);
     const paths = ['node_modules/@anthropic-ai/claude-agent-sdk', 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64',
       'node_modules/node-pty/build/Release', ...['win32-x64', 'win32-arm64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']

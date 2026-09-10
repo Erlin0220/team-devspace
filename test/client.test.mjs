@@ -9,7 +9,8 @@ import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, r
 import { configureDevice, requestFromFile } from '../client/setup.mjs';
 import { createAccessKey } from '../client/admin.mjs';
 import { launchAgentXml, windowsTaskXml, serviceLabel } from '../client/platform.mjs';
-import { openLogs, rollbackResumeFailure } from '../client/control.mjs';
+import { diagnosticReport, openLogs, rollbackResumeFailure, stopTeamDevSpace } from '../client/control.mjs';
+import release from '../release.config.json' with { type: 'json' };
 
 async function fixture(t) {
   const home = await mkdtemp(join(tmpdir(), 'team-devspace-client-'));
@@ -31,7 +32,8 @@ async function fixture(t) {
     }
     response.end(JSON.stringify({ keyId, bindingId, deviceId: data.deviceId,
       tunnelToken: 'fixture-not-a-real-tunnel-token', hostname: 'tds-fixture.example.test',
-      endpoint: `http://127.0.0.1:${server.address().port}/mcp`, devspaceVersion: '1.0.8' }));
+      endpoint: `http://127.0.0.1:${server.address().port}/mcp`, devspaceVersion: release.devspaceVersion,
+      controlApiVersion: release.controlApiVersion }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(home, { recursive: true, force: true }); });
@@ -180,6 +182,50 @@ test('opening logs delegates to the desktop shell without waiting for its exit c
   }), directory);
   assert.equal(launched.args.at(-1), directory);
 });
+
+test('diagnostics separate desired remote access from observed Gateway state and filter proxy warning noise', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'team-devspace-diagnostic-'));
+  const project = join(home, 'project');
+  await mkdir(project);
+  await mkdir(join(home, 'logs'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await atomicJson(join(home, 'state.json'), {
+    schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
+    accessKey: `tds_${randomSecret()}`, keyId: randomUUID(), bindingId: randomUUID(),
+    gateway: 'http://127.0.0.1:1', roots: [project], remoteAccess: 'suspended',
+    releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
+    ports: { devspace: 65110, bridge: 65111, metrics: 65112 },
+  });
+  await writeFile(join(home, 'logs', 'runtime.error.log'),
+    '(node:1) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental\n(Use `node --trace-warnings ...`)\nreal failure\n');
+  const report = await diagnosticReport(home);
+  assert.equal(report.desiredRemoteAccess, 'suspended');
+  assert.equal(report.gatewayHealth, 'unreachable');
+  assert.equal('bindingState' in report, false);
+  assert.deepEqual(report.recentErrors.find(entry => entry.component === 'runtime')?.lines, ['real failure']);
+});
+
+test('closing is allowed when the Gateway says the device is already disabled',
+  { skip: process.platform !== 'win32' }, async t => {
+    const home = await mkdtemp(join(tmpdir(), 'team-devspace-disabled-'));
+    const project = join(home, 'project');
+    await mkdir(project);
+    t.after(() => rm(home, { recursive: true, force: true }));
+    const server = http.createServer((_request, response) => {
+      response.writeHead(403, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'device_disabled' }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    await atomicJson(join(home, 'state.json'), {
+      schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
+      keyId: randomUUID(), bindingId: randomUUID(), gateway: `http://127.0.0.1:${server.address().port}`,
+      roots: [project], remoteAccess: 'active', releaseVersion: release.version, devspaceVersion: release.devspaceVersion,
+      ports: { devspace: 65120, bridge: 65121, metrics: 65122 },
+    });
+    assert.equal((await stopTeamDevSpace(home)).stopped, true);
+    assert.equal((await loadState(home)).remoteAccess, 'suspended');
+  });
 
 test('resume rollback reports dual failure instead of claiming local services stopped', async () => {
   const calls = [];

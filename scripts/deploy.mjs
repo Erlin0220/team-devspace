@@ -107,7 +107,7 @@ if (values['dry-run']) {
     routes: [{ pattern: hostname, custom_domain: true }],
     assets: { ...base.assets, directory: resolve('assets') },
     vars: { ...base.vars, RELEASE_VERSION: release.version, DEVSPACE_VERSION: release.devspaceVersion,
-      CF_ACCOUNT_ID: accountId, CF_ZONE_ID: config.zoneId,
+      CONTROL_API_VERSION: String(release.controlApiVersion), CF_ACCOUNT_ID: accountId, CF_ZONE_ID: config.zoneId,
       DEVICE_DOMAIN: deviceDomain, PUBLIC_ORIGIN: gateway,
       ACCESS_TEAM_DOMAIN: accessTeamDomain, ACCESS_AUD: access.audience },
     d1_databases: [{ binding: 'DB', database_name: workerName, database_id: database.uuid,

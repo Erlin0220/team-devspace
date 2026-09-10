@@ -1,68 +1,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Invoke-SignTool([string]$Executable, [string[]]$Arguments, [string]$Stage, [int]$TimeoutSeconds = 60) {
-  $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $Executable
-  $startInfo.UseShellExecute = $false
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-  $startInfo.CreateNoWindow = $true
-  foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
-  $process = [Diagnostics.Process]::Start($startInfo)
-  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-  $stderrTask = $process.StandardError.ReadToEndAsync()
-  try {
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-      try { $process.Kill($true) } catch {}
-      throw "signtool $Stage exceeded ${TimeoutSeconds}s"
-    }
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
-    if ($stdout) { Write-Host $stdout.TrimEnd() }
-    if ($stderr) { Write-Host $stderr.TrimEnd() }
-    if ($process.ExitCode -ne 0) { throw "signtool $Stage failed with exit code $($process.ExitCode)" }
-  }
-  finally { $process.Dispose() }
-}
-
-function Invoke-CertUtil([string[]]$Arguments, [string]$Stage, [switch]$AllowFailure) {
-  $certutil = Join-Path $env:SystemRoot 'System32\certutil.exe'
-  $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $certutil
-  $startInfo.UseShellExecute = $false
-  $startInfo.RedirectStandardOutput = $true
-  $startInfo.RedirectStandardError = $true
-  $startInfo.CreateNoWindow = $true
-  foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
-  $process = [Diagnostics.Process]::Start($startInfo)
-  $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-  $stderrTask = $process.StandardError.ReadToEndAsync()
-  try {
-    if (-not $process.WaitForExit(30000)) {
-      try { $process.Kill($true) } catch {}
-      throw "certutil $Stage exceeded 30s"
-    }
-    $stdout = $stdoutTask.GetAwaiter().GetResult()
-    $stderr = $stderrTask.GetAwaiter().GetResult()
-    if ($stdout) { Write-Host $stdout.TrimEnd() }
-    if ($stderr) { Write-Host $stderr.TrimEnd() }
-    if ($process.ExitCode -ne 0 -and -not $AllowFailure) {
-      throw "certutil $Stage failed with exit code $($process.ExitCode)"
-    }
-    return $process.ExitCode
-  }
-  finally { $process.Dispose() }
-}
-
-function Add-CurrentUserCertificate([string]$StoreName, [string]$CertificatePath) {
-  [void](Invoke-CertUtil -Arguments @('-user', '-f', '-addstore', $StoreName, $CertificatePath) -Stage "add $StoreName")
-}
-
-function Remove-CurrentUserCertificate([string]$StoreName, [string]$Thumbprint) {
-  [void](Invoke-CertUtil -Arguments @('-user', '-delstore', $StoreName, $Thumbprint) -Stage "remove $StoreName" -AllowFailure)
-}
-
 $required = @(
   'WINDOWS_INTERNAL_SIGNING_PFX_BASE64',
   'WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD',
@@ -80,7 +18,8 @@ $version = $env:TEAM_DEVSPACE_RELEASE_VERSION
 $root = (Get-Location).Path
 $installer = Join-Path $root "release\Team-DevSpace-$version-windows-x64-setup.exe"
 $layout = Join-Path $root "release\offline\$version\win32-x64"
-$pfxPath = Join-Path $env:RUNNER_TEMP 'team-devspace-internal-signing.pfx'
+$tempRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } elseif ($env:TEMP) { $env:TEMP } else { [IO.Path]::GetTempPath() }
+$pfxPath = Join-Path $tempRoot "team-devspace-internal-signing-$PID.pfx"
 $cerPath = Join-Path $layout 'Team-DevSpace-Internal-Publisher.cer'
 $trustScript = Join-Path $root 'platform\windows\Trust-Team-DevSpace-Internal-Publisher.ps1'
 $trustScriptDestination = Join-Path $layout 'Trust-Team-DevSpace-Internal-Publisher.ps1'
@@ -99,9 +38,6 @@ $certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]:
   $flags
 )
 $thumbprint = $certificate.Thumbprint.ToUpperInvariant()
-$publicCertificate = $null
-$importedRoot = $false
-$importedPublisher = $false
 
 try {
   if (-not $certificate.HasPrivateKey) { throw 'Internal signing PFX does not contain a private key' }
@@ -135,38 +71,39 @@ try {
     $certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
   )
   Copy-Item -LiteralPath $trustScript -Destination $trustScriptDestination -Force
-  $publicCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cerPath)
 
-  $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
-    Sort-Object FullName | Select-Object -Last 1
-  if (-not $signtool) { throw 'signtool.exe is unavailable' }
+  Write-Host '::notice::Internal signing: signing Windows installer with the built-in Authenticode API'
+  $signed = Set-AuthenticodeSignature -FilePath $installer -Certificate $certificate -HashAlgorithm SHA256
+  if (-not $signed.SignerCertificate -or $signed.SignerCertificate.Thumbprint.ToUpperInvariant() -ne $thumbprint) {
+    throw 'Signed installer does not contain the expected internal publisher certificate'
+  }
+  if ($signed.Status -in @('NotSigned', 'HashMismatch', 'NotSupportedFileFormat')) {
+    throw "Authenticode signing failed: $($signed.Status)"
+  }
 
-  Write-Host '::notice::Internal signing: signing Windows installer'
-  Invoke-SignTool -Executable $signtool.FullName -Arguments @(
-    'sign', '/fd', 'SHA256', '/f', $pfxPath, '/p', $env:WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD, $installer
-  ) -Stage 'sign'
+  Write-Host '::notice::Internal signing: verifying embedded signer and file integrity without mutating Windows trust stores'
+  $verified = Get-AuthenticodeSignature -FilePath $installer
+  if (-not $verified.SignerCertificate -or $verified.SignerCertificate.Thumbprint.ToUpperInvariant() -ne $thumbprint) {
+    throw 'Authenticode verification returned an unexpected signer'
+  }
+  if ($verified.Status -notin @('Valid', 'UnknownError')) {
+    throw "Authenticode verification failed: $($verified.Status)"
+  }
+  if ($verified.Status -eq 'UnknownError') {
+    Write-Host '::notice::Signer is intentionally not trusted on the build runner; employee trust is installed only by the shipped current-user trust helper.'
+  }
 
-  Write-Host '::notice::Internal signing: reading embedded signer certificate without chain validation'
   $embeddedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($installer)
   $embeddedSigner = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($embeddedCertificate)
   try {
     if ($embeddedSigner.Thumbprint.ToUpperInvariant() -ne $thumbprint) {
-      throw 'Signed installer does not contain the expected internal publisher certificate'
+      throw 'Embedded Authenticode signer does not match the fixed internal publisher certificate'
     }
   }
   finally {
     $embeddedSigner.Dispose()
     $embeddedCertificate.Dispose()
   }
-
-  Write-Host '::notice::Internal signing: temporarily trusting publisher certificate for policy verification'
-  Add-CurrentUserCertificate -StoreName 'Root' -CertificatePath $cerPath
-  $importedRoot = $true
-  Add-CurrentUserCertificate -StoreName 'TrustedPublisher' -CertificatePath $cerPath
-  $importedPublisher = $true
-
-  Write-Host '::notice::Internal signing: verifying Authenticode policy'
-  Invoke-SignTool -Executable $signtool.FullName -Arguments @('verify', '/pa', '/all', $installer) -Stage 'verify'
 
   Copy-Item -LiteralPath $installer -Destination $layout -Force
   $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -181,6 +118,7 @@ try {
   Write-Output (ConvertTo-Json @{
     signed = $true
     trustProfile = 'internal-free'
+    verification = 'embedded-signer-and-integrity-no-trust-store-mutation'
     subject = $certificate.Subject
     thumbprint = $thumbprint
     notAfter = $certificate.NotAfter.ToUniversalTime().ToString('o')
@@ -188,9 +126,6 @@ try {
   } -Compress)
 }
 finally {
-  if ($importedPublisher) { Remove-CurrentUserCertificate -StoreName 'TrustedPublisher' -Thumbprint $thumbprint }
-  if ($importedRoot) { Remove-CurrentUserCertificate -StoreName 'Root' -Thumbprint $thumbprint }
   Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-  if ($publicCertificate) { $publicCertificate.Dispose() }
   $certificate.Dispose()
 }

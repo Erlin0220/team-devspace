@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { healthMatches, probeDeployment, restoreDeployment, waitForReadiness } from '../scripts/deploy-checks.mjs';
 
-const release = { version: '9.2.1', devspaceVersion: '2.3.4' };
+const release = { version: '9.2.1', devspaceVersion: '2.3.4', controlApiVersion: 1 };
 const content = 'export const asset = true;';
 const asset = { path: '/mcp-app-assets/test.js', sha256: createHash('sha256').update(content).digest('hex') };
 function fixture(overrides = {}) {
@@ -13,16 +13,22 @@ function fixture(overrides = {}) {
       trace.push({ url, options });
       const path = new URL(url).pathname;
       if (overrides[path]) return overrides[path]();
-      if (path === '/health') return Response.json({ service: 'team-devspace', release: release.version, devspace: release.devspaceVersion });
+      if (path === '/health') return Response.json({ service: 'team-devspace', release: release.version,
+        devspace: release.devspaceVersion, controlApi: release.controlApiVersion });
       if (path === '/v1/admin/keys') return Response.json({ keys: [] });
       return new Response(content, { headers: { 'Access-Control-Allow-Origin': '*', 'X-Team-Release': release.version } });
     } } };
 }
 
 test('deployment readiness follows both canonical versions, not a baked-in upstream pin', async () => {
-  assert.equal(healthMatches({ service: 'team-devspace', release: release.version, devspace: release.devspaceVersion }, release), true);
-  assert.equal(healthMatches({ service: 'team-devspace', release: release.version, devspace: '1.0.8' }, release), false);
-  assert.equal(healthMatches({ service: 'team-devspace', release: 'old', devspace: release.devspaceVersion }, release), false);
+  assert.equal(healthMatches({ service: 'team-devspace', release: release.version,
+    devspace: release.devspaceVersion, controlApi: release.controlApiVersion }, release), true);
+  assert.equal(healthMatches({ service: 'team-devspace', release: release.version,
+    devspace: '1.0.8', controlApi: release.controlApiVersion }, release), false);
+  assert.equal(healthMatches({ service: 'team-devspace', release: 'old',
+    devspace: release.devspaceVersion, controlApi: release.controlApiVersion }, release), false);
+  assert.equal(healthMatches({ service: 'team-devspace', release: release.version,
+    devspace: release.devspaceVersion, controlApi: 0 }, release), false);
   const f = fixture();
   assert.deepEqual(await probeDeployment(f.options), { release: true, administrator: true, d1: true, assets: true });
   assert.equal(f.trace[1].options.headers.Authorization, 'Bearer private-admin-token');
@@ -38,7 +44,8 @@ test('green health alone cannot hide broken D1/admin or stale static assets', as
   }) }).options), /assets_failed/);
   let attempts = 0;
   const f = fixture({ '/health': () => ++attempts === 1 ? new Response('', { status: 503 })
-    : Response.json({ service: 'team-devspace', release: release.version, devspace: release.devspaceVersion }) });
+    : Response.json({ service: 'team-devspace', release: release.version,
+      devspace: release.devspaceVersion, controlApi: release.controlApiVersion }) });
   await waitForReadiness(f.options, { interval: 1, timeout: 1000 });
   assert.equal(attempts, 2);
 });

@@ -78,7 +78,9 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
   if (binding.deviceId !== state.deviceId || !uuid.test(binding.bindingId ?? '') || !uuid.test(binding.keyId ?? '') ||
       typeof binding.tunnelToken !== 'string' || !binding.tunnelToken || binding.endpoint !== `${gateway}/mcp` ||
-      binding.devspaceVersion !== DEVSPACE_VERSION) throw new Error('Gateway returned an incompatible Enrollment');
+      binding.devspaceVersion !== DEVSPACE_VERSION || binding.controlApiVersion !== release.controlApiVersion) {
+    throw new Error('Gateway returned an incompatible Enrollment');
+  }
   onProgress('Enrollment confirmed. Preparing the local runtime...');
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,

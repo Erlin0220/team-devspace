@@ -22,14 +22,15 @@ export function validateDistributionConfig(release) {
   return distribution;
 }
 
-async function componentArchive({ name, version, bundle, paths, tar, staging, layout, required = true, condition }) {
+async function componentArchive({ name, version, bundle, paths, tar, staging, layout, required = true, condition, exclude = [] }) {
   if (!Array.isArray(paths) || paths.length === 0) throw new Error(`Component ${name} has no payload paths`);
   const temporary = join(staging, `${name}.tar.gz`);
   await rm(temporary, { force: true });
   // Windows/macOS bsdtar embeds wall-clock time in the gzip header by default.
   // Disable that metadata; GNU tar pipes to gzip and already omits it.
   const options = process.platform === 'linux' ? [] : ['--options', 'gzip:!timestamp'];
-  await run(tar, [...options, '-czf', temporary, '-C', bundle, ...paths], { timeout: 600000 });
+  const exclusions = exclude.flatMap(pattern => ['--exclude', pattern]);
+  await run(tar, [...options, ...exclusions, '-czf', temporary, '-C', bundle, ...paths], { timeout: 600000 });
   return componentArtifact({ name, version, archive: temporary, layout, required, condition });
 }
 
@@ -55,8 +56,8 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
   const root = resolve(outputDirectory);
   const layout = join(root, 'offline', release.version, target);
   const staging = join(layout, '.staging');
-  await rm(staging, { recursive: true, force: true });
-  await rm(layout, { recursive: true, force: true });
+  await rm(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await rm(layout, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await mkdir(staging, { recursive: true });
   await mkdir(layout, { recursive: true });
 
@@ -67,10 +68,11 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
     ...(target === 'win32-x64' ? ['bin/team-devspace.cmd'] : []),
   ];
   const cloudflaredPath = target === 'win32-x64' ? 'bin/cloudflared.exe' : 'bin/cloudflared';
+  const runtimeExcludes = target === 'win32-x64' ? ['*.map', '*.d.ts', '*.d.mts', '*.d.cts'] : [];
   const components = [
     await componentArchive({ name: 'app', version: release.version, bundle, paths: appPaths, tar, staging, layout }),
     await componentArchive({ name: 'devspace-runtime', version: release.devspaceVersion, bundle,
-      paths: ['node_modules'], tar, staging, layout }),
+      paths: ['node_modules'], tar, staging, layout, exclude: runtimeExcludes }),
     await componentArchive({ name: 'node', version: release.nodeVersion, bundle, paths: ['runtime'], tar, staging, layout }),
     await componentArchive({ name: 'cloudflared', version: release.cloudflaredVersion, bundle,
       paths: [cloudflaredPath], tar, staging, layout }),
@@ -100,5 +102,5 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
   const manifestSha256 = await sha256File(manifestPath);
   await writeFile(join(layout, 'manifest.json.sha256'), `${manifestSha256}  manifest.json\n`);
   return { layout, manifest, manifestPath, manifestSha256, components };
-  } finally { await rm(staging, { recursive: true, force: true }); }
+  } finally { await rm(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }

@@ -18,16 +18,10 @@
         "note": "共享 App 的 Access Key 在 D1 映射到唯一 Device Binding，再经设备专属 Tunnel 到本机 Bridge 与官方 DevSpace。"
       },
       {
-        "id": "enrollment",
-        "label": "设备 Enrollment",
-        "focus": ["local_lifecycle", "gateway", "d1", "cf_control", "cloudflared", "local_state"],
-        "note": "首次安装生成设备身份，由 Gateway 建立 Binding、Tunnel 和 DNS，并把 Tunnel Token 交给该设备。"
-      },
-      {
-        "id": "admin-plane",
-        "label": "管理员控制面",
-        "focus": ["admin", "admin_web", "gateway", "d1", "cf_control"],
-        "note": "Admin Web 与 Admin CLI 共用 Gateway/Admin Service；浏览器 /admin* 由 Cloudflare Access 保护。"
+        "id": "provision-admin",
+        "label": "Enrollment / Admin",
+        "focus": ["admin", "admin_web", "local_lifecycle", "gateway", "d1", "cf_control", "cloudflared", "local_state"],
+        "note": "管理员通过共用 Admin Service 管理 Key；首次安装由 Gateway 建立 Binding、Tunnel/DNS，并把 Tunnel Token 交给设备。"
       },
       {
         "id": "device-runtime",
@@ -39,7 +33,7 @@
         "id": "release-install",
         "label": "发布与安装",
         "focus": ["release_pipeline", "local_lifecycle", "local_state", "runtime", "cloudflared", "devspace"],
-        "note": "五平台原生构建形成离线包，经 private GitHub Release 交由管理员分发，员工机不在线拉 runtime。"
+        "note": "Windows x64、Apple Silicon Mac、Linux x64 三个平台原生构建，经 private GitHub Release 交由管理员分发，员工机不在线拉 runtime。"
       }
     ]
   },

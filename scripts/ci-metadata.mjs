@@ -4,8 +4,7 @@ import { validateDistributionConfig } from './distribution.mjs';
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const runners = {
-  'win32-x64': 'windows-2022', 'darwin-arm64': 'macos-15', 'darwin-x64': 'macos-15-intel',
-  'linux-x64': 'ubuntu-24.04', 'linux-arm64': 'ubuntu-24.04-arm',
+  'win32-x64': 'windows-2022', 'darwin-arm64': 'macos-15', 'linux-x64': 'ubuntu-24.04',
 };
 const metadata = {
   version: release.version,

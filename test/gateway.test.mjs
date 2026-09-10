@@ -49,7 +49,7 @@ async function fixture(t) {
     } },
     bindings: { ADMIN_TOKEN: adminToken, MASTER_KEY: secret(), CF_API_TOKEN: secret(),
       CF_ACCOUNT_ID: 'a'.repeat(32), CF_ZONE_ID: 'b'.repeat(32), DEVICE_DOMAIN: 'example.test',
-      PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8',
+      PUBLIC_ORIGIN: 'https://team.example.test', RELEASE_VERSION: '0.1.0', DEVSPACE_VERSION: '1.0.8', CONTROL_API_VERSION: '1',
       ACCESS_TEAM_DOMAIN: ACCESS_ISSUER, ACCESS_AUD },
     outboundService: async request => {
       const url = new URL(request.url);

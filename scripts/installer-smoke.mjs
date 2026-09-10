@@ -61,7 +61,7 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     response.end(JSON.stringify({ keyId, bindingId, deviceId: value.deviceId, devspaceVersion: release.devspaceVersion,
-      state: 'suspended',
+      controlApiVersion: release.controlApiVersion, state: 'suspended',
       hostname: 'not-a-real-tunnel.invalid', tunnelToken: 'not-a-valid-cloudflare-token',
       endpoint: `http://127.0.0.1:${server.address().port}/mcp` }));
   } else if (request.url === '/v1/device/status') {
@@ -152,7 +152,11 @@ try {
   assert.equal(repairedActive.previous, null);
   assert.equal(await exists(join(install, 'cache')), false);
 
-  assert.equal(await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000), 0);
+  await rm(join(repairedActive.path, 'client', 'cli.mjs'));
+  const uninstallStarted = Date.now();
+  const uninstallCode = await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000);
+  assert.equal(uninstallCode, 0, await readFile(join(install, 'bootstrap-error.log'), 'utf8').catch(() => `Uninstall.exe exited ${uninstallCode} without bootstrap-error.log`));
+  const uninstallMs = Date.now() - uninstallStarted;
   canUninstall = false;
   assert.equal(await exists(join(install, 'v')), false);
   assert.equal((await readJson(join(home, 'state.json'))).bindingId, bindingId);
@@ -161,12 +165,13 @@ try {
     installSurvivesEnrollmentFailure: true, enrollmentRetryReusesIdentity: true, upgradeSkipsEnrollment: true,
     healthyRepairIsLocalOnly: true, missingTunnelCredentialIsRecoverable: true,
     rerunInstallerRepairsPayload: true, noPersistentPayloadCache: true,
-    officialGitFallbackExecuted: true, retiredVersionsCollected: true, uninstallPreservesProjects: true }));
+    officialGitFallbackExecuted: true, retiredVersionsCollected: true, damagedClientUninstallFallback: true,
+    uninstallPreservesProjects: true, uninstallMs }));
 } finally {
   if (canUninstall || await exists(join(install, 'Uninstall.exe'))) {
     await execute(join(install, 'Uninstall.exe'), ['/S', `_?=${install}`], 60000).catch(() => {});
   }
   await new Promise(resolve => server.close(resolve));
-  await rm(work, { recursive: true, force: true });
-  await rm(install, { recursive: true, force: true });
+  await rm(work, { recursive: true, force: true }).catch(() => {});
+  await rm(install, { recursive: true, force: true }).catch(() => {});
 }

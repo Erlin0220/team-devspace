@@ -21,6 +21,7 @@ const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
 const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
+const windowsSigning = await readFile('scripts/sign-internal-windows.ps1', 'utf8');
 const clientSetup = await readFile('client/setup.mjs', 'utf8');
 const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
 const macosPreinstall = await readFile('platform/macos/preinstall', 'utf8');
@@ -36,6 +37,9 @@ if (manifest.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
   throw new Error('Unexpected upstream DevSpace version pin');
 }
 if (manifest.version !== release.version) throw new Error('Package and release versions differ');
+if (!Number.isInteger(release.controlApiVersion) || release.controlApiVersion < 1) {
+  throw new Error('Release controlApiVersion must be a positive integer');
+}
 validateDistributionConfig(release);
 if (Object.keys(deployment).some(key => !['databaseId', 'accessApplicationId'].includes(key)) ||
     !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.databaseId ?? '') ||
@@ -53,8 +57,9 @@ if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled |
   throw new Error('Gateway must keep privacy-aware Workers Logs enabled');
 }
 if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes("--jq '.private'") ||
+    !releaseWorkflow.includes('healthMatches') ||
     /\brclone\b|cloudflarestorage\.com|RCLONE_CONFIG_RELEASES/i.test(releaseWorkflow)) {
-  throw new Error('Release workflow must publish only to a verified private GitHub Release and contain no legacy object-storage publication path');
+  throw new Error('Release workflow must verify the live Gateway and publish only to a verified private GitHub Release');
 }
 if (!windowsInstaller.includes('nsExec::ExecToLog') || /ExecWait[^\r\n]*powershell/i.test(windowsInstaller)) {
   throw new Error('Windows install/uninstall bootstrap must use no-console NSIS execution');
@@ -66,7 +71,11 @@ if (!windowsInstaller.includes('PBM_SETMARQUEE') || !windowsInstaller.includes('
   throw new Error('Windows bootstrap must show indeterminate progress and readable installation stages');
 }
 if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [string]$Previous.path)") ||
-    !windowsBootstrap.includes("Write-AtomicJson $activeFile $next") || !windowsBootstrap.includes('exit 10') ||
+    !windowsBootstrap.includes("Write-AtomicJson $activeFile $next") ||
+    !windowsBootstrap.includes("ValidateSet('Install', 'Uninstall')") ||
+    !windowsBootstrap.includes('Remove-KnownStartupEntries') || !windowsBootstrap.includes('Invoke-LegacyTaskCleanupIfNeeded') ||
+    !windowsBootstrap.includes("Start-Process -FilePath $cmd -Verb RunAs") ||
+    !windowsBootstrap.includes('exit 10') ||
     !windowsInstaller.includes('$ResultCode == 10') ||
     !windowsInstaller.includes('File /r "${OFFLINE_OBJECTS}\\*.*"') ||
     !windowsInstaller.includes('$PLUGINSDIR\\offline') ||
@@ -106,6 +115,10 @@ if (release.distribution.trustProfile === 'internal-free' &&
       !releaseWorkflow.includes('macos-signing.mjs prepare') ||
       !releaseWorkflow.includes('macos-signing.mjs cleanup'))) {
   throw new Error('Internal-free publication must keep fixed Windows signing and an optional, non-gating protected macOS signing path');
+}
+if (!windowsSigning.includes('Set-AuthenticodeSignature') || !windowsSigning.includes('Get-AuthenticodeSignature') ||
+    /addstore|X509Store|TrustedPublisher/i.test(windowsSigning)) {
+  throw new Error('Windows release signing must verify Authenticode without mutating runner trust stores');
 }
 if (manifest.dependencies['@clack/prompts']) throw new Error('Administrator-only prompts must not ship as an employee runtime dependency');
 if (!/^[a-f0-9]{32}$/.test(release.cloudflareZoneId ?? '')) {

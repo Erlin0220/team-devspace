@@ -140,8 +140,12 @@ static HANDLE open_inherited_file(const wchar_t *path, DWORD access, DWORD dispo
   HANDLE file = CreateFileW(path, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     &security, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
   if (file != INVALID_HANDLE_VALUE && disposition == OPEN_ALWAYS) {
-    LARGE_INTEGER end = { 0 };
-    if (!SetFilePointerEx(file, end, NULL, FILE_END)) {
+    LARGE_INTEGER size = { 0 }, position = { 0 };
+    if (GetFileSizeEx(file, &size) && size.QuadPart > 5LL * 1024 * 1024 &&
+        SetFilePointerEx(file, position, NULL, FILE_BEGIN)) {
+      SetEndOfFile(file);
+    }
+    if (!SetFilePointerEx(file, position, NULL, FILE_END)) {
       CloseHandle(file);
       return INVALID_HANDLE_VALUE;
     }
