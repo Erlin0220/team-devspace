@@ -5,11 +5,15 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, access, realpath } from 'node:
 import { tmpdir, homedir } from 'node:os';
 import { join, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
-import { configureDevice, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
+import { configureDevice, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
+import { trayState } from '../client/tray.mjs';
 import { createAccessKey } from '../client/admin.mjs';
-import { launchAgentXml, systemdUserUnit, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
-import { diagnosticReport, openLogs, rollbackResumeFailure, stopTeamDevSpace, suspendRemoteAccess } from '../client/control.mjs';
+import { launchAgentXml, removeWindowsTask, systemdUserUnit, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
+import { diagnosticReport, localPauseServiceAction, openLogs, resumeRemoteAccess, rollbackResumeFailure, stopTeamDevSpace, suspendRemoteAccess } from '../client/control.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
 async function fixture(t) {
@@ -31,7 +35,8 @@ async function fixture(t) {
       response.end(JSON.stringify({ state: flags.deviceState, bindingId })); return;
     }
     if (request.url === '/v1/enrollment/preflight') {
-      response.end(JSON.stringify({ available: true })); return;
+      if (flags.preflightMissing) { response.writeHead(404); response.end(JSON.stringify({ error: 'not_found' })); return; }
+      response.end(JSON.stringify({ available: !flags.preflightUnavailable })); return;
     }
     if (request.url === '/v1/device/release') {
       response.end(JSON.stringify({ released: true })); return;
@@ -39,7 +44,14 @@ async function fixture(t) {
     if (request.url === '/v1/admin/keys') {
       response.writeHead(201); response.end(JSON.stringify({ id: data.id, label: data.label, state: 'issued' })); return;
     }
-    response.end(JSON.stringify({ keyId, bindingId, deviceId: data.deviceId,
+    if (flags.beforeEnrollmentResponse) await flags.beforeEnrollmentResponse();
+    if (flags.loseEnrollmentResponse) {
+      flags.loseEnrollmentResponse = false;
+      flags.preflightUnavailable = true; // The Gateway committed the binding before the response was lost.
+      request.socket.destroy();
+      return;
+    }
+    response.end(JSON.stringify({ keyId, bindingId, deviceId: data.deviceId, state: flags.deviceState,
       tunnelToken: 'fixture-not-a-real-tunnel-token', hostname: 'tds-fixture.example.test',
       endpoint: `http://127.0.0.1:${server.address().port}/mcp`, devspaceVersion: release.devspaceVersion,
       controlApiVersion: release.controlApiVersion }));
@@ -118,6 +130,85 @@ test('reinstall preserves an explicit suspended policy instead of reopening acce
   assert.equal(f.requests.length, requestsBefore, 'Repair must not contact the Gateway just to override an explicit local pause');
 });
 
+test('missing Tunnel credential recovery must retain an explicit pause even when the Gateway is active', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  await atomicJson(join(f.home, 'state.json'), { ...before, remoteAccess: 'suspended' });
+  await rm(join(f.home, 'tunnel.token'));
+  const repaired = await configureDevice({}, { home: f.home, startup: false });
+  assert.equal(repaired.remoteAccess, 'suspended');
+  const after = await loadState(f.home);
+  assert.equal(after.remoteAccess, 'suspended');
+  assert.equal(after.bindingId, before.bindingId);
+  assert.equal(after.deviceSecret, before.deviceSecret);
+  assert.ok((await readFile(join(f.home, 'tunnel.token'), 'utf8')).trim());
+});
+
+test('lost key-replacement response remains repairable from the tray using the same device identity', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  const replacementKey = `tds_${randomSecret()}`;
+  f.flags.loseEnrollmentResponse = true;
+  await assert.rejects(replaceAccessKey(replacementKey, f.home, { startup: false }), /gateway_unreachable/);
+  const status = await deviceStatus(f.home);
+  assert.equal(status.remoteAccess, 'not-enrolled');
+  assert.equal(trayState(status).repairEnabled, true, 'Pending Enrollment must expose a working recovery action');
+  const callsBeforeRetry = f.requests.length;
+  const recovered = await replaceAccessKey(replacementKey, f.home, { startup: false });
+  assert.equal(recovered.recoveredEnrollment, true);
+  assert.deepEqual(f.requests.slice(callsBeforeRetry).map(request => request.path), ['/v1/enroll'],
+    'Retry must not reject its already-bound key or release a second binding');
+  const after = await loadState(f.home);
+  assert.equal(after.accessKey, replacementKey);
+  assert.equal(after.deviceId, before.deviceId);
+  assert.equal(after.deviceSecret, before.deviceSecret);
+  assert.equal(after.ownerToken, before.ownerToken);
+  assert.deepEqual(after.roots, before.roots);
+});
+
+test('a pause requested during credential repair must not be overwritten by an older enrollment response', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await rm(join(f.home, 'tunnel.token'));
+  let entered;
+  let respond;
+  let pauseReachedGateway;
+  const enrollmentEntered = new Promise(resolve => { entered = resolve; });
+  const responseGate = new Promise(resolve => { respond = resolve; });
+  const pausePersisted = new Promise(resolve => { pauseReachedGateway = resolve; });
+  t.after(() => respond());
+  f.flags.beforeEnrollmentResponse = async () => { entered(); await responseGate; };
+  const repairing = configureDevice({}, { home: f.home, startup: false });
+  await enrollmentEntered;
+  const pausing = suspendRemoteAccess(f.home, {
+    deactivateRemoteStartup: async () => {},
+    control: async () => { pauseReachedGateway(); },
+  });
+  // Without a shared operation owner, pause commits while enrollment still has
+  // an old active snapshot. With one, pause safely runs after repair releases it.
+  await Promise.race([pausePersisted, sleep(500)]);
+  respond();
+  await Promise.all([repairing, pausing]);
+  assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
+});
+
+test('CLI can change Allowed Roots while paused without recreating or starting a runtime task',
+  { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  const additionalRoot = join(f.home, 'second-project');
+  await mkdir(additionalRoot);
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ['client/cli.mjs', '--home', f.home, 'roots', 'add', additionalRoot], { windowsHide: true, timeout: 30000 });
+  const result = JSON.parse(stdout);
+  assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
+  assert.deepEqual(result.roots, [f.project, additionalRoot]);
+  assert.match(result.note, /suspended/);
+});
+
 test('Access Key replacement validates first, preserves local identity and roots, then re-enrolls without reinstalling', async t => {
   const f = await fixture(t);
   const originalKey = `tds_${randomSecret()}`;
@@ -135,6 +226,91 @@ test('Access Key replacement validates first, preserves local identity and roots
   assert.equal(after.pendingAccessKey, undefined);
   const replacementRequests = f.requests.slice(-3).map(request => request.path);
   assert.deepEqual(replacementRequests, ['/v1/enrollment/preflight', '/v1/device/release', '/v1/enroll']);
+});
+
+test('missing Gateway key-switch capability produces actionable feedback without mutating existing identity', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  f.flags.preflightMissing = true;
+  await assert.rejects(replaceAccessKey(`tds_${randomSecret()}`, f.home, { startup: false }), { code: 'gateway_update_required' });
+  assert.deepEqual(await loadState(f.home), before);
+  assert.equal(f.requests.some(request => request.path === '/v1/device/release'), false);
+});
+
+test('resume releases the local pause only behind a suspended Gateway, before starting runtime', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  const events = [];
+  let gateway = 'active';
+  const result = await resumeRemoteAccess(f.home, {
+    control: async (_gateway, path) => {
+      events.push(path);
+      if (path.endsWith('/suspend')) { assert.equal((await loadState(f.home)).remoteAccess, 'suspended'); gateway = 'suspended'; }
+      if (path.endsWith('/resume')) gateway = 'active';
+    },
+    installServices: async () => { events.push('install'); assert.equal(gateway, 'suspended'); },
+    serviceAction: async action => {
+      events.push(action);
+      assert.equal((await loadState(f.home)).remoteAccess, 'active', 'The real runtime reads this persisted value on startup');
+      assert.equal(gateway, 'suspended', 'External access must remain closed while the runtime starts');
+    },
+    deviceStatus: async () => ({ localReady: true, ready: gateway === 'active', gateway }),
+  });
+  assert.deepEqual(events, process.platform === 'linux'
+    ? ['/v1/device/suspend', 'install', 'start', '/v1/device/resume']
+    : process.platform === 'win32'
+      ? ['/v1/device/suspend', 'enable', 'start', '/v1/device/resume']
+      : ['/v1/device/suspend', 'start', '/v1/device/resume']);
+  assert.equal(result.ready, true);
+});
+
+test('desktop resume recreates startup entries only when the retained entry is missing',
+  { skip: process.platform === 'linux' }, async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  const events = [];
+  let gateway = 'active';
+  let starts = 0;
+  const result = await resumeRemoteAccess(f.home, {
+    control: async (_gateway, path) => {
+      events.push(path);
+      if (path.endsWith('/suspend')) gateway = 'suspended';
+      if (path.endsWith('/resume')) gateway = 'active';
+    },
+    installServices: async () => { events.push('install'); },
+    serviceAction: async action => {
+      events.push(action);
+      if (action === 'start' && starts++ === 0) throw new Error('startup entry missing');
+    },
+    deviceStatus: async () => ({ localReady: starts > 1, ready: gateway === 'active' && starts > 1, gateway }),
+  });
+  assert.deepEqual(events, process.platform === 'win32'
+    ? ['/v1/device/suspend', 'enable', 'start', 'install', 'start', '/v1/device/resume']
+    : ['/v1/device/suspend', 'start', 'install', 'start', '/v1/device/resume']);
+  assert.equal(result.ready, true);
+});
+
+test('failed resume restores persisted pause before local cleanup', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  let stopped = false;
+  let reopened = false;
+  await assert.rejects(resumeRemoteAccess(f.home, {
+    control: async (_gateway, path) => { if (path.endsWith('/resume')) reopened = true; },
+    installServices: async () => {},
+    serviceAction: async action => {
+      if (action === 'start') throw new Error('test startup failure');
+      assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
+      stopped = true;
+    },
+  }), /test startup failure/);
+  assert.equal(stopped, true);
+  assert.equal(reopened, false);
+  assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
 });
 
 test('administrator issuance can be retried without losing the original employee credential', async t => {
@@ -210,6 +386,40 @@ test('Allowed Roots are explicit existing directories; gateway origin cannot car
   assert.equal(normalizeGateway('http://127.0.0.1:1234'), 'http://127.0.0.1:1234');
 });
 
+test('remote pause keeps desktop startup entries and disables Windows/Linux startup without deleting them', () => {
+  assert.equal(localPauseServiceAction('win32'), 'disable');
+  assert.equal(localPauseServiceAction('darwin'), 'stop');
+  assert.equal(localPauseServiceAction('linux'), 'disable');
+});
+
+test('Windows task removal retries a transient delete failure before surfacing an error', async () => {
+  const label = 'com.teamdevspace.0123456789abcdef.tunnel';
+  let deletes = 0;
+  await removeWindowsTask(label, { wait: async () => {}, runNative: async (_command, args) => {
+    if (args[0] === '/End') return { stdout: '' };
+    if (args[0] === '/Delete') {
+      deletes++;
+      if (deletes === 1) throw Object.assign(new Error('transient scheduler failure'), { code: 1 });
+      return { stdout: '' };
+    }
+    if (args[0] === '/Query') return { stdout: `"${label}","N/A","Ready"\n` };
+    throw new Error(`Unexpected command: ${args.join(' ')}`);
+  } });
+  assert.equal(deletes, 2);
+});
+
+test('Windows task removal never hides a persistent delete or permission failure', async () => {
+  const label = 'com.teamdevspace.0123456789abcdef.tunnel';
+  let deletes = 0;
+  await assert.rejects(removeWindowsTask(label, { attempts: 3, wait: async () => {}, runNative: async (_command, args) => {
+    if (args[0] === '/End') return { stdout: '' };
+    if (args[0] === '/Delete') { deletes++; throw Object.assign(new Error('access denied'), { code: 1 }); }
+    if (args[0] === '/Query') return { stdout: `"${label}","N/A","Ready"\n` };
+    throw new Error(`Unexpected command: ${args.join(' ')}`);
+  } }), /access denied/);
+  assert.equal(deletes, 3);
+});
+
 test('native startup configuration contains no credentials, no SYSTEM/root elevation, and supports XML-special paths', () => {
   const state = { deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(), accessKey: `tds_${randomSecret()}`,
     ports: { devspace: 47670, bridge: 47770, metrics: 47870 } };
@@ -218,6 +428,7 @@ test('native startup configuration contains no credentials, no SYSTEM/root eleva
   const task = windowsTaskXml(state, 'runtime', home, 'S-1-5-21-123', root);
   assert.ok(task.includes('InteractiveToken'));
   assert.ok(task.includes('LeastPrivilege'));
+  assert.ok(task.includes('<SecurityDescriptor>D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;S-1-5-21-123)</SecurityDescriptor>'));
   assert.ok(task.includes('&amp;'));
   assert.ok(task.includes('tds-launcher.exe'));
   assert.ok(task.includes('runtime.log'));

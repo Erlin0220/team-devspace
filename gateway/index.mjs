@@ -136,7 +136,7 @@ async function suspendDevice(request, store) {
 async function releaseDevice(request, env, store) {
   let { row } = await deviceIdentity(request, store, ['active', 'suspended', 'resetting']);
   if (row.state !== 'resetting') {
-    row = await store.disable(row.id, 'reset');
+    row = await store.disable(row.id, 'reset', row.binding_id);
     if (!row) throw new HttpError(409, 'access_lifecycle_changed');
   }
   try { await new Cloudflare(env).remove(row); }
@@ -254,7 +254,7 @@ export async function reconcileCleanup(env, dependencies = {}) {
   let completed = 0;
   for (let row of await store.cleanupCandidates()) {
     const operation = row.state === 'revoked' ? 'revoke' : 'reset';
-    if (row.state === 'provisioning') row = await store.disable(row.id, operation);
+    if (row.state === 'provisioning') row = await store.expireProvisioning(row);
     if (!row) continue;
     try {
       await cloud.remove(row);

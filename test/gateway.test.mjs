@@ -7,6 +7,7 @@ import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { reconcileCleanup, requestOperation } from '../gateway/index.mjs';
+import { KeyStore } from '../gateway/store.mjs';
 
 const gatewayScript = (await build({ entryPoints: [resolve('gateway/index.mjs')], bundle: true,
   format: 'esm', platform: 'browser', write: false, sourcemap: false })).outputFiles[0].text;
@@ -320,6 +321,59 @@ test('offline is explicit; revoke fails closed even when cloud cleanup fails and
   assert.ok(!JSON.stringify(listed).includes(device.deviceSecret));
 });
 
+test('stale provisioning cleanup compares actual ISO timestamps in D1 and preserves recent bindings', async t => {
+  const f = await fixture(t);
+  const stale = await f.issue('Stale provisioning');
+  const recent = await f.issue('Recent provisioning');
+  for (const [key, age] of [[stale, '-20 minutes'], [recent, '-1 minute']]) {
+    await f.db.prepare("UPDATE access_keys SET state = 'provisioning', binding_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) WHERE id = ?")
+      .bind(randomUUID(), age, key.id).run();
+  }
+  const store = new KeyStore(f.db);
+  assert.deepEqual((await store.cleanupCandidates()).map(row => row.id), [stale.id]);
+  const removed = [];
+  await reconcileCleanup({}, { store, cloud: { remove: async row => removed.push(row.id) } });
+  assert.deepEqual(removed, [stale.id]);
+  assert.equal((await store.byId(stale.id)).state, 'issued');
+  assert.equal((await store.byId(recent.id)).state, 'provisioning');
+});
+
+test('cleanup cannot reset a binding that recovered or made progress after the stale scan', async t => {
+  const f = await fixture(t);
+  const active = await f.issue('Recovered during cleanup scan');
+  const progressing = await f.issue('Retry during cleanup scan');
+  for (const key of [active, progressing]) {
+    await f.db.prepare("UPDATE access_keys SET state = 'provisioning', binding_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-20 minutes') WHERE id = ?")
+      .bind(randomUUID(), key.id).run();
+  }
+  const store = new KeyStore(f.db);
+  const snapshot = await store.cleanupCandidates();
+  store.cleanupCandidates = async () => {
+    await f.db.prepare("UPDATE access_keys SET state = 'active', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").bind(active.id).run();
+    await f.db.prepare("UPDATE access_keys SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").bind(progressing.id).run();
+    return snapshot;
+  };
+  const removed = [];
+  await reconcileCleanup({}, { store, cloud: { remove: async row => removed.push(row.id) } });
+  assert.deepEqual(removed, [], 'A stale scan is not authority to disable a recovered/current binding');
+  assert.equal((await store.byId(active.id)).state, 'active');
+  assert.equal((await store.byId(progressing.id)).state, 'provisioning');
+});
+
+test('a stale device release cannot disable the replacement binding after an administrator reset', async t => {
+  const f = await fixture(t);
+  const key = await f.issue('Rebound device');
+  const previous = await f.request('/v1/enroll', key.accessKey, f.device()).then(response => response.json());
+  await f.request(`/v1/admin/keys/${key.id}/reset`, f.adminToken, {});
+  const current = await f.request('/v1/enroll', key.accessKey, f.device()).then(response => response.json());
+  const store = new KeyStore(f.db);
+  const staleRelease = await store.disable(key.id, 'reset', previous.bindingId);
+  assert.equal(staleRelease, null, 'Authorization for a previous binding must not mutate its replacement');
+  const state = await store.byId(key.id);
+  assert.equal(state.state, 'active');
+  assert.equal(state.binding_id, current.bindingId);
+});
+
 test('scheduled cleanup reconciles pending and stale provisioning without an administrator retry', async () => {
   const removed = [];
   const finished = [];
@@ -329,7 +383,7 @@ test('scheduled cleanup reconciles pending and stale provisioning without an adm
   ];
   const store = {
     cleanupCandidates: async () => rows,
-    disable: async (id, operation) => ({ ...rows.find(row => row.id === id), state: 'resetting', operation }),
+    expireProvisioning: async row => ({ ...row, state: 'resetting' }),
     finishCleanup: async (id, bindingId, operation) => { finished.push({ id, bindingId, operation }); return true; },
   };
   const cloud = { remove: async row => { removed.push(row.id); } };

@@ -21,6 +21,15 @@ $activeFile = Join-Path $InstallPath 'active.json'
 $stateHome = if ($env:TEAM_DEVSPACE_HOME) { [IO.Path]::GetFullPath($env:TEAM_DEVSPACE_HOME) }
   else { Join-Path $env:LOCALAPPDATA 'TeamDevSpace' }
 $shaPattern = '^[a-f0-9]{64}$'
+# NSIS is a 32-bit process, so its Windows PowerShell child is also commonly
+# 32-bit. In that process, System32 is redirected to SysWOW64 and the real
+# Task Scheduler store under System32\Tasks appears to be missing. Sysnative
+# is the supported WOW64 escape hatch for reaching the native system directory.
+$nativeSystemDirectory = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+  Join-Path $env:SystemRoot 'Sysnative'
+} else {
+  Join-Path $env:SystemRoot 'System32'
+}
 
 function Write-Step([string]$Message) {
   Write-Host "[Team DevSpace] $Message"
@@ -53,7 +62,7 @@ function Get-OwnerTaskNames {
 }
 
 function Get-OwnedLifecycleTaskNames {
-  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  $schtasks = Join-Path $nativeSystemDirectory 'schtasks.exe'
   $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
   $names = @()
   $savedPreference = $ErrorActionPreference
@@ -82,17 +91,20 @@ function Get-KnownTaskNames {
 }
 
 function Test-LegacyTaskNeedsElevation([string]$Name) {
-  $taskFile = Join-Path (Join-Path $env:SystemRoot 'System32\Tasks') $Name
-  if (-not (Test-Path -LiteralPath $taskFile)) { return $false }
   try {
-    $owner = (Get-Acl -LiteralPath $taskFile).Owner
-    $ownerSid = ([Security.Principal.NTAccount]::new($owner)).Translate([Security.Principal.SecurityIdentifier]).Value
-    return $ownerSid -in @('S-1-5-32-544', 'S-1-5-18')
+    # Query Task Scheduler through its own API instead of inspecting
+    # System32\Tasks. NSIS launches a 32-bit PowerShell process on x64 Windows,
+    # where filesystem redirection can make the task-file view misleading.
+    $service = New-Object -ComObject 'Schedule.Service'
+    $service.Connect()
+    $registered = $service.GetFolder('\').GetTask($Name)
+    $owner = [string]$registered.GetSecurityDescriptor(1) # OWNER_SECURITY_INFORMATION
+    return $owner -in @('O:BA', 'O:SY')
   } catch { return $false }
 }
 
 function Remove-KnownStartupEntries {
-  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+  $schtasks = Join-Path $nativeSystemDirectory 'schtasks.exe'
   foreach ($name in @(Get-KnownTaskNames)) {
     # Windows PowerShell 5 can promote native stderr to a terminating error when
     # ErrorActionPreference=Stop. Missing tasks are expected here, so inspect the
@@ -112,11 +124,16 @@ function Remove-KnownStartupEntries {
 }
 
 function Invoke-LegacyTaskCleanupIfNeeded {
-  $legacy = @(Get-KnownTaskNames | Where-Object { Test-LegacyTaskNeedsElevation $_ })
+  $known = @(Get-KnownTaskNames)
+  $legacy = @($known | Where-Object { Test-LegacyTaskNeedsElevation $_ })
   if ($legacy.Count -eq 0) { return }
   Write-Step 'Migrating legacy administrator-owned startup tasks once...'
-  $schtasks = Join-Path $env:SystemRoot 'System32\schtasks.exe'
-  $cmd = Join-Path $env:SystemRoot 'System32\cmd.exe'
+  # Launch the elevated helper through Sysnative when this bootstrap is running
+  # under WOW64, but use the canonical System32 path inside that 64-bit helper.
+  # The Sysnative alias exists only for 32-bit processes and is not resolvable
+  # after cmd.exe itself has crossed into the native 64-bit view.
+  $schtasks = Join-Path (Join-Path $env:SystemRoot 'System32') 'schtasks.exe'
+  $cmd = Join-Path $nativeSystemDirectory 'cmd.exe'
   $commands = foreach ($name in $legacy) {
     # Names are derived only from validated Team DevSpace lifecycle labels.
     "`"$schtasks`" /End /TN `"$name`" >nul 2>&1 & `"$schtasks`" /Delete /TN `"$name`" /F >nul 2>&1 || exit /b 1"
@@ -252,7 +269,7 @@ function Receive-Artifact([object]$Component) {
 }
 
 function Expand-VerifiedArchive([string]$Archive, [string]$Destination) {
-  $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+  $tar = Join-Path $nativeSystemDirectory 'tar.exe'
   $entries = & $tar -tzf $Archive
   if ($LASTEXITCODE -ne 0) { throw "Cannot inspect artifact archive: $Archive" }
   foreach ($entry in $entries) {

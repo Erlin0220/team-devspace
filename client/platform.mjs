@@ -130,7 +130,7 @@ export function windowsTaskXml(state, component, home, sid, root = installRoot) 
     '--env', 'NODE_OPTIONS=', '--', program, ...componentArguments(component, home, state, root)];
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-<RegistrationInfo><Description>Team DevSpace ${xml(component)}; runs only in this employee session.</Description></RegistrationInfo>
+<RegistrationInfo><Description>Team DevSpace ${xml(component)}; runs only in this employee session.</Description><SecurityDescriptor>D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;${xml(sid)})</SecurityDescriptor></RegistrationInfo>
 <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${xml(sid)}</UserId></LogonTrigger></Triggers>
 <Principals><Principal id="Employee"><UserId>${xml(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>10</Count></RestartOnFailure></Settings>
@@ -166,8 +166,7 @@ async function native(command, args, allowMissing = false) {
   try { return await exec(executable, args, { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 }); }
   catch (error) {
     if (allowMissing) return null;
-    const detail = process.platform === 'win32' ? ''
-      : String(error.stderr ?? error.stdout ?? '').trim().replace(/\s+/g, ' ').slice(0, 240);
+    const detail = String(error.stderr ?? error.stdout ?? '').trim().replace(/\s+/g, ' ').slice(0, 240);
     throw new Error(`${command} ${args.join(' ')} failed (${error.code ?? 'unknown'})${detail ? `: ${detail}` : ''}. Check local startup permissions; no SYSTEM/root fallback is used.`);
   }
 }
@@ -177,6 +176,30 @@ async function windowsSid() {
   const sid = /S-1-5-[0-9-]+/.exec(result.stdout)?.[0];
   if (!sid) throw new Error('Cannot resolve current Windows user');
   return sid;
+}
+
+async function windowsTaskRegistered(label, runNative = native) {
+  const listing = await runNative('schtasks.exe', ['/Query', '/FO', 'CSV', '/NH']);
+  return windowsTaskNames(listing.stdout).some(name => name.toLowerCase() === label.toLowerCase());
+}
+
+export async function removeWindowsTask(label, { runNative = native, wait = sleep, attempts = 4 } = {}) {
+  await runNative('schtasks.exe', ['/End', '/TN', label], true);
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await runNative('schtasks.exe', ['/Delete', '/TN', label, '/F']);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!await windowsTaskRegistered(label, runNative)) return;
+      if (attempt + 1 < attempts) {
+        await wait(150 * (attempt + 1));
+        await runNative('schtasks.exe', ['/End', '/TN', label], true);
+      }
+    }
+  }
+  throw lastError;
 }
 
 export async function installServices(state, home = stateHome(), root = installRoot, scope = STARTUP_COMPONENTS) {
@@ -199,8 +222,7 @@ export async function installServices(state, home = stateHome(), root = installR
     const currentLabels = new Set(scope.map(component => serviceLabel(state, component, 'win32')));
     for (const stale of await windowsOwnedLifecycleLabels(sid, home, scope)) {
       if (currentLabels.has(stale)) continue;
-      await native('schtasks.exe', ['/End', '/TN', stale]);
-      await native('schtasks.exe', ['/Delete', '/TN', stale, '/F']);
+      await removeWindowsTask(stale);
     }
     if (disabled.length) await serviceAction('remove', state, home, disabled);
     for (const component of components) {
@@ -277,8 +299,9 @@ async function waitForStopped(state, components) {
 }
 
 export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS) {
-  if (!['start', 'stop', 'restart', 'disable', 'remove'].includes(action)) throw new Error('Unknown service action');
-  if (action === 'disable' && process.platform !== 'linux') throw new Error('Disable without removing startup is only supported on Linux');
+  if (!['start', 'stop', 'restart', 'enable', 'disable', 'remove'].includes(action)) throw new Error('Unknown service action');
+  if (action === 'disable' && !['win32', 'linux'].includes(process.platform)) throw new Error('Disable without removing startup is unsupported on this platform');
+  if (action === 'enable' && process.platform !== 'win32') throw new Error('Explicit startup enable is only required on Windows');
   if (action === 'restart') {
     await serviceAction('stop', state, home, components);
     return serviceAction('start', state, home, components);
@@ -300,8 +323,13 @@ export async function serviceAction(action, state, home = stateHome(), component
         for (const ownedLabel of labels) {
           const existing = await native('schtasks.exe', ['/Query', '/TN', ownedLabel, '/XML'], true);
           if (existing) {
-            await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
-            if (action === 'remove') await native('schtasks.exe', ['/Delete', '/TN', ownedLabel, '/F']);
+            if (action === 'remove') await removeWindowsTask(ownedLabel);
+            else if (action === 'disable') {
+              await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
+              await native('schtasks.exe', ['/Change', '/TN', ownedLabel, '/DISABLE']);
+            } else if (action === 'enable') {
+              await native('schtasks.exe', ['/Change', '/TN', ownedLabel, '/ENABLE']);
+            } else await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
           }
         }
       }

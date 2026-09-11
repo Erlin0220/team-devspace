@@ -84,6 +84,10 @@ if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [strin
     !windowsBootstrap.includes("Write-AtomicJson $activeFile $next") ||
     !windowsBootstrap.includes("ValidateSet('Install', 'Uninstall')") ||
     !windowsBootstrap.includes('Remove-KnownStartupEntries') || !windowsBootstrap.includes('Invoke-LegacyTaskCleanupIfNeeded') ||
+    !windowsBootstrap.includes("[Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess") ||
+    !windowsBootstrap.includes("Join-Path $env:SystemRoot 'Sysnative'") ||
+    !windowsBootstrap.includes("New-Object -ComObject 'Schedule.Service'") ||
+    !windowsBootstrap.includes('GetSecurityDescriptor(1)') ||
     !windowsBootstrap.includes("Start-Process -FilePath $cmd -Verb RunAs") ||
     !windowsBootstrap.includes('exit 10') ||
     !windowsInstaller.includes('$ResultCode == 10') ||

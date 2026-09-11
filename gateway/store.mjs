@@ -54,13 +54,15 @@ export class KeyStore {
     return result.meta.changes === 1;
   }
 
-  async disable(id, operation) {
+  disable(id, operation, expectedBindingId = null) {
     const next = operation === 'revoke' ? 'revoked' : 'resetting';
-    const result = await this.db.prepare(`UPDATE access_keys SET state = ?, cleanup_pending = 1,
+    // Device-authorized changes apply only to the authenticated binding. Return
+    // that exact mutation, not a later read that could observe a replacement.
+    return this.db.prepare(`UPDATE access_keys SET state = ?, cleanup_pending = 1,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ? AND (? = 'revoked' OR state != 'revoked')`)
-      .bind(next, id, next).run();
-    return result.meta.changes === 1 ? this.byId(id) : null;
+      WHERE id = ? AND (? = 'revoked' OR state != 'revoked')
+      AND (? IS NULL OR binding_id = ?) RETURNING *`)
+      .bind(next, id, next, expectedBindingId, expectedBindingId).first();
   }
 
   async suspend(id, bindingId) {
@@ -96,9 +98,19 @@ export class KeyStore {
     return result.meta.changes === 1;
   }
 
+  expireProvisioning(row) {
+    // Claim only the exact stale snapshot. A repair, rebind or activation that
+    // won the race must never be undone by a delayed cleanup scan.
+    return this.db.prepare(`UPDATE access_keys SET state = 'resetting', cleanup_pending = 1,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND binding_id IS ? AND state = 'provisioning' AND updated_at = ?
+      AND julianday(updated_at) < julianday('now', '-15 minutes') RETURNING *`)
+      .bind(row.id, row.binding_id, row.updated_at).first();
+  }
+
   async cleanupCandidates(limit = 10) {
     const rows = await this.db.prepare(`SELECT * FROM access_keys
-      WHERE cleanup_pending = 1 OR (state = 'provisioning' AND updated_at < datetime('now', '-15 minutes'))
+      WHERE cleanup_pending = 1 OR (state = 'provisioning' AND julianday(updated_at) < julianday('now', '-15 minutes'))
       ORDER BY updated_at LIMIT ?`).bind(limit).all();
     return rows.results;
   }

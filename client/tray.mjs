@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { copyDiagnosticReport, openLogs, restartTeamDevSpace, resumeRemoteAccess,
   stopTeamDevSpace, suspendRemoteAccess } from './control.mjs';
 import { deviceStatus, macSetupDialog, promptReplacementAccessKey, repairDevice, replaceAccessKey } from './setup.mjs';
@@ -12,7 +14,7 @@ const ACTIVITY_TEXT = {
   resume: '正在恢复远程访问…',
   restart: '正在重启连接服务…',
   repair: '正在修复连接…',
-  'switch-key': '正在更新 Access Key…',
+  'switch-key': '等待输入 Access Key…',
   exit: '正在关闭 Team DevSpace…',
 };
 
@@ -63,7 +65,7 @@ function traySummary(status, gatewayState, desiredRemoteAccess) {
   return { visual: 'partial', text: 'Team DevSpace 部分异常' };
 }
 
-export function trayState(status, { busy = false, activity, alert, diagnosticsCopied = false } = {}) {
+export function trayState(status, { busy = false, exiting = false, activity, alert, diagnosticsCopied = false } = {}) {
   if (!status) return {
     status: 'stopped',
     summary: 'Team DevSpace 未连接',
@@ -80,7 +82,7 @@ export function trayState(status, { busy = false, activity, alert, diagnosticsCo
     logsEnabled: true,
     diagnosticsEnabled: true,
     diagnosticsText: diagnosticsCopied ? '诊断信息已复制' : '复制诊断信息',
-    exitEnabled: !busy,
+    exitEnabled: !exiting,
   };
   const gatewayState = status.gateway ?? status.remoteAccess;
   const desiredRemoteAccess = status.desiredRemoteAccess ?? status.remoteAccess;
@@ -102,11 +104,12 @@ export function trayState(status, { busy = false, activity, alert, diagnosticsCo
     switchKeyText: enrolled ? '更换 Access Key…' : '完成设置…',
     switchKeyEnabled: !busy && (enrolled || gatewayState === 'not-enrolled'),
     restartEnabled: !busy && controllable && !desiredSuspended && !gatewaySuspended,
-    repairEnabled: !busy && controllable && !desiredSuspended && !gatewaySuspended,
+    repairEnabled: !busy && (Boolean(status.enrollmentPending) ||
+      (controllable && !desiredSuspended && !gatewaySuspended)),
     logsEnabled: true,
     diagnosticsEnabled: true,
     diagnosticsText: diagnosticsCopied ? '诊断信息已复制' : '复制诊断信息',
-    exitEnabled: !busy,
+    exitEnabled: !exiting,
   };
 }
 
@@ -119,9 +122,18 @@ function actionError(action, error) {
   return `${ACTION_TEXT[action] ?? '操作'}失败：${errorText(error)}`;
 }
 
+export async function trayInstanceId(home = stateHome()) {
+  const canonical = await realpath(home).catch(error => {
+    if (error.code === 'ENOENT') return resolve(home);
+    throw error;
+  });
+  return createHash('sha256').update(process.platform === 'win32' ? canonical.toLowerCase() : canonical).digest('hex');
+}
+
 export async function runTray(home = stateHome(), options = {}) {
   const helper = options.helper ?? trayExecutable(options.root);
-  const child = spawn(helper, options.helperArgs ?? [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(helper, options.helperArgs ?? [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: await trayInstanceId(home) } });
   let helperClosed = false;
   let currentStatus = null;
   let mutationBusy = false;
@@ -130,8 +142,13 @@ export async function runTray(home = stateHome(), options = {}) {
   let refreshPromise = null;
   let mutationPromise = Promise.resolve();
   let exiting = false;
+  let exitRequested = false;
+  let operationAbort;
+  let exitPromise = Promise.resolve();
   let interval;
   let diagnosticsTimer;
+  let shutdownTimer;
+  const utilities = new Map();
 
   child.stdin.on('error', () => {});
   child.once('exit', () => { helperClosed = true; });
@@ -139,7 +156,7 @@ export async function runTray(home = stateHome(), options = {}) {
     if (!helperClosed && child.stdin.writable && !child.stdin.destroyed) child.stdin.write(`${JSON.stringify(state)}\n`);
   };
   const present = extra => send(trayState(currentStatus, {
-    busy: mutationBusy, activity: currentActivity, ...extra,
+    busy: mutationBusy || exitRequested, exiting: exitRequested, activity: currentActivity, ...extra,
   }));
 
   const operations = options.operations ?? {
@@ -148,13 +165,14 @@ export async function runTray(home = stateHome(), options = {}) {
     resume: () => resumeRemoteAccess(home),
     restart: () => restartTeamDevSpace(home),
     repair: () => repairDevice(home, { preserveTray: true }),
-    'switch-key': async () => {
+    'switch-key': async ({ signal, onProgress }) => {
       if (process.platform === 'darwin' && currentStatus?.remoteAccess === 'not-enrolled') {
-        return macSetupDialog(home, { preserveTray: true });
+        return macSetupDialog(home, { preserveTray: true, signal });
       }
-      const accessKey = await promptReplacementAccessKey();
-      if (!accessKey) return { cancelled: true };
-      return replaceAccessKey(accessKey, home);
+      const accessKey = await promptReplacementAccessKey({ signal });
+      if (!accessKey || signal.aborted) return { cancelled: true };
+      onProgress('正在验证新的 Access Key…');
+      return replaceAccessKey(accessKey, home, { onProgress });
     },
     logs: () => openLogs(home),
     diagnostics: () => copyDiagnosticReport(home),
@@ -162,7 +180,7 @@ export async function runTray(home = stateHome(), options = {}) {
   };
 
   const refresh = async () => {
-    if (mutationBusy || exiting) return currentStatus;
+    if (mutationBusy || exitRequested) return currentStatus;
     if (refreshPromise) return refreshPromise;
     const startedAt = generation;
     refreshPromise = (async () => {
@@ -187,7 +205,7 @@ export async function runTray(home = stateHome(), options = {}) {
   };
 
   const runCheck = () => {
-    if (mutationBusy || exiting) return;
+    if (mutationBusy || exitRequested) return;
     mutationBusy = true;
     currentActivity = ACTIVITY_TEXT.check;
     generation++;
@@ -200,42 +218,7 @@ export async function runTray(home = stateHome(), options = {}) {
         currentStatus = null;
         alert = actionError('check', error);
       } finally {
-        mutationBusy = false;
-        currentActivity = undefined;
-        generation++;
-        present(alert ? { alert } : undefined);
-      }
-    })();
-  };
-
-  const runMutation = action => {
-    if (mutationBusy || exiting) return;
-    mutationBusy = true;
-    currentActivity = ACTIVITY_TEXT[action] ?? '正在执行操作…';
-    generation++;
-    present();
-    mutationPromise = (async () => {
-      let alert;
-      try {
-        const result = await operations[action]();
-        if (action === 'exit') {
-          exiting = true;
-          if (interval) clearInterval(interval);
-          currentActivity = '本地服务已停止，正在退出…';
-          present();
-          child.stdin.end();
-          return result;
-        }
-        currentStatus = await operations.status();
-        process.stdout.write(`[Team DevSpace tray] ${action}: complete\n`);
-        return result;
-      } catch (error) {
-        try { currentStatus = await operations.status(); } catch {}
-        alert = actionError(action, error);
-        process.stderr.write(`[Team DevSpace tray] ${action}: ${alert}\n`);
-        return null;
-      } finally {
-        if (!exiting) {
+        if (!exitRequested) {
           mutationBusy = false;
           currentActivity = undefined;
           generation++;
@@ -245,22 +228,93 @@ export async function runTray(home = stateHome(), options = {}) {
     })();
   };
 
-  const runUtility = async action => {
-    if (exiting) return;
-    try {
-      await operations[action]();
-      if (action === 'diagnostics') {
-        clearTimeout(diagnosticsTimer);
-        present({ diagnosticsCopied: true });
-        diagnosticsTimer = setTimeout(() => present(), 1400);
-        diagnosticsTimer.unref?.();
+  const runMutation = action => {
+    if (mutationBusy || exitRequested) return;
+    mutationBusy = true;
+    operationAbort = new AbortController();
+    currentActivity = ACTIVITY_TEXT[action] ?? '正在执行操作…';
+    generation++;
+    present();
+    mutationPromise = (async () => {
+      let alert;
+      try {
+        const result = await operations[action]({ signal: operationAbort.signal,
+          onProgress: message => { if (!exitRequested) { currentActivity = message; present(); } } });
+        if (exitRequested) return result;
+        currentStatus = await operations.status();
+        process.stdout.write(`[Team DevSpace tray] ${action}: ${result?.cancelled ? 'cancelled' : 'complete'}\n`);
+        return result;
+      } catch (error) {
+        if (exitRequested && error.name === 'AbortError') return null;
+        if (!exitRequested) { try { currentStatus = await operations.status(); } catch {} }
+        alert = actionError(action, error);
+        process.stderr.write(`[Team DevSpace tray] ${action}: ${alert}\n`);
+        return null;
+      } finally {
+        operationAbort = undefined;
+        if (!exitRequested) {
+          mutationBusy = false;
+          currentActivity = undefined;
+          generation++;
+          present(alert ? { alert } : undefined);
+        }
       }
-      process.stdout.write(`[Team DevSpace tray] ${action}: complete\n`);
-    } catch (error) {
-      const message = actionError(action, error);
-      present({ alert: message });
-      process.stderr.write(`[Team DevSpace tray] ${action}: ${message}\n`);
-    }
+    })();
+  };
+
+  // Exit is not an ordinary mutation: a pending input dialog must not disable it.
+  // Cancel only the prompt; an already-started binding transaction must settle
+  // before stopping services, or it could restart them after the user exits.
+  const requestExit = () => {
+    if (exitRequested) return;
+    exitRequested = true;
+    operationAbort?.abort();
+    currentActivity = mutationBusy ? '正在结束当前操作并退出…' : ACTIVITY_TEXT.exit;
+    generation++;
+    present();
+    exitPromise = (async () => {
+      try {
+        await mutationPromise;
+        await operations.exit();
+        exiting = true;
+        clearInterval(interval);
+        clearTimeout(diagnosticsTimer);
+        currentActivity = '本地服务已停止，正在退出…';
+        present();
+        child.stdin.end();
+        shutdownTimer = setTimeout(() => { if (!helperClosed) child.kill(); }, 3000);
+        shutdownTimer.unref();
+      } catch (error) {
+        exitRequested = false;
+        mutationBusy = false;
+        currentActivity = undefined;
+        generation++;
+        present({ alert: actionError('exit', error) });
+      }
+    })();
+  };
+
+  const runUtility = action => {
+    if (exitRequested || utilities.has(action)) return;
+    const pending = (async () => {
+      try {
+        await operations[action]();
+        if (exitRequested) return;
+        if (action === 'diagnostics') {
+          clearTimeout(diagnosticsTimer);
+          present({ diagnosticsCopied: true });
+          diagnosticsTimer = setTimeout(() => present(), 1400);
+          diagnosticsTimer.unref?.();
+        }
+        process.stdout.write(`[Team DevSpace tray] ${action}: complete\n`);
+      } catch (error) {
+        const message = actionError(action, error);
+        if (!exitRequested) present({ alert: message });
+        process.stderr.write(`[Team DevSpace tray] ${action}: ${message}\n`);
+      }
+    })();
+    utilities.set(action, pending);
+    void pending.finally(() => utilities.delete(action));
   };
 
   createInterface({ input: child.stdout }).on('line', line => {
@@ -270,19 +324,23 @@ export async function runTray(home = stateHome(), options = {}) {
       else if (event.event === 'protocol-error') process.stderr.write('[Team DevSpace tray] native protocol error\n');
       else if (event.event === 'menu' && event.action === 'check') runCheck();
       else if (event.event === 'menu' && ['logs', 'diagnostics'].includes(event.action)) void runUtility(event.action);
-      else if (event.event === 'menu' && ['suspend', 'resume', 'restart', 'repair', 'switch-key', 'exit'].includes(event.action)) runMutation(event.action);
+      else if (event.event === 'menu' && event.action === 'exit') requestExit();
+      else if (event.event === 'menu' && ['suspend', 'resume', 'restart', 'repair', 'switch-key'].includes(event.action)) runMutation(event.action);
     } catch {}
   });
   child.stderr.on('data', chunk => process.stderr.write(chunk));
-  interval = setInterval(() => void refresh(), options.refreshInterval ?? 15000);
+  interval = setInterval(() => void refresh(), options.refreshInterval ?? 5000);
   interval.unref();
 
   const exit = await new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolve({ code, signal }));
   });
-  if (interval) clearInterval(interval);
-  if (diagnosticsTimer) clearTimeout(diagnosticsTimer);
+  clearInterval(interval);
+  clearTimeout(diagnosticsTimer);
+  clearTimeout(shutdownTimer);
+  operationAbort?.abort();
   await mutationPromise;
-  if (exit.signal || exit.code !== 0) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
+  await exitPromise;
+  if (!exiting && (exit.signal || exit.code !== 0)) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
 }

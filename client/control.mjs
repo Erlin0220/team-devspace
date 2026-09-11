@@ -7,14 +7,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
 import { COMPONENTS, installServices, serviceAction, serviceLabel } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
-import { atomicJson, installRoot, loadState, stateHome } from './state.mjs';
+import { atomicJson, installRoot, loadState, privateDirectory, stateHome } from './state.mjs';
+import { openWindowsDirectory } from './windows-desktop.mjs';
+import { withDeviceOperation } from './operation.mjs';
 
 const exec = promisify(execFile);
 const REDACTED = '<REDACTED>';
 
 async function launchDetached(command, args) {
   await new Promise((resolveLaunch, reject) => {
-    const child = spawn(command, args, { windowsHide: true, detached: true, stdio: 'ignore' });
+    const child = spawn(command, args, { windowsHide: false, detached: true, stdio: 'ignore' });
     child.once('error', reject);
     child.once('spawn', () => { child.unref(); resolveLaunch(); });
   });
@@ -30,10 +32,19 @@ async function saveRemoteAccess(state, home, remoteAccess) {
   return next;
 }
 
-const deactivateRemoteStartup = (state, home) =>
-  serviceAction(process.platform === 'linux' ? 'disable' : 'remove', state, home, COMPONENTS);
+export function localPauseServiceAction(platform = process.platform) {
+  if (platform === 'win32' || platform === 'linux') return 'disable';
+  return 'stop';
+}
 
-export async function suspendRemoteAccess(home = stateHome(), dependencies = {}) {
+const deactivateRemoteStartup = (state, home) =>
+  serviceAction(localPauseServiceAction(), state, home, COMPONENTS);
+
+export function suspendRemoteAccess(home = stateHome(), dependencies = {}) {
+  return withDeviceOperation(home, () => suspendRemoteAccessUnlocked(home, dependencies));
+}
+
+async function suspendRemoteAccessUnlocked(home = stateHome(), dependencies = {}) {
   const deactivate = dependencies.deactivateRemoteStartup ?? deactivateRemoteStartup;
   const sendControl = dependencies.control ?? control;
   let state = await loadState(home);
@@ -73,37 +84,83 @@ export async function rollbackResumeFailure(error, suspendGateway, cleanupLocal)
   throw new Error(`Remote access remains suspended: ${error.message}`);
 }
 
-export async function resumeRemoteAccess(home = stateHome()) {
-  let state = await loadState(home);
-  try {
-    await installServices({ ...state, remoteAccess: 'active' }, home, undefined, COMPONENTS);
-    await serviceAction('start', state, home, COMPONENTS);
-    const deadline = Date.now() + 60000;
-    let status;
-    do {
-      status = await deviceStatus(home);
-      if (status.localReady && ['suspended', 'active'].includes(status.gateway)) break;
-      await sleep(1000);
-    } while (Date.now() < deadline);
-    if (!status?.localReady) throw new Error('Local runtime, bridge or tunnel is not ready.');
-    await control(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
-    state = await saveRemoteAccess(state, home, 'active');
-  } catch (error) {
-    await rollbackResumeFailure(error,
-      () => control(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
-      () => deactivateRemoteStartup(state, home));
-  }
-  return deviceStatus(home);
+export function resumeRemoteAccess(home = stateHome(), dependencies = {}) {
+  return withDeviceOperation(home, () => resumeRemoteAccessUnlocked(home, dependencies));
 }
 
-export async function restartTeamDevSpace(home = stateHome()) {
+async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {}) {
+  const sendControl = dependencies.control ?? control;
+  const install = dependencies.installServices ?? installServices;
+  const service = dependencies.serviceAction ?? serviceAction;
+  const statusOf = dependencies.deviceStatus ?? deviceStatus;
+  let state = await loadState(home);
+  try {
+    // The runtime enforces the persisted pause. Start it only after confirming
+    // Gateway denial, then lift the local pause before spawning the process.
+    await sendControl(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
+    state = await saveRemoteAccess(state, home, 'active');
+    if (process.platform === 'linux') {
+      await install(state, home, undefined, COMPONENTS);
+      await service('start', state, home, COMPONENTS);
+    } else {
+      // Windows keeps stable Task Scheduler entries and disables them while paused.
+      // macOS keeps its LaunchAgent files and boots jobs out of the user domain.
+      // Older suspended installs may have removed entries; repair them only when
+      // normal reactivation proves they are missing or unusable.
+      try {
+        if (process.platform === 'win32') await service('enable', state, home, COMPONENTS);
+        await service('start', state, home, COMPONENTS);
+      } catch {
+        await install(state, home, undefined, COMPONENTS);
+        await service('start', state, home, COMPONENTS);
+      }
+    }
+    const deadline = Date.now() + 60000;
+    let resumed = false;
+    let readinessError;
+    do {
+      const status = await statusOf(home);
+      if (status.localReady && ['suspended', 'active'].includes(status.gateway)) {
+        try {
+          // cloudflared /ready means an edge connection, not that the Gateway
+          // can already reach this device. Keep denial until its probe succeeds.
+          await sendControl(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
+          resumed = true;
+          break;
+        } catch (error) {
+          if (!['device_not_ready', 'device_offline'].includes(error.code)) throw error;
+          readinessError = error;
+        }
+      }
+      await sleep(1000);
+    } while (Date.now() < deadline);
+    if (!resumed) throw readinessError ?? new Error('Local runtime, bridge or tunnel is not ready.');
+  } catch (error) {
+    try { state = await saveRemoteAccess(state, home, 'suspended'); }
+    catch { error = new Error(`${error.message}; could not persist the local pause; startup cleanup is required`); }
+    await rollbackResumeFailure(error,
+      () => sendControl(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
+      () => service(localPauseServiceAction(), state, home, COMPONENTS));
+  }
+  return statusOf(home);
+}
+
+export function restartTeamDevSpace(home = stateHome()) {
+  return withDeviceOperation(home, () => restartTeamDevSpaceUnlocked(home));
+}
+
+async function restartTeamDevSpaceUnlocked(home = stateHome()) {
   const state = await loadState(home);
   if (state.remoteAccess === 'suspended') throw new Error('Remote access is suspended; resume it before restarting connection services');
   await serviceAction('restart', state, home, COMPONENTS);
   return deviceStatus(home);
 }
 
-export async function stopTeamDevSpace(home = stateHome()) {
+export function stopTeamDevSpace(home = stateHome()) {
+  return withDeviceOperation(home, () => stopTeamDevSpaceUnlocked(home));
+}
+
+async function stopTeamDevSpaceUnlocked(home = stateHome()) {
   const state = await loadState(home);
   await serviceAction('stop', state, home, COMPONENTS);
   return { stopped: true, deviceId: state.deviceId,
@@ -202,13 +259,13 @@ export async function copyDiagnosticReport(home = stateHome()) {
       '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::In.ReadToEnd() | Set-Clipboard']
     : process.platform === 'linux' ? ['-selection', 'clipboard'] : [];
   await new Promise((resolveCopy, reject) => {
-    const child = execFile(command, args, { windowsHide: true }, error => error ? reject(error) : resolveCopy());
+    const child = execFile(command, args, { windowsHide: true, timeout: 10000 }, error => error ? reject(error) : resolveCopy());
     child.stdin.end(text, 'utf8');
   });
   return text;
 }
 
-export async function openLogs(home = stateHome(), { launch = launchDetached, follow = false } = {}) {
+export async function openLogs(home = stateHome(), { launch, follow = false } = {}) {
   if (process.platform === 'linux') {
     const state = await loadState(home);
     const units = COMPONENTS.map(component => `${serviceLabel(state, component)}.service`);
@@ -227,7 +284,11 @@ export async function openLogs(home = stateHome(), { launch = launchDetached, fo
     return { source: 'journalctl', units };
   }
   const directory = join(home, 'logs');
-  const command = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe') : '/usr/bin/open';
-  await launch(command, [directory]);
+  await privateDirectory(directory);
+  if (process.platform === 'win32' && !launch) await openWindowsDirectory(directory);
+  else {
+    const command = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe') : '/usr/bin/open';
+    await (launch ?? launchDetached)(command, [directory]);
+  }
   return directory;
 }

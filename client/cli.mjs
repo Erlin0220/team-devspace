@@ -11,6 +11,7 @@ import { runComponent } from './runtime.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace,
   resumeRemoteAccess, suspendRemoteAccess } from './control.mjs';
 import { runTray } from './tray.mjs';
+import { withDeviceOperation } from './operation.mjs';
 
 const HELP = `Team DevSpace
   setup --credential-file <file.json> --root <project-directory> [--root <another-directory>]
@@ -49,6 +50,12 @@ export async function main(argv = process.argv.slice(2)) {
     else await runComponent(action, home);
     return;
   }
+  const execute = () => executeCommand(command, action, argument, values, home);
+  const readOnly = ['status', 'diagnostics', 'logs', 'setup-gui'].includes(command) || (command === 'roots' && action === 'list');
+  return readOnly ? execute() : withDeviceOperation(home, execute);
+}
+
+async function executeCommand(command, action, argument, values, home) {
   let result;
   if (command === 'setup') {
     const input = values['request-file'] ? await requestFromFile(values['request-file'], true)
@@ -111,8 +118,10 @@ export async function main(argv = process.argv.slice(2)) {
         const next = { ...state, roots };
         await writeUpstreamConfig(next, home);
         await atomicJson(join(home, 'state.json'), next);
-        await serviceAction('start', next, home, ['runtime']);
-        result = { roots, note: 'DevSpace restarted; existing MCP sessions must reconnect.' };
+        const paused = next.remoteAccess === 'suspended';
+        if (!paused) await serviceAction('start', next, home, ['runtime']);
+        result = { roots, note: paused ? 'Project directories updated; remote access remains suspended.'
+          : 'DevSpace restarted; existing MCP sessions must reconnect.' };
       }
     } else throw new Error('Unknown command; run team-devspace --help');
   }

@@ -25,13 +25,13 @@ struct InstanceGuard {
 
 #[cfg(target_os = "windows")]
 impl InstanceGuard {
-    fn acquire() -> io::Result<Option<Self>> {
+    fn acquire(instance_id: &str) -> io::Result<Option<Self>> {
         use windows_sys::Win32::{
             Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError},
             System::Threading::CreateMutexW,
         };
 
-        let name = "Local\\TeamDevSpace.Tray\0".encode_utf16().collect::<Vec<_>>();
+        let name = format!("Local\\TeamDevSpace.Tray.{instance_id}\0").encode_utf16().collect::<Vec<_>>();
         let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
         if handle.is_null() {
             return Err(io::Error::last_os_error());
@@ -58,12 +58,12 @@ struct InstanceGuard {
 
 #[cfg(target_os = "macos")]
 impl InstanceGuard {
-    fn acquire() -> io::Result<Option<Self>> {
+    fn acquire(instance_id: &str) -> io::Result<Option<Self>> {
         use std::fs::OpenOptions;
         use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
 
         let path = std::env::temp_dir().join(format!(
-            "team-devspace-tray-{}.lock",
+            "team-devspace-tray-{}-{instance_id}.lock",
             unsafe { libc::geteuid() }
         ));
         let file = OpenOptions::new()
@@ -394,14 +394,35 @@ impl ApplicationHandler<UserEvent> for Application {
             UserEvent::State(state) => self.update(state),
             UserEvent::InputClosed => event_loop.exit(),
             UserEvent::Menu(id) => {
-                if let Some(action) = self.action(&id) { emit("menu", Some(&action)); }
+                if let Some(action) = self.action(&id) {
+                    // A user gesture starts the desktop action in our Node controller.
+                    // Delegate foreground permission before its short-lived helper opens UI.
+                    #[cfg(target_os = "windows")]
+                    if action == "switch-key" || action == "logs" {
+                        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
+                    }
+                    emit("menu", Some(&action));
+                }
             }
         }
     }
 }
 
+fn valid_instance_id(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn main() {
-    let _instance = match InstanceGuard::acquire() {
+    // The controller hashes the canonical private state directory. Key changes
+    // and upgrades keep one owner; isolated acceptance cannot seize its lock.
+    let instance_id = match std::env::var("TEAM_DEVSPACE_TRAY_INSTANCE_ID") {
+        Ok(value) if valid_instance_id(&value) => value,
+        _ => {
+            eprintln!("Start the native tray through the Team DevSpace controller; its local instance identity is missing or invalid");
+            std::process::exit(1);
+        }
+    };
+    let _instance = match InstanceGuard::acquire(&instance_id) {
         Ok(Some(instance)) => instance,
         Ok(None) => {
             emit("duplicate", None);
@@ -434,6 +455,14 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn instance_ids_are_fixed_hashes_not_arbitrary_lock_paths() {
+        assert!(valid_instance_id(&"a0".repeat(32)));
+        for invalid in ["", "../another.lock", "Local\\Other", &"g".repeat(64), &"a".repeat(63)] {
+            assert!(!valid_instance_id(invalid));
+        }
+    }
 
     #[test]
     fn operation_activity_is_bounded_without_replacing_persistent_summary() {

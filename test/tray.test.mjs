@@ -5,7 +5,16 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { redactDiagnostic } from '../client/control.mjs';
 import { launchAgentXml, serviceLabel, windowsTaskXml } from '../client/platform.mjs';
-import { runTray, trayState } from '../client/tray.mjs';
+import { runTray, trayInstanceId, trayState } from '../client/tray.mjs';
+
+test('tray ownership is stable per local state directory, not global to every isolated installation', async () => {
+  const home = join(homedir(), 'team-devspace-instance-test');
+  const identity = await trayInstanceId(home);
+  assert.match(identity, /^[a-f0-9]{64}$/);
+  assert.equal(await trayInstanceId(join(home, '..', 'team-devspace-instance-test')), identity);
+  assert.notEqual(await trayInstanceId(`${home}-isolated`), identity);
+  if (process.platform === 'win32') assert.equal(await trayInstanceId(home.toUpperCase()), identity);
+});
 
 test('tray presentation separates persistent status, activity and available actions', () => {
   const readyStatus = { ready: true, devspace: true, bridge: true, tunnel: true,
@@ -93,7 +102,7 @@ test('tray presentation separates persistent status, activity and available acti
   assert.equal(busy.switchKeyEnabled, false);
   assert.equal(busy.logsEnabled, true);
   assert.equal(busy.diagnosticsEnabled, true);
-  assert.equal(busy.exitEnabled, false);
+  assert.equal(busy.exitEnabled, true, 'Exit must remain available while an input dialog or operation is pending');
 });
 
 test('tray controller delegates fixed menu actions and exits only after services stop', async () => {
@@ -129,6 +138,34 @@ test('tray controller delegates fixed menu actions and exits only after services
     } });
   assert.equal(stopped, true);
   assert.deepEqual(calls, actions);
+});
+
+test('exit cancels a pending Access Key prompt instead of remaining busy forever', { timeout: 5000 }, async () => {
+  let aborted = false;
+  let exitCalls = 0;
+  const fake = `
+    console.log(JSON.stringify({event:'ready'}));
+    let buffer='', phase=0;
+    const deadline=setTimeout(()=>process.exit(7),2000);
+    process.stdin.on('end',()=>{clearTimeout(deadline);process.exit(0)});
+    process.stdin.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\\n')){
+      const index=buffer.indexOf('\\n'), state=JSON.parse(buffer.slice(0,index)); buffer=buffer.slice(index+1);
+      if(phase===0){phase=1;console.log(JSON.stringify({event:'menu',action:'switch-key'}));}
+      else if(phase===1 && state.activity){phase=2;console.log(JSON.stringify({event:'menu',action:'exit'}));}
+    }});
+  `;
+  await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
+    refreshInterval: 60000, operations: {
+      status: async () => ({ ready: true, devspace: true, bridge: true, tunnel: true,
+        gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' }),
+      'switch-key': async ({ signal } = {}) => new Promise(resolve => {
+        const timer = setTimeout(() => resolve({ cancelled: true }), 1000);
+        signal?.addEventListener('abort', () => { aborted = true; clearTimeout(timer); resolve({ cancelled: true }); }, { once: true });
+      }),
+      exit: async () => { exitCalls++; },
+    } });
+  assert.equal(aborted, true);
+  assert.equal(exitCalls, 1);
 });
 
 test('local shutdown failure stays visible as an explicit alert and keeps the tray controller alive', async () => {

@@ -4,7 +4,7 @@ import { createHash, webcrypto } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { AdminService } from '../gateway/admin-service.mjs';
 import { adminWeb, escapeHtml, renderAdmin } from '../gateway/admin-web.mjs';
-import { clearPendingCredential, createPendingCredential, credentialRequest,
+import { adminJson, clearPendingCredential, createPendingCredential, credentialRequest,
   loadPendingCredential, savePendingCredential } from '../assets/admin/admin.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
@@ -149,6 +149,17 @@ test('Admin Web accepts only same-origin hash-only POSTs and never performs life
   assert.deepEqual(fixture.calls.at(-1), ['revoke', id]);
 });
 
+test('Admin browser requests time out with an uncertain-result diagnostic instead of remaining busy forever', async t => {
+  const keepAlive = setTimeout(() => {}, 1000);
+  t.after(() => clearTimeout(keepAlive));
+  await assert.rejects(adminJson('/admin/keys', { method: 'POST' }, {
+    timeout: 20,
+    request: async (_path, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  }), /请求超时，操作结果尚未确认/);
+});
+
 test('browser credential logic generates one hash-only retryable credential in session storage', async () => {
   const credential = await createPendingCredential('Alice', webcrypto);
   assert.match(credential.id, /^[a-f0-9-]{36}$/);
@@ -162,6 +173,10 @@ test('browser credential logic generates one hash-only retryable credential in s
   savePendingCredential(storage, credential);
   assert.deepEqual(loadPendingCredential(storage), credential);
   assert.deepEqual(credentialRequest(loadPendingCredential(storage)), credentialRequest(credential));
+  savePendingCredential(storage, { ...credential, confirmed: true });
+  assert.equal(loadPendingCredential(storage).confirmed, true, 'Acknowledgement must survive a page refresh');
+  assert.deepEqual(credentialRequest(loadPendingCredential(storage)), credentialRequest(credential),
+    'Browser acknowledgement is local metadata, never part of the server issuance request');
   clearPendingCredential(storage);
   assert.equal(loadPendingCredential(storage), null);
 });

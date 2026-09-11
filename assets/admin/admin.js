@@ -52,15 +52,21 @@ function errorText(code) {
   })[code] ?? code ?? '未知错误';
 }
 
-async function adminJson(path, options) {
-  const response = await fetch(path, { ...options, redirect: 'manual' });
-  if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403) {
-    throw new Error('管理员登录已过期，请刷新页面后重新登录。');
+export async function adminJson(path, options, { timeout = 30000, request = globalThis.fetch } = {}) {
+  const signal = AbortSignal.timeout(timeout);
+  try {
+    const response = await request(path, { ...options, redirect: 'manual', signal });
+    if (response.type === 'opaqueredirect' || response.status === 401 || response.status === 403) {
+      throw new Error('管理员登录已过期，请刷新页面后重新登录。');
+    }
+    if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
+      throw new Error('管理服务返回了异常响应，请刷新页面后重新登录。');
+    }
+    return { response, result: await response.json() };
+  } catch (error) {
+    if (signal.aborted) throw new Error('请求超时，操作结果尚未确认，请重试同步或刷新检查状态。');
+    throw error;
   }
-  if (!response.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
-    throw new Error('管理服务返回了异常响应，请刷新页面后重新登录。');
-  }
-  return { response, result: await response.json() };
 }
 
 async function issueCredential(credential) {
@@ -94,6 +100,8 @@ function initialize() {
   const retryButton = document.querySelector('#retry-key');
   const copyButton = document.querySelector('#copy-key');
   const confirmAction = document.querySelector('#confirm-action');
+  const dismissKey = document.querySelector('#dismiss-key');
+  let credentialBusy = false;
 
   const showNotice = (target, message) => {
     target.textContent = message;
@@ -129,7 +137,10 @@ function initialize() {
     openCreateDialog();
     requestAnimationFrame(() => createForm.elements.label?.focus());
   };
-  const showCredential = (credential, needsRetry = false) => {
+  const showCredential = credential => {
+    const needsRetry = credential.confirmed !== true;
+    dismissKey.disabled = needsRetry;
+    copyButton.disabled = needsRetry;
     dialogTitle.textContent = needsRetry ? '继续创建访问密钥' : '访问密钥已创建';
     credentialOutput.textContent = credential.accessKey;
     credentialPanel.hidden = false;
@@ -155,35 +166,48 @@ function initialize() {
 
   let pending = loadPendingCredential(sessionStorage);
   if (pending) {
-    showCredential(pending, true);
-    showNotice(dialogNotice, '检测到上次未完成的访问密钥，请使用同一密钥重试，不要重新生成。');
+    showCredential(pending);
+    showNotice(dialogNotice, pending.confirmed
+      ? '该访问密钥已创建，请保存后再确认关闭。'
+      : '上次创建结果尚未确认，请使用同一密钥重试，不要重新生成或分发。');
   }
 
   document.querySelector('#show-create').addEventListener('click', () => {
+    if (credentialBusy) return;
     if (pending) {
-      showCredential(pending, true);
-      showNotice(dialogNotice, '该密钥尚未确认保存，可以继续复制或重试同步。');
+      showCredential(pending);
+      showNotice(dialogNotice, pending.confirmed
+        ? '该访问密钥已创建，请保存后再确认关闭。'
+        : '创建结果尚未确认，请先重试同步，不要分发该密钥。');
       return;
     }
     showCreateForm();
   });
-  document.querySelector('#close-dialog').addEventListener('click', () => createDialog.close());
-  document.querySelector('#cancel-create').addEventListener('click', () => createDialog.close());
+  const closeCreateDialog = () => { if (!credentialBusy) createDialog.close(); };
+  document.querySelector('#close-dialog').addEventListener('click', closeCreateDialog);
+  document.querySelector('#cancel-create').addEventListener('click', closeCreateDialog);
   createDialog.addEventListener('click', event => {
-    if (event.target === createDialog) createDialog.close();
+    if (event.target === createDialog) closeCreateDialog();
+  });
+  createDialog.addEventListener('cancel', event => {
+    if (credentialBusy) event.preventDefault();
   });
 
   createForm.addEventListener('submit', async event => {
     event.preventDefault();
+    if (credentialBusy) return;
     const label = new FormData(event.currentTarget).get('label')?.trim();
     if (!label) return;
+    credentialBusy = true;
     clearNotice(dialogNotice);
     setBusy(createSubmit, true, '创建中…');
     try {
       pending ??= await createPendingCredential(label);
       savePendingCredential(sessionStorage, pending);
       await issueCredential(pending);
-      showCredential(pending, false);
+      pending.confirmed = true;
+      savePendingCredential(sessionStorage, pending);
+      showCredential(pending);
     } catch (error) {
       if (error.code === 'key_label_or_id_conflict') {
         clearPendingCredential(sessionStorage);
@@ -195,24 +219,29 @@ function initialize() {
         showNotice(dialogNotice, `创建失败：${error.message}，请更换名称后重试。`);
         requestAnimationFrame(() => createForm.elements.label?.select());
       } else {
-        if (pending) showCredential(pending, true);
+        if (pending) showCredential(pending);
         showNotice(dialogNotice, `创建失败：${error.message}。再次重试时会继续使用同一个密钥。`);
       }
     } finally {
+      credentialBusy = false;
       setBusy(createSubmit, false);
     }
   });
 
   retryButton.addEventListener('click', async () => {
-    if (!pending) return;
+    if (!pending || credentialBusy) return;
+    credentialBusy = true;
     clearNotice(dialogNotice);
     setBusy(retryButton, true, '重试中…');
     try {
       await issueCredential(pending);
-      showCredential(pending, false);
+      pending.confirmed = true;
+      savePendingCredential(sessionStorage, pending);
+      showCredential(pending);
     } catch (error) {
       showNotice(dialogNotice, `重试失败：${error.message}`);
     } finally {
+      credentialBusy = false;
       setBusy(retryButton, false);
     }
   });
@@ -230,7 +259,11 @@ function initialize() {
     }
   });
 
-  document.querySelector('#dismiss-key').addEventListener('click', () => {
+  dismissKey.addEventListener('click', () => {
+    if (credentialBusy || pending?.confirmed !== true) {
+      showNotice(dialogNotice, '创建结果尚未确认，请先重试同步。');
+      return;
+    }
     clearPendingCredential(sessionStorage);
     pending = null;
     credentialOutput.textContent = '';

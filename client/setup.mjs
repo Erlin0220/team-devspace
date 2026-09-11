@@ -9,6 +9,9 @@ import { approvedRoots, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, l
 import { control, loopbackRequest } from './http.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
+import { runWindowsDesktop } from './windows-desktop.mjs';
+import { withDeviceOperation } from './operation.mjs';
+
 const exec = promisify(execFile);
 
 async function hasTunnelCredential(home) {
@@ -28,7 +31,12 @@ async function availablePort(preferred) {
   throw new Error('No free loopback port available for Team DevSpace');
 }
 
-export async function configureDevice(input, { home = stateHome(), startup = true, onProgress = () => {} } = {}) {
+export function configureDevice(input, options = {}) {
+  const home = options.home ?? stateHome();
+  return withDeviceOperation(home, () => configureDeviceUnlocked(input, { ...options, home }));
+}
+
+async function configureDeviceUnlocked(input, { home = stateHome(), startup = true, onProgress = () => {} } = {}) {
   onProgress('Preparing private device state...');
   await secureStateDirectory(home);
   const release = await readJson(join(installRoot, 'release.config.json'));
@@ -88,7 +96,9 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
   onProgress('Enrollment confirmed. Preparing the local runtime...');
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
-    remoteAccess: binding.state === 'suspended' ? 'suspended' : 'active' };
+    // Recovering credentials is not consent to resume. Only the explicit resume
+    // operation may release a locally persisted pause.
+    remoteAccess: state.remoteAccess === 'suspended' || binding.state === 'suspended' ? 'suspended' : 'active' };
   await atomicText(join(home, 'tunnel.token'), binding.tunnelToken);
   await writeUpstreamConfig(state, home);
   await atomicJson(join(home, 'state.json'), state);
@@ -107,11 +117,11 @@ export async function configureDevice(input, { home = stateHome(), startup = tru
     startup: startup ? 'installed' : 'not-installed' };
 }
 
-export async function promptReplacementAccessKey() {
+export async function promptReplacementAccessKey({ signal } = {}) {
   if (process.platform === 'win32') {
-    const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const script = `
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KeyDialogWindow { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
 $form = New-Object System.Windows.Forms.Form
 $form.Text = '更换 Access Key'
 $form.Width = 520
@@ -120,11 +130,12 @@ $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
-$form.ShowInTaskbar = $false
+$form.ShowInTaskbar = $true
+$form.TopMost = $true
 $label = New-Object System.Windows.Forms.Label
 $label.Left = 20; $label.Top = 20; $label.Width = 460; $label.Text = '新的 Access Key'
-$input = New-Object System.Windows.Forms.TextBox
-$input.Left = 20; $input.Top = 45; $input.Width = 460; $input.UseSystemPasswordChar = $true
+$keyInput = New-Object System.Windows.Forms.TextBox
+$keyInput.Left = 20; $keyInput.Top = 45; $keyInput.Width = 460; $keyInput.UseSystemPasswordChar = $true
 $hint = New-Object System.Windows.Forms.Label
 $hint.Left = 20; $hint.Top = 78; $hint.Width = 460; $hint.Height = 42
 $hint.Text = '更换后，当前远程连接会断开，并使用新的 Access Key 重新绑定此电脑。项目目录设置不会改变。'
@@ -132,35 +143,60 @@ $cancel = New-Object System.Windows.Forms.Button
 $cancel.Text = '取消'; $cancel.Left = 310; $cancel.Top = 135; $cancel.Width = 80; $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
 $ok = New-Object System.Windows.Forms.Button
 $ok.Text = '更换'; $ok.Left = 400; $ok.Top = 135; $ok.Width = 80; $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$form.Controls.AddRange(@($label, $input, $hint, $cancel, $ok))
+$form.Controls.AddRange(@($label, $keyInput, $hint, $cancel, $ok))
 $form.AcceptButton = $ok
 $form.CancelButton = $cancel
-$form.Add_Shown({ $input.Focus() })
-$result = $form.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($input.Text) }
-$form.Dispose()
+$form.Add_Shown({ [void][KeyDialogWindow]::ShowWindow($form.Handle, 5); [void][KeyDialogWindow]::SetForegroundWindow($form.Handle); $form.Activate(); [void]$keyInput.Focus() })
+try {
+  $result = $form.ShowDialog()
+  if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($keyInput.Text) }
+} finally { $form.Dispose() }
 `;
-    const { stdout } = await exec(powershell, ['-NoLogo', '-NoProfile', '-STA', '-Command', script],
-      { windowsHide: true, maxBuffer: 64 * 1024 });
-    return stdout.trim() || null;
+    try {
+      return (await runWindowsDesktop(script, { signal, timeout: 300000 })).trim() || null;
+    } catch (error) { if (error.name === 'AbortError') return null; throw error; }
   }
   if (process.platform === 'darwin') {
     const { stdout } = await exec('/usr/bin/osascript', ['-e',
       'try', '-e',
       'text returned of (display dialog "Enter the new Team DevSpace Access Key. The current remote connection will be replaced; project directories are kept." default answer "" with hidden answer buttons {"Cancel", "Replace"} default button "Replace" with title "Team DevSpace")',
-      '-e', 'on error number -128', '-e', 'return ""', '-e', 'end try']);
+      '-e', 'on error number -128', '-e', 'return ""', '-e', 'end try'], { signal, timeout: 300000 });
     return stdout.trim() || null;
   }
   throw new Error('Access Key replacement from the tray is available on Windows and macOS');
 }
 
-export async function replaceAccessKey(accessKey, home = stateHome(), { onProgress = () => {}, startup = true } = {}) {
+async function enrollWithoutReplacingTray(home, { onProgress, startup }) {
+  const enrolled = await configureDevice({}, { home, startup: false, onProgress });
+  if (!startup) return { ...enrolled, startup: 'not-installed' };
+  const state = await loadState(home);
+  await installServices(state, home, undefined, COMPONENTS);
+  const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
+  if (startComponents.length) await serviceAction('start', state, home, startComponents);
+  return { ...enrolled, startup: 'installed' };
+}
+
+export function replaceAccessKey(accessKey, home = stateHome(), options = {}) {
+  return withDeviceOperation(home, () => replaceAccessKeyUnlocked(accessKey, home, options));
+}
+
+async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgress = () => {}, startup = true } = {}) {
   if (!/^tds_[A-Za-z0-9_-]{43}$/.test(accessKey ?? '')) throw new Error('请输入完整的 Access Key');
   let state = await loadState(home);
-  if (!state.pendingAccessKey && state.accessKey === accessKey) throw new Error('新的 Access Key 与当前 Access Key 相同');
+  if (!state.pendingAccessKey && state.accessKey === accessKey) {
+    if (state.bindingId) throw new Error('新的 Access Key 与当前 Access Key 相同');
+    // Enrollment may have committed remotely before its response was lost.
+    // Retry with the retained identity, not a preflight that rejects bound keys.
+    onProgress('正在继续未完成的设备绑定…');
+    return { ...await enrollWithoutReplacingTray(home, { onProgress, startup }), recoveredEnrollment: true };
+  }
 
   onProgress('正在验证新的 Access Key…');
-  const preflight = await control(state.gateway, '/v1/enrollment/preflight', accessKey, { body: {}, timeout: 15000 });
+  const preflight = await control(state.gateway, '/v1/enrollment/preflight', accessKey, { body: {}, timeout: 15000 })
+    .catch(error => {
+      if (error.status === 404) throw Object.assign(new Error('网关尚未部署更换 Access Key 所需接口，请先更新网关；当前 Key 和连接未更改'), { code: 'gateway_update_required' });
+      throw error;
+    });
   if (!preflight.available) throw new Error('这个 Access Key 已绑定到其他设备，请使用未绑定的 Access Key');
 
   state = { ...state, pendingAccessKey: accessKey, remoteAccess: 'suspended' };
@@ -195,16 +231,14 @@ export async function replaceAccessKey(accessKey, home = stateHome(), { onProgre
   await atomicJson(join(home, 'state.json'), next);
 
   onProgress('正在使用新的 Access Key 重新绑定…');
-  const enrolled = await configureDevice({}, { home, startup: false, onProgress });
-  if (!startup) return { ...enrolled, startup: 'not-installed', replacedAccessKey: true };
-  const finalState = await loadState(home);
-  await installServices(finalState, home, undefined, COMPONENTS);
-  const startComponents = enabledStartupComponents(finalState).filter(component => COMPONENTS.includes(component));
-  if (startComponents.length) await serviceAction('start', finalState, home, startComponents);
-  return { ...enrolled, startup: 'installed', replacedAccessKey: true };
+  return { ...await enrollWithoutReplacingTray(home, { onProgress, startup }), replacedAccessKey: true };
 }
 
-export async function repairDevice(home = stateHome(), { preserveTray = false } = {}) {
+export function repairDevice(home = stateHome(), options = {}) {
+  return withDeviceOperation(home, () => repairDeviceUnlocked(home, options));
+}
+
+async function repairDeviceUnlocked(home = stateHome(), { preserveTray = false } = {}) {
   const previous = await readJson(join(home, 'state.json'), null);
   if (!previous) throw new Error('Team DevSpace is installed but has not been configured yet; run setup with the administrator-issued Access Key and project directory');
   if (previous.pendingAccessKey) {
@@ -247,21 +281,22 @@ export async function deviceStatus(home = stateHome()) {
   return { deviceId: state.deviceId, devspaceVersion: DEVSPACE_VERSION, releaseVersion: state.releaseVersion,
     devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, roots: state.roots,
     localReady: devspace && bridge && tunnel, desiredRemoteAccess, remoteAccess,
+    enrollmentPending: !state.bindingId || Boolean(state.pendingAccessKey),
     ready: Boolean(state.bindingId) && devspace && bridge && tunnel && gateway === 'active' && desiredRemoteAccess === 'active' };
 }
 
-export async function macSetupDialog(home = stateHome(), { preserveTray = false } = {}) {
+export async function macSetupDialog(home = stateHome(), { preserveTray = false, signal } = {}) {
   if (process.platform !== 'darwin') throw new Error('The macOS setup dialog is only available on macOS');
   const previous = await readJson(join(home, 'state.json'), null);
   if (previous?.bindingId) return configureDevice({}, { home });
   // Pending Enrollment must stay editable. A failed first attempt may already have persisted the
   // local identity/key/roots, but without a Binding it must never lock the user out of setup.
   const key = await exec('/usr/bin/osascript', ['-e',
-    'text returned of (display dialog "Enter your administrator-issued Team DevSpace Access Key. This key grants remote coding access as your user account." default answer "" with hidden answer buttons {"Cancel", "Continue"} default button "Continue" with title "Team DevSpace")']);
+    'text returned of (display dialog "Enter your administrator-issued Team DevSpace Access Key. This key grants remote coding access as your user account." default answer "" with hidden answer buttons {"Cancel", "Continue"} default button "Continue" with title "Team DevSpace")'], { signal, timeout: 300000 });
   let roots = previous?.roots;
   if (!Array.isArray(roots) || roots.length === 0) {
     const folder = await exec('/usr/bin/osascript', ['-e',
-      'POSIX path of (choose folder with prompt "Choose your project directory. File tools are restricted to it; shell commands still run with your user permissions.")']);
+      'POSIX path of (choose folder with prompt "Choose your project directory. File tools are restricted to it; shell commands still run with your user permissions.")'], { signal, timeout: 300000 });
     roots = [folder.stdout.trim()];
   }
   try {
