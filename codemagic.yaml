@@ -7,8 +7,6 @@ workflows:
       node: 22.23.0
       npm: 11.19.1
       xcode: 26.0
-      vars:
-        TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"
     cache:
       cache_paths:
         - $HOME/.cache/team-devspace-native-v1
@@ -19,9 +17,8 @@ workflows:
 
           native_cache="$HOME/.cache/team-devspace-native-v1"
           cloud_cache="$native_cache/cloudflared"
-          tray_cache="$native_cache/tray"
           mkdir -p "$native_cache"
-          find "$native_cache" -mindepth 1 -maxdepth 1 ! -name cloudflared ! -name tray -exec rm -rf {} +
+          find "$native_cache" -mindepth 1 -maxdepth 1 ! -name cloudflared -exec rm -rf {} +
 
           minimum="$(node -p "require('./release.config.json').distribution.macosMinimumVersion")"
           commit="$(node -p "require('./release.config.json').cloudflaredSourceCommit")"
@@ -116,37 +113,9 @@ workflows:
           echo "TEAM_DEVSPACE_CLOUDFLARED_BINARY=$cloud_cache/cloudflared" >> "$CM_ENV"
           echo "TEAM_DEVSPACE_CLOUDFLARED_CACHE_HIT=$cloud_hit" >> "$CM_ENV"
 
-          tray_fingerprint="$({
-            printf '%s\n' 'schema=1' 'target=darwin-arm64' "minimum=$minimum" 'xcode=26.0'
-            git ls-files -z -- native/tray scripts/tray-build.mjs | xargs -0 /usr/bin/shasum -a 256
-          } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
-          tray_hit=0
-          if [ -x "$tray_cache/TeamDevSpaceTray" ] && [ -f "$tray_cache/metadata.json" ] && \
-             [ -f "$tray_cache/TeamDevSpaceTray.sha256" ] && \
-             (cd "$tray_cache" && /usr/bin/shasum -a 256 -c TeamDevSpaceTray.sha256 >/dev/null 2>&1) && \
-             node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.argv[1]));if(m.schema!==1||m.fingerprint!==process.argv[2]||m.target!=='darwin-arm64'||m.minimumMacOS!==process.argv[3]||typeof m.rustVersion!=='string'||!Array.isArray(m.metadata?.packages)||!Array.isArray(m.metadata?.resolve?.nodes))process.exit(1)" \
-               "$tray_cache/metadata.json" "$tray_fingerprint" "$minimum" && \
-             compatible_macho "$tray_cache/TeamDevSpaceTray"; then
-            tray_hit=1
-            echo "Reusing verified tray final artifact cache."
-            echo "TEAM_DEVSPACE_TRAY_BINARY=$tray_cache/TeamDevSpaceTray" >> "$CM_ENV"
-            echo "TEAM_DEVSPACE_TRAY_METADATA=$tray_cache/metadata.json" >> "$CM_ENV"
-          else
-            rm -rf "$tray_cache"
-            if ! command -v rustup >/dev/null 2>&1; then
-              curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
-                | sh -s -- -y --profile minimal --default-toolchain 1.85.1
-              echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
-              export PATH="$HOME/.cargo/bin:$PATH"
-            fi
-            if ! rustup toolchain list | /usr/bin/grep -Eq '^1\.85\.1(-|$)'; then
-              rustup toolchain install 1.85.1 --profile minimal --no-self-update
-            fi
-            rustup show active-toolchain
-            echo "TEAM_DEVSPACE_TRAY_CACHE_DIR=$tray_cache" >> "$CM_ENV"
-          fi
-          echo "TEAM_DEVSPACE_TRAY_FINGERPRINT=$tray_fingerprint" >> "$CM_ENV"
-          echo "Native artifact cache: cloudflared=$cloud_hit tray=$tray_hit"
+          # The small AppKit helper is compiled directly by package.mjs using
+          # the pinned Xcode SDK. No Rust installation or UI artifact cache.
+          echo "Native artifact cache: cloudflared=$cloud_hit"
 
       - name: Build unsigned macOS package
         script: |

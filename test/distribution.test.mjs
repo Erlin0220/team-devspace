@@ -24,6 +24,31 @@ test('runtime cache ignores only app version metadata, not dependency or install
   }
 });
 
+test('macOS postinstall confirms the app actually started and gives visible recovery guidance', async () => {
+  const [postinstall, launchApp] = await Promise.all([
+    readFile('platform/macos/postinstall', 'utf8'),
+    readFile('platform/macos/launch-app.sh', 'utf8'),
+  ]);
+  const marker = '.app-started';
+  assert.match(launchApp, new RegExp(marker.replace('.', '\\.')),
+    'The app wrapper must publish an immediate start marker before expensive first-run bootstrap work');
+  assert.ok(launchApp.indexOf('> "$APP_STARTED"') < launchApp.indexOf('bootstrap.sh'),
+    'The start marker must be written before bootstrap/extraction can delay the Access Key dialog');
+  assert.match(postinstall, new RegExp(marker.replace('.', '\\.')),
+    'The installer must wait for the same app-start marker instead of trusting open(1) alone');
+  assert.ok(postinstall.indexOf('/bin/rm -f "$APP_STARTED"') < postinstall.indexOf("/usr/bin/open '/Applications/Team DevSpace.app'"),
+    'A stale marker must be removed before requesting a new app launch');
+  assert.match(postinstall, /while \[ "\$attempt" -lt 15 \] && \[ ! -f "\$APP_STARTED" \]/);
+  assert.match(postinstall, /AUTO_OPEN_UNCONFIRMED/);
+  assert.match(postinstall, /display alert "Team DevSpace 需要完成设置"/);
+  assert.match(postinstall, /隐私与安全性/);
+  assert.match(postinstall, /Access Key/);
+  assert.match(postinstall, /exit 0\n$/,
+    'A blocked first launch must stay a recoverable onboarding state, not roll back a valid package install');
+  assert.doesNotMatch(postinstall, /xattr[^\n]*quarantine/i,
+    'Internal-free onboarding must explain Gatekeeper recovery instead of silently stripping quarantine metadata');
+});
+
 const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', cloudflaredSourceCommit: 'f'.repeat(40),

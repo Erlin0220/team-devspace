@@ -25,7 +25,8 @@ catch (error) {
   await access(binary);
 }
 const env = { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: randomBytes(32).toString('hex') };
-const child = spawn(binary, [], { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+const child = spawn(binary, process.platform === 'darwin' ? ['--smoke'] : [],
+  { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 let duplicate;
 process.once('exit', () => {
   if (child.exitCode === null) child.kill();
@@ -33,6 +34,8 @@ process.once('exit', () => {
 });
 let stderr = '';
 let protocolErrors = 0;
+const applied = [];
+const menuActions = [];
 child.stderr.on('data', chunk => { stderr += chunk; });
 const ready = new Promise((resolveReady, reject) => {
   const timer = setTimeout(() => reject(new Error('Native tray did not become ready')), 10000);
@@ -41,6 +44,8 @@ const ready = new Promise((resolveReady, reject) => {
   createInterface({ input: child.stdout }).on('line', line => {
     const event = JSON.parse(line);
     if (event.event === 'protocol-error') protocolErrors++;
+    if (event.event === 'state-applied') applied.push(event.status);
+    if (event.event === 'menu') menuActions.push(event.action);
     if (event.event === 'ready') { clearTimeout(timer); resolveReady(); }
   });
 });
@@ -76,13 +81,89 @@ for (const state of [
     remoteAction: 'suspend', remoteEnabled: false, checkEnabled: false, switchKeyEnabled: false,
     restartEnabled: false, repairEnabled: false, exitEnabled: false },
 ]) child.stdin.write(`${JSON.stringify(state)}\n`);
+if (process.platform === 'darwin') {
+  // Exercise real NSMenu targets without executing connection operations.
+  child.stdin.write(`${JSON.stringify({ ...common, status: 'ready', summary: '已连接',
+    remoteText: '暂停远程访问', remoteAction: 'suspend', remoteEnabled: true,
+    restartEnabled: true, repairEnabled: true })}\n`);
+  for (const action of ['remote', 'switch-key', 'restart', 'repair', 'diagnostics', 'logs', 'exit']) {
+    child.stdin.write(`${JSON.stringify({ exerciseMenu: action })}\n`);
+  }
+  child.stdin.write('not-json\n{}\n');
+  await smokeMacForm(binary, env);
+}
 child.stdin.end();
 const code = await new Promise((resolveExit, reject) => {
   const timer = setTimeout(() => { child.kill(); reject(new Error('Native tray did not quit after protocol EOF')); }, 10000);
-  child.once('exit', code => { clearTimeout(timer); resolveExit(code); });
+  child.once('close', code => { clearTimeout(timer); resolveExit(code); });
 });
 assert.equal(code, 0, stderr);
-assert.equal(protocolErrors, 0, 'Native tray rejected one or more smoke-test state messages');
+assert.equal(protocolErrors, process.platform === 'darwin' ? 2 : 0,
+  'Native tray must accept valid state and explicitly reject malformed input');
+if (process.platform === 'darwin') {
+  assert.deepEqual(applied, ['ready', 'partial', 'suspended', 'stopped', 'ready', 'ready']);
+  assert.deepEqual(menuActions, ['suspend', 'switch-key', 'restart', 'repair', 'diagnostics', 'logs', 'exit']);
+}
 console.log(JSON.stringify({ passed: true, platform: process.platform, nativeTray: true,
   protocol: 'json-lines', packagedArtifact: binary.includes(`bundle-${target}`), lifecycleIndependent: true,
-  singleInstance: true, isolatedInstance: true }));
+  singleInstance: true, isolatedInstance: true,
+  ...(process.platform === 'darwin' ? { appKitMenus: true, setupFormRetry: true, malformedInput: true } : {}) }));
+
+async function smokeMacForm(binary, env) {
+  const form = spawn(binary, ['form', '--smoke'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let duplicateForm;
+  let timer;
+  let submissions = 0;
+  const key = `tds_${'a'.repeat(43)}`;
+  const send = value => form.stdin.write(`${JSON.stringify(value)}\n`);
+  const done = new Promise((resolveDone, reject) => {
+    timer = setTimeout(() => reject(new Error('AppKit form smoke timed out')), 15000);
+    form.once('error', reject);
+    form.stderr.resume();
+    form.stdin.on('error', () => {});
+    createInterface({ input: form.stdout }).on('line', line => {
+      try {
+        const event = JSON.parse(line);
+        if (event.event === 'ready') {
+          // A tray and a form coexist, but a second form must reject itself.
+          duplicateForm = spawn(binary, ['form'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+          let output = '';
+          duplicateForm.stdout.on('data', data => { output += data; });
+          duplicateForm.stderr.resume();
+          duplicateForm.once('error', reject);
+          duplicateForm.once('close', code => {
+            try {
+              assert.equal(code, 0);
+              assert.equal(JSON.parse(output.trim()).event, 'duplicate');
+              send({ type: 'form', mode: 'setup', roots: ['/tmp'] });
+            } catch (error) { reject(error); }
+          });
+        } else if (event.event === 'form-presented') {
+          send({ type: 'exercise-form', accessKey: key });
+        } else if (event.event === 'submit') {
+          assert.equal(event.accessKey, key);
+          assert.deepEqual(event.roots, ['/tmp']);
+          submissions++;
+          send({ type: 'form-result', phase: 'busy', message: '正在验证…' });
+          send({ type: 'form-result', phase: submissions === 1 ? 'error' : 'success',
+            message: submissions === 1 ? '测试错误，可以重试。' : '设置已完成。' });
+        } else if (event.event === 'form-updated') {
+          assert.equal(event.inputEnabled, event.phase === 'error');
+          if (event.phase === 'error') send({ type: 'exercise-form', accessKey: key });
+          if (event.phase === 'success') send({ type: 'exercise-form', action: 'cancel' });
+        } else if (event.event === 'cancel') form.stdin.end();
+        else assert.notEqual(event.event, 'protocol-error');
+      } catch (error) { reject(error); }
+    });
+    form.once('close', code => {
+      try { assert.equal(code, 0); assert.equal(submissions, 2); resolveDone(); }
+      catch (error) { reject(error); }
+    });
+  });
+  try { await done; }
+  finally {
+    clearTimeout(timer);
+    if (form.exitCode === null) form.kill();
+    if (duplicateForm?.exitCode === null) duplicateForm.kill();
+  }
+}

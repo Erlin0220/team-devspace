@@ -1,7 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-compile_error!("Team DevSpace tray is intentionally built only for Windows and macOS");
+#[cfg(not(target_os = "windows"))]
+compile_error!("The Rust tray is Windows-only; macOS uses native/macos/TeamDevSpaceUI.swift");
 
 use serde::Deserialize;
 use std::io::{self, BufRead, Write};
@@ -48,38 +48,6 @@ impl InstanceGuard {
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
         unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct InstanceGuard {
-    _file: std::fs::File,
-}
-
-#[cfg(target_os = "macos")]
-impl InstanceGuard {
-    fn acquire(instance_id: &str) -> io::Result<Option<Self>> {
-        use std::fs::OpenOptions;
-        use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-
-        let path = std::env::temp_dir().join(format!(
-            "team-devspace-tray-{}-{instance_id}.lock",
-            unsafe { libc::geteuid() }
-        ));
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .mode(0o600)
-            .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(Some(Self { _file: file }));
-        }
-        let error = io::Error::last_os_error();
-        if matches!(error.raw_os_error(), Some(libc::EWOULDBLOCK) | Some(libc::EAGAIN)) {
-            return Ok(None);
-        }
-        Err(error)
     }
 }
 
@@ -271,18 +239,6 @@ fn show_error_alert(message: &str) {
     unsafe {
         MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
-}
-
-#[cfg(target_os = "macos")]
-fn show_error_alert(message: &str) {
-    let _ = std::process::Command::new("/usr/bin/osascript")
-        .args([
-            "-e", "on run argv",
-            "-e", "display alert \"Team DevSpace\" message (item 1 of argv) as critical",
-            "-e", "end run",
-            "--", message,
-        ])
-        .status();
 }
 
 impl Application {

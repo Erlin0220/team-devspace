@@ -99,7 +99,7 @@ if (process.platform === 'win32') {
   await writeFile(join(trayContents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.teamdevspace.tray</string>
-<key>CFBundleName</key><string>Team DevSpace Tray</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
+<key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
@@ -208,7 +208,7 @@ await writeFile(join(bundle, 'package.json'), `${JSON.stringify(runtimePackage, 
 const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...dependencyOmissions],
   { cwd: bundle, env: buildEnvironment, capture: true });
 const sbomDocument = JSON.parse(sbom.stdout);
-if (trayBuild) {
+if (trayBuild?.implementation === 'rust') {
   const rustPackages = trayBuild.metadata.packages.filter(package_ =>
     trayBuild.metadata.resolve.nodes.some(node => node.id === package_.id));
   sbomDocument.components.push(...rustPackages.map(package_ => ({ type: 'library', name: package_.name,
@@ -223,7 +223,8 @@ await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
   'Each dependency retains its own copyright and license files in node_modules. The SBOM lists package licenses.',
   `Node.js ${release.nodeVersion}: https://nodejs.org/ (license and notices in runtime/LICENSE)`,
   `cloudflared ${release.cloudflaredVersion}: Apache-2.0, https://github.com/cloudflare/cloudflared`,
-  ...(trayBuild ? ['The native tray and its exact Rust dependency graph are recorded in Cargo.lock and sbom.cdx.json.',
+  ...(trayBuild?.implementation === 'appkit' ? ['The macOS UI uses system AppKit/Foundation, with no third-party UI dependencies.'] : []),
+  ...(trayBuild?.implementation === 'rust' ? ['The native tray and its exact Rust dependency graph are recorded in Cargo.lock and sbom.cdx.json.',
     'tray-icon 0.24.2: MIT OR Apache-2.0, https://github.com/tauri-apps/tray-icon'] : []),
   ...(process.platform === 'win32' ? [`Git for Windows ${release.gitFallbackVersion}: GPL-2.0 and bundled component licenses retained under git/.`,
     `Corresponding sources and redistribution notices: https://github.com/git-for-windows/git/releases/tag/v${release.gitFallbackVersion}`] : []),
@@ -245,12 +246,15 @@ await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
     goVersion: release.cloudflaredGoVersion, minimumMacOS: release.distribution.macosMinimumVersion,
     sha256: cloudflaredSha256, reusedFromBuildCache: process.env.TEAM_DEVSPACE_CLOUDFLARED_CACHE_HIT === '1',
   } } : {}),
-  ...(trayBuild ? { tray: { crate: 'tray-icon', version: '0.24.2', rustVersion: trayBuild.rustVersion,
-    lockSha256: createHash('sha256').update(await readFile('native/tray/Cargo.lock')).digest('hex'),
+  ...(trayBuild ? { tray: { implementation: trayBuild.implementation,
+    ...(trayBuild.implementation === 'rust' ? {
+      crate: 'tray-icon', version: '0.24.2', rustVersion: trayBuild.rustVersion,
+      lockSha256: createHash('sha256').update(await readFile('native/tray/Cargo.lock')).digest('hex'),
+    } : { toolchain: trayBuild.toolchain, minimumMacOS: release.distribution.macosMinimumVersion }),
     sha256: await sha256File(process.platform === 'darwin'
       ? join(bundle, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray')
       : join(bundle, 'platform', 'windows', 'team-devspace-tray.exe')),
-    reusedFromBuildCache: Boolean(trayBuild.cached) } } : {}),
+  } } : {}),
 }, null, 2));
 console.log(JSON.stringify({ prepared: true, target, bundle, devspace: installed.version, node: version }));
 if (!values['prepare-only']) {

@@ -1,12 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { join, resolve } from 'node:path';
-import { realpath } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import { copyDiagnosticReport, openLogs, restartTeamDevSpace, resumeRemoteAccess,
   stopTeamDevSpace, suspendRemoteAccess } from './control.mjs';
-import { deviceStatus, macSetupDialog, promptReplacementAccessKey, repairDevice, replaceAccessKey } from './setup.mjs';
-import { installRoot, stateHome } from './state.mjs';
+import { deviceStatus, macSetupDialog, macReplaceAccessKey, promptReplacementAccessKey, repairDevice, replaceAccessKey } from './setup.mjs';
+import { stateHome } from './state.mjs';
+import { trayExecutable, trayInstanceId, macText } from './desktop.mjs';
+export { trayExecutable, trayInstanceId } from './desktop.mjs';
 
 const ACTIVITY_TEXT = {
   check: '正在检查连接…',
@@ -34,13 +33,6 @@ const ERROR_TEXT = {
   connectivity_cleanup_pending: '旧连接正在清理，请稍后重试',
   access_lifecycle_changed: '连接状态已经变化，请重新检查后再试',
 };
-
-export function trayExecutable(root = installRoot) {
-  if (process.platform === 'win32') return join(root, 'platform', 'windows', 'team-devspace-tray.exe');
-  if (process.platform === 'darwin') return join(root, 'platform', 'macos', 'Team DevSpace Tray.app',
-    'Contents', 'MacOS', 'TeamDevSpaceTray');
-  throw new Error('The native tray is available on Windows and macOS; use the CLI on Linux');
-}
 
 function traySummary(status, gatewayState, desiredRemoteAccess) {
   const enrolled = status.remoteAccess !== 'not-enrolled';
@@ -122,14 +114,6 @@ function actionError(action, error) {
   return `${ACTION_TEXT[action] ?? '操作'}失败：${errorText(error)}`;
 }
 
-export async function trayInstanceId(home = stateHome()) {
-  const canonical = await realpath(home).catch(error => {
-    if (error.code === 'ENOENT') return resolve(home);
-    throw error;
-  });
-  return createHash('sha256').update(process.platform === 'win32' ? canonical.toLowerCase() : canonical).digest('hex');
-}
-
 export async function runTray(home = stateHome(), options = {}) {
   const helper = options.helper ?? trayExecutable(options.root);
   const child = spawn(helper, options.helperArgs ?? [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -155,9 +139,17 @@ export async function runTray(home = stateHome(), options = {}) {
   const send = state => {
     if (!helperClosed && child.stdin.writable && !child.stdin.destroyed) child.stdin.write(`${JSON.stringify(state)}\n`);
   };
-  const present = extra => send(trayState(currentStatus, {
-    busy: mutationBusy || exitRequested, exiting: exitRequested, activity: currentActivity, ...extra,
-  }));
+  const present = extra => {
+    const value = trayState(currentStatus, {
+      busy: mutationBusy || exitRequested, exiting: exitRequested, activity: currentActivity, ...extra,
+    });
+    if (process.platform === 'darwin') {
+      value.summary = macText(value.summary);
+      if (value.activity) value.activity = macText(value.activity);
+      if (value.alert) value.alert = macText(value.alert);
+    }
+    send(value);
+  };
 
   const operations = options.operations ?? {
     status: () => deviceStatus(home),
@@ -166,8 +158,10 @@ export async function runTray(home = stateHome(), options = {}) {
     restart: () => restartTeamDevSpace(home),
     repair: () => repairDevice(home, { preserveTray: true }),
     'switch-key': async ({ signal, onProgress }) => {
-      if (process.platform === 'darwin' && currentStatus?.remoteAccess === 'not-enrolled') {
-        return macSetupDialog(home, { preserveTray: true, signal });
+      if (process.platform === 'darwin') {
+        return currentStatus?.remoteAccess === 'not-enrolled'
+          ? macSetupDialog(home, { preserveTray: true, signal })
+          : macReplaceAccessKey(home, { signal, onProgress });
       }
       const accessKey = await promptReplacementAccessKey({ signal });
       if (!accessKey || signal.aborted) return { cancelled: true };

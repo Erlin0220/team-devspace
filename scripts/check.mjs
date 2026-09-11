@@ -39,6 +39,8 @@ const trayLock = await readFile('native/tray/Cargo.lock', 'utf8');
 const trayToolchain = await readFile('native/tray/rust-toolchain.toml', 'utf8');
 const trayBuild = await readFile('scripts/tray-build.mjs', 'utf8');
 const trayMain = await readFile('native/tray/src/main.rs', 'utf8');
+const macUiMain = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
+const macUiBuild = await readFile('scripts/macos-ui-build.mjs', 'utf8');
 const nativeSmoke = await readFile('scripts/native-smoke.mjs', 'utf8');
 const platformAcceptance = await readFile('scripts/platform-acceptance.mjs', 'utf8');
 const acceptanceVerifier = await readFile('scripts/verify-acceptance.mjs', 'utf8');
@@ -73,10 +75,10 @@ if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow
 }
 if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package') ||
     codemagic.includes('npm run package -- --reuse-dependencies') ||
-    !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || !codemagic.includes('TEAM_DEVSPACE_TRAY_BINARY') ||
-    !codemagic.includes('TEAM_DEVSPACE_TRAY_CACHE_DIR') || !codemagic.includes('cloudflaredSourceCommit') ||
+    !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || codemagic.includes('TEAM_DEVSPACE_TRAY_') ||
+    codemagic.includes('rustup') || !codemagic.includes('cloudflaredSourceCommit') ||
     !codemagic.includes('cloudflaredGoVersion') || !codemagic.includes('/usr/bin/lipo -archs') ||
-    !codemagic.includes('/usr/bin/otool -l') || !codemagic.includes('TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"') ||
+    !codemagic.includes('/usr/bin/otool -l') ||
     !codemagic.includes('-perm -111') || !codemagic.includes("-name '*.node'") ||
     codemagic.includes('find "$root" -type f -print0') || codemagic.includes('npm ci') ||
     !packageScript.includes('process.env.npm_execpath') ||
@@ -128,7 +130,8 @@ if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr
 }
 const macosMinimumKey = '<key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string>';
 if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(macosMinimumKey).length - 1 !== 2 ||
-    !trayBuild.includes('MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion') ||
+    !macUiBuild.includes('release.distribution.macosMinimumVersion') ||
+    !macUiBuild.includes('arm64-apple-macosx${minimum}') || !macUiBuild.includes("['--self-test']") ||
     !packageScript.includes("process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: release.distribution.macosMinimumVersion } : {}") ||
     !packageScript.includes('`:macos-${release.distribution.macosMinimumVersion}`') ||
     !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_ARCH__') ||
@@ -137,7 +140,10 @@ if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(m
     !macosPreinstall.includes('/usr/sbin/sysctl -n hw.optional.arm64') ||
     !macosPostinstall.startsWith('#!/bin/sh\nset -u\n') || macosPostinstall.includes('set -eu') ||
     !macosPostinstall.includes('if ! /bin/launchctl asuser') ||
+    !macosPostinstall.includes('.app-started') || !macosPostinstall.includes('AUTO_OPEN_UNCONFIRMED') ||
+    !macosPostinstall.includes('display alert "Team DevSpace 需要完成设置"') ||
     !macosLaunchApp.includes('setup.log') || !macosLaunchApp.includes('>> "$LOG" 2>&1') ||
+    !macosLaunchApp.includes('.app-started') || macosLaunchApp.includes('display notification') ||
     !codemagic.includes('/usr/bin/lipo -archs') || !codemagic.includes('/usr/bin/otool -l') ||
     !codemagic.includes('macOS deployment target mismatch: $file')) {
   throw new Error('macOS packaging must share one minimum-OS source, keep postinstall fail-open, capture setup diagnostics, and retain cheap Mach-O compatibility checks');
@@ -147,14 +153,14 @@ if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('
   throw new Error('Windows background startup must use only the precompiled no-console launcher');
 }
 if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.includes('winit = "=0.30.12"') ||
-    !trayCargo.includes('windows-sys = { version = "=0.61.2"') || !trayCargo.includes('libc = "=0.2.189"') ||
+    !trayCargo.includes('windows-sys = { version = "=0.61.2"') || trayCargo.includes('target_os = "macos"') ||
     !trayToolchain.includes('channel = "1.85.1"') || !trayLock.includes('name = "tray-icon"') ||
     !trayBuild.includes("'test', '--release', '--locked'") || !trayBuild.includes("'build', '--release', '--locked'") ||
-    !trayMain.includes('CreateMutexW') || !trayMain.includes('libc::flock') || !trayMain.includes('emit("duplicate", None)') ||
+    !trayMain.includes('CreateMutexW') || trayMain.includes('target_os = "macos"') || !trayMain.includes('emit("duplicate", None)') ||
     !trayMain.includes('include_bytes!("../assets/team-devspace-32.rgba")') ||
     !trayMain.includes('Submenu::new("故障排查"') || !trayMain.includes('MenuItem::new("更换 Access Key…"') ||
     !codemagic.includes('npm run package')) {
-  throw new Error('Native tray must stay single-instance, use the branded embedded icon, expose the compact troubleshooting/key lifecycle menu, and enter the macOS package build');
+  throw new Error('Windows Rust tray must keep its existing single-instance, branded icon and key lifecycle menu');
 }
 if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptance.mjs' ||
     !manifest.scripts['acceptance:local']?.includes('npm run acceptance:platform') ||
@@ -165,18 +171,24 @@ if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptanc
     !acceptanceVerifier.includes('acceptance was produced from a dirty source checkout')) {
   throw new Error('Full platform acceptance must remain available as an explicit local/manual diagnostic even though thin macOS packaging does not run it');
 }
+if (!macUiMain.includes('NSStatusBar.system.statusItem') || !macUiMain.includes('image?.isTemplate = true') ||
+    !macUiMain.includes('NSSecureTextField') || !macUiMain.includes('NSOpenPanel') ||
+    !macUiMain.includes('flock(descriptor') || !macUiMain.includes('validInstanceID') ||
+    clientSetup.includes('osascript') || !trayBuild.includes('return buildMacUi(destination)')) {
+  throw new Error('macOS must use the thin AppKit helper and existing pipe protocol, never the retired Rust/AppleScript UI');
+}
 if (!codemagic.includes('$HOME/.cache/team-devspace-native-v1') ||
-    !codemagic.includes('cloudflared.sha256') || !codemagic.includes('TeamDevSpaceTray.sha256') ||
+    !codemagic.includes('cloudflared.sha256') || codemagic.includes('TeamDevSpaceTray.sha256') ||
     !codemagic.includes('compatible_macho') || !codemagic.includes('cloud_fingerprint') ||
-    !codemagic.includes('tray_fingerprint') ||
+    codemagic.includes('tray_fingerprint') ||
     ['$HOME/.npm', '$HOME/.cargo/registry', '$HOME/.cargo/git', '$HOME/Library/Caches/go-build',
       '$CM_BUILD_DIR/build/cache', '$CM_BUILD_DIR/build/tray-target-darwin-arm64',
       '$CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules'].some(path => codemagic.includes(path))) {
-  throw new Error('Codemagic must cache only verified final cloudflared/tray artifacts, never large reproducible build intermediates');
+  throw new Error('Codemagic must cache only verified final cloudflared artifacts, not UI binaries or large build intermediates');
 }
 if (!packageScript.includes('cloudflaredBuild') || !packageScript.includes('reusedFromBuildCache') ||
-    !trayBuild.includes('readTrayArtifactCache') || !trayBuild.includes('Cached macOS tray binary hash differs')) {
-  throw new Error('macOS final-artifact cache reuse must remain hash-verified and visible in release provenance');
+    !packageScript.includes('implementation: trayBuild.implementation') || trayBuild.includes('readTrayArtifactCache')) {
+  throw new Error('Cloudflared cache reuse and the actual native UI implementation must be visible in release provenance');
 }
 if (!/^[a-f0-9]{64}$/.test(binaries.zig?.['win32-x64']?.executableSha256 ?? '')) {
   throw new Error('Cached Windows Zig executable must have an exact SHA-256 pin');

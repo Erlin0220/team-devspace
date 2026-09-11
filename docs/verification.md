@@ -2,6 +2,29 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
+## Thin macOS AppKit UI: 2026-09-11 (local candidate, not published)
+
+Scope: the existing `c4332cc` checkout plus this change, including the pre-existing first-launch recovery work. Node remains the only owner of device state, Enrollment, connection operations and startup. Windows keeps its Rust tray; macOS now has one system-AppKit helper and the existing pipe transport. No new runtime package dependency, service, port or persisted state was added. This is an implementation description, not proof of macOS execution.
+
+- [x] Final source checks passed: `npm run check`, `git diff --check`, POSIX syntax checks for macOS preinstall/postinstall/launch scripts, YAML parsing and `bash -n` for every Codemagic script block. The workflow remains manual-only; no build was dispatched.
+- [x] The full Node suite passed with **94 tests: 93 passed, 1 Windows-platform skip, 0 failures**. The skip is the Unix symlink CLI test. This includes the existing real local DevSpace/MCP tests and lifecycle/credential regression tests; it does not establish a real Cloudflare or ChatGPT connection.
+- [x] New process-based form transport tests exercise error/retry on the same pipe, duplicate-submit exclusion, idle cancellation, duplicate-form response, cancellation and helper crash during a transaction, startup deadlines, missing executable, malformed/oversized input and credential redaction. These tests launch a Node fixture in place of the native view; they validate the Node boundary, not AppKit rendering.
+- [x] `npm run build:tray` compiled the Windows tray with the locked Rust toolchain, passed all 3 Rust tests, and verified an x64 GUI-subsystem PE. `npm run test:tray` actually started the Windows helper, updated its state, rejected a duplicate instance and exited on EOF.
+- [x] A local Windows package build, real isolated native startup/MCP/stop/restart/cleanup test, isolated NSIS install/repair/upgrade/uninstall transaction, and release-layout verification passed. The installer test retained projects and reported zero test residue. It uses isolated registry/start-menu identities, not the employee's production installation; the artifact was not published.
+- [x] Source review repaired transaction-safe form exit, UI subprocess failure reporting/redaction, single-instance file-descriptor lifetime, explicit main-actor/delegate lifetime, pending key-replacement routing and preservation of the existing tray during setup recovery. Packaging no longer assumes every native UI has Cargo metadata; the obsolete macOS Rust/cache path is removed.
+- [ ] **Swift/AppKit compilation has not run on this Windows host.** Neither `swift` nor `swiftc` is available here. The package path compiles using `xcrun swiftc`, the configured arm64/macOS 12.0 target and a headless `--self-test`; those commands still need execution on a Mac. YAML/source checks do not establish a successful macOS build.
+- [ ] The expanded native Mac smoke (real NSMenu actions, form retry, form/tray coexistence, duplicate form, malformed input, EOF) is implemented but has not run. Real Mac acceptance must also cover light/dark appearance, keyboard/paste/focus, directory selection, pause/resume/repair/exit, login startup, failed setup recovery, upgrade with a retained key and a retained paused state, and actual `.pkg`/Gatekeeper behavior.
+
+The earlier first-launch preparation notification below describes an intermediate repair. The AppKit change supersedes routine success/preparation notifications: the form appears after offline bootstrap and owns validation/progress/retry feedback. The early `.app-started` marker, setup log and installer recovery alert remain; the marker means wrapper entry, not a healthy connection.
+
+## macOS first-launch visibility repair: 2026-09-11 (local changes, not published)
+
+- [x] The PKG postinstall no longer treats a successful `open` return as proof that the installed App actually launched. It deletes the previous per-user `.app-started` marker, requests the App in the logged-in GUI session, waits up to 15 seconds for a fresh marker written before bootstrap/extraction, and records `AUTO_OPEN_UNCONFIRMED` when LaunchServices/Gatekeeper prevents confirmed first launch.
+- [x] A failed or unverifiable automatic launch remains a recoverable onboarding state instead of failing the valid package transaction, but the logged-in user now receives an explicit desktop alert explaining how to open Team DevSpace from Applications and use System Settings → Privacy & Security → Open Anyway when required. The implementation deliberately does not remove quarantine metadata.
+- [x] The App wrapper emits immediate first-run feedback before the potentially slow offline bootstrap, keeps detailed setup output in `~/Library/Application Support/TeamDevSpace/logs/setup.log`, and distinguishes a retained pending-Enrollment tray state from a setup that never created local state.
+- [x] On the Windows development host, POSIX shell syntax checks, `npm run check`, `npm run test:distribution`, `git diff --check`, and the full `npm test` suite passed after the repair. The new regression test verifies fresh-marker ordering, bounded confirmation waiting, visible Gatekeeper recovery guidance and fail-open package semantics.
+- [ ] This does not prove Gatekeeper, Access Key dialog focus, LaunchAgent startup or menu-bar rendering on a real Mac. Rebuild the current arm64 candidate on Codemagic and repeat installation on the employee Mac before closing the macOS acceptance item.
+
 ## Windows installed-tray investigation: 2026-09-10 (local changes, not published)
 
 - Scope: actual `C:\project\team-devspace` main checkout at `ca5f842` plus uncommitted repairs. No push, CI dispatch, Worker redeployment, or production credential rotation was performed.

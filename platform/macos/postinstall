@@ -19,11 +19,39 @@ case "$USER_ID" in
     exit 0
     ;;
 esac
+show_launch_help() {
+  if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/osascript -e 'display alert "Team DevSpace 需要完成设置" message "Team DevSpace 已安装，但安装后的应用启动未能确认。请从“应用程序”手动打开 Team DevSpace。若 macOS 阻止打开，请前往“系统设置 → 隐私与安全性”，对 Team DevSpace 选择“仍要打开”，然后再次打开。随后会弹出 Access Key，并在设置完成后显示菜单栏图标。" as warning buttons {"好"} default button "好"'; then
+    log 'WARN code=USER_ALERT_FAILED'
+  fi
+}
+USER_HOME=$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //' || true)
+APP_STARTED=''
+if [ -n "$USER_HOME" ]; then
+  APP_STARTED="$USER_HOME/Library/Application Support/TeamDevSpace/.app-started"
+  /bin/rm -f "$APP_STARTED" 2>/dev/null || true
+else
+  log 'WARN code=USER_HOME_LOOKUP_FAILED; launch confirmation unavailable'
+fi
 if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/open '/Applications/Team DevSpace.app'; then
   log 'WARN code=AUTO_OPEN_FAILED; install remains successful'
   echo 'Team DevSpace was installed, but it could not be opened automatically. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
+  show_launch_help
+elif [ -n "$APP_STARTED" ]; then
+  attempt=0
+  while [ "$attempt" -lt 15 ] && [ ! -f "$APP_STARTED" ]; do
+    /bin/sleep 1
+    attempt=$((attempt + 1))
+  done
+  if [ -f "$APP_STARTED" ]; then
+    log 'auto-open confirmed by app-start marker'
+  else
+    log 'WARN code=AUTO_OPEN_UNCONFIRMED; install remains successful'
+    echo 'Team DevSpace was installed, but its first-run application did not confirm startup. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
+    show_launch_help
+  fi
 else
-  log 'auto-open requested successfully'
+  log 'WARN code=AUTO_OPEN_UNVERIFIED; install remains successful'
+  show_launch_help
 fi
 log 'complete'
 exit 0

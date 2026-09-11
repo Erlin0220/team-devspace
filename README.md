@@ -32,7 +32,8 @@ ChatGPT 工作空间 App + 员工 Access Key
 | cloudflared | 2026.8.3 |
 | Windows Git/Bash 后备环境 | Git for Windows 2.55.0.windows.5 |
 | Windows 安装器 | NSIS 3.12 |
-| 原生托盘 | tray-icon 0.24.2 / Rust 1.85.1 |
+| Windows 原生托盘 | tray-icon 0.24.2 / Rust 1.85.1 |
+| macOS 原生界面 | 系统 AppKit / Foundation，单文件 Swift，无第三方 UI 依赖 |
 | Admin CSS | Pico CSS 2.1.1 |
 
 构建固定使用 npm 11.19.1，避免上游发布的旧 shrinkwrap 绕过安全补丁覆盖；只允许已审核、精确版本的依赖安装脚本。官方 DevSpace 代码保持原样，下游 `undici`、`brace-expansion` 和 `protobufjs` 使用已修补的锁定版本。包管理锁文件和二进制 SHA-256 固定实际输入。员工端不执行 `npm update`；升级使用经过重新验证的 Team DevSpace 安装包。二进制来源和校验值见 `scripts/binaries.json`，安装包内附组件说明、SBOM 和构建来源记录。
@@ -84,7 +85,7 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 **Windows x64：**管理员分发 `Team-DevSpace-0.2.1-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
 
-**macOS：**使用 Apple Silicon (`arm64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；workflow 只做原生打包、release layout 校验和 Mach-O/最低系统版本检查，不执行系统级 `.pkg` 安装事务。管理员下载 Codemagic 产物并核对随包 SHA-256，再交给同事真机安装验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime；Enrollment 失败时菜单栏入口仍保留，并提供“完成设置…”重新输入 Access Key。
+**macOS：**使用 Apple Silicon (`arm64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；workflow 只做原生打包、release layout 校验和 Mach-O/最低系统版本检查，不执行系统级 `.pkg` 安装事务。管理员下载 Codemagic 产物并核对随包 SHA-256，再交给同事真机安装验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。安装完成后 PKG 会自动打开 Team DevSpace，并通过用户状态目录中的启动标记确认 App 确实进入了首启脚本；如果 LaunchServices/Gatekeeper 导致自动首启没有真正发生，会直接向当前登录用户显示恢复指引，而不是静默显示“安装成功”。首次打开完成本地校验和解压后，在同一个 AppKit 窗口输入 Access Key、选择项目目录，并显示验证、错误、重试和完成状态，不下载 runtime；绑定失败时保留已产生的待配置状态与菜单栏入口，用户取消设置不作为安装失败。日常操作使用原生菜单栏与系统单色图标，不弹常规成功通知，设置窗口仍复用 Node 中的验证和生命周期逻辑。
 
 **Linux x64：**当前包要求 `x86_64`、glibc 2.34+ 和可用的 systemd user manager。Linux 当前不走 GitHub Actions；需要时在原生 Linux x64 主机执行 `npm run package`，取得 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与对应 SHA-256。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
 
@@ -143,9 +144,9 @@ npm run test:native
 
 `package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建器优先复用启动它且版本完全匹配 `packageManager` 的 npm，避免 hosted macOS 为取得 npm CLI 再完整安装一次仓库依赖；本地全局 npm 版本不匹配时仍可回退到仓库锁定的 npm devDependency。构建后自动清理解压/组装中间文件；所有平台的员工 runtime archive 都排除 source map 与 TypeScript 声明文件，并且不携带构建用 npm 和 lock/.npmrc。
 
-`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；这些深度验收保留为本地/人工诊断，不进入当前 Codemagic 快速打包路径。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
+`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换状态并正常退出。Windows Rust helper 使用 `cargo build --locked`，构建还检查 PE 必须是原生 x64 GUI 子系统；macOS helper 使用系统 `xcrun swiftc`，额外验收菜单事件、错误输入拒绝、表单单实例、错误后原地重试与正常关闭。macOS 构建中的 `--self-test` 不要求 GUI，但不替代桌面验收。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；这些深度验收保留为本地/人工诊断，不进入当前 Codemagic 快速打包路径。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
 
-原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64 使用 Codemagic `mac_mini_m2` 手动构建，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 只持久化经过 fingerprint、SHA-256、arm64 和最低系统版本校验的最终 `cloudflared` 与 Tray 原生产物；npm cache、`node_modules`、Cargo target/registry、Go SDK/build cache 和下载归档都不持久化。cache miss 时才安装对应 Go/Rust 工具链并从锁定源码重建，缓存损坏也自动回退重建；release layout 校验和 Mach-O arm64/最低系统版本检查始终保留。兼容性扫描只枚举可执行文件和 `.node`/`.dylib`/`.so`/`.bundle` 原生候选，不再逐个探测整个 `node_modules`。它不跑完整测试矩阵和系统级 `.pkg` 安装。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
+原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64 使用 Codemagic `mac_mini_m2` 手动构建，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 只持久化经过 fingerprint、SHA-256、arm64 和最低系统版本校验的最终 `cloudflared` 原生产物；AppKit helper 直接使用已固定的 Xcode 工具链编译，不再安装 Rust 或维护 Tray 产物缓存。npm cache、`node_modules`、Cargo target/registry、Go SDK/build cache 和下载归档都不持久化。cloudflared cache miss 时才安装 Go 工具链并从锁定源码重建，缓存损坏也自动回退重建；release layout 校验和 Mach-O arm64/最低系统版本检查始终保留。兼容性扫描只枚举可执行文件和 `.node`/`.dylib`/`.so`/`.bundle` 原生候选，不再逐个探测整个 `node_modules`。它不跑完整测试矩阵和系统级 `.pkg` 安装。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 

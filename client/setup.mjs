@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { approvedRoots, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
   readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
@@ -11,8 +9,7 @@ import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } 
 
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
-
-const exec = promisify(execFile);
+import { runMacForm } from './macos-ui.mjs';
 
 async function hasTunnelCredential(home) {
   try { return Boolean((await readFile(join(home, 'tunnel.token'), 'utf8')).trim()); }
@@ -156,18 +153,11 @@ try {
       return (await runWindowsDesktop(script, { signal, timeout: 300000 })).trim() || null;
     } catch (error) { if (error.name === 'AbortError') return null; throw error; }
   }
-  if (process.platform === 'darwin') {
-    const { stdout } = await exec('/usr/bin/osascript', ['-e',
-      'try', '-e',
-      'text returned of (display dialog "Enter the new Team DevSpace Access Key. The current remote connection will be replaced; project directories are kept." default answer "" with hidden answer buttons {"Cancel", "Replace"} default button "Replace" with title "Team DevSpace")',
-      '-e', 'on error number -128', '-e', 'return ""', '-e', 'end try'], { signal, timeout: 300000 });
-    return stdout.trim() || null;
-  }
-  throw new Error('Access Key replacement from the tray is available on Windows and macOS');
+  throw new Error('Use the native macOS form for Access Key replacement');
 }
 
-async function enrollWithoutReplacingTray(home, { onProgress, startup }) {
-  const enrolled = await configureDevice({}, { home, startup: false, onProgress });
+async function enrollWithoutReplacingTray(home, { onProgress, startup, input = {} }) {
+  const enrolled = await configureDevice(input, { home, startup: false, onProgress });
   if (!startup) return { ...enrolled, startup: 'not-installed' };
   const state = await loadState(home);
   await installServices(state, home, undefined, COMPONENTS);
@@ -288,39 +278,37 @@ export async function deviceStatus(home = stateHome()) {
 export async function macSetupDialog(home = stateHome(), { preserveTray = false, signal } = {}) {
   if (process.platform !== 'darwin') throw new Error('The macOS setup dialog is only available on macOS');
   const previous = await readJson(join(home, 'state.json'), null);
-  if (previous?.bindingId) return configureDevice({}, { home });
-  // Pending Enrollment must stay editable. A failed first attempt may already have persisted the
-  // local identity/key/roots, but without a Binding it must never lock the user out of setup.
-  const key = await exec('/usr/bin/osascript', ['-e',
-    'text returned of (display dialog "Enter your administrator-issued Team DevSpace Access Key. This key grants remote coding access as your user account." default answer "" with hidden answer buttons {"Cancel", "Continue"} default button "Continue" with title "Team DevSpace")'], { signal, timeout: 300000 });
-  let roots = previous?.roots;
-  if (!Array.isArray(roots) || roots.length === 0) {
-    const folder = await exec('/usr/bin/osascript', ['-e',
-      'POSIX path of (choose folder with prompt "Choose your project directory. File tools are restricted to it; shell commands still run with your user permissions.")'], { signal, timeout: 300000 });
-    roots = [folder.stdout.trim()];
-  }
-  try {
-    if (!preserveTray) return await configureDevice({ accessKey: key.stdout.trim(), roots }, { home });
-    const enrolled = await configureDevice({ accessKey: key.stdout.trim(), roots }, { home, startup: false });
-    const state = await loadState(home);
-    await installServices(state, home, undefined, COMPONENTS);
-    const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
-    if (startComponents.length) await serviceAction('start', state, home, startComponents);
-    return { ...enrolled, startup: 'installed' };
-  } catch (error) {
-    // On first launch, keep a tray-only control surface alive even when Enrollment fails. The app
-    // payload remains usable and the employee can correct the Access Key without reinstalling.
-    const pending = await readJson(join(home, 'state.json'), null);
-    if (!preserveTray && pending && !pending.bindingId) {
+  if (previous?.pendingAccessKey) return macReplaceAccessKey(home, { signal });
+  if (previous?.bindingId) return preserveTray
+    ? enrollWithoutReplacingTray(home, { startup: true })
+    : configureDevice({}, { home });
+  return runMacForm({ home, mode: 'setup', roots: previous?.roots ?? [], signal,
+    submit: async (input, onProgress) => {
       try {
-        await installServices(pending, home, undefined, ['tray']);
-        await serviceAction('start', pending, home, ['tray']);
-      } catch {}
-      return { enrolled: false, pendingEnrollment: true, startup: 'tray-only',
-        reason: error.code ?? error.message, roots: pending.roots };
-    }
-    throw error;
-  }
+        // The UI owns no state or network logic. Existing operations still own
+        // validation, enrollment, pause preservation and startup transactions.
+        if (preserveTray) return await enrollWithoutReplacingTray(home, { input, onProgress, startup: true });
+        return await configureDevice(input, { home, onProgress });
+      } catch (error) {
+        const pending = await readJson(join(home, 'state.json'), null);
+        if (!preserveTray && pending && !pending.bindingId) {
+          try {
+            await installServices(pending, home, undefined, ['tray']);
+            await serviceAction('start', pending, home, ['tray']);
+          } catch {}
+        }
+        // The same form remains visible for correction/retry. Closing it is
+        // cancellation, not an installer failure; pending state is retained.
+        throw error;
+      }
+    },
+  });
+}
+
+export function macReplaceAccessKey(home = stateHome(), { signal, onProgress } = {}) {
+  return runMacForm({ home, mode: 'replace-key', signal, onProgress,
+    submit: ({ accessKey }, progress) => replaceAccessKey(accessKey, home, { onProgress: progress }),
+  });
 }
 
 export async function requestFromFile(path, remove = false) {
