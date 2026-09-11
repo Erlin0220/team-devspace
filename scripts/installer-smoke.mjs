@@ -225,7 +225,8 @@ async function recoverStaleSmokeScopes() {
 }
 async function installAttempt() {
   const requestFile = join(work, 'setup-request.json');
-  await atomicJson(requestFile, { gateway: `http://127.0.0.1:${server.address().port}`, accessKey: key, roots: [project] });
+  await atomicJson(requestFile, { gateway: `http://127.0.0.1:${server.address().port}`,
+    accessKey: key, currentProjectRoot: project });
   env.TEAM_DEVSPACE_SETUP_REQUEST_FILE = requestFile;
   const code = await execute(installer, ['/S', `/D=${install}`]);
   delete env.TEAM_DEVSPACE_SETUP_REQUEST_FILE;
@@ -274,7 +275,7 @@ try {
   const upgraded = await installAttempt();
   assert.equal(enrollmentCalls, enrollmentCallsBeforeUpgrade, 'An enrolled device upgrade must not call /v1/enroll again');
   for (const name of ['deviceId', 'deviceSecret', 'ownerToken', 'accessKey', 'bindingId']) assert.equal(upgraded[name], enrolled[name]);
-  assert.deepEqual(upgraded.roots, enrolled.roots);
+  assert.equal(upgraded.currentProjectRoot, enrolled.currentProjectRoot);
   const secondActive = await readJson(join(install, 'active.json'));
   assert.notEqual(secondActive.path, firstActive.path);
   assert.equal(await exists(join(secondActive.path, 'obsolete-upgrade-fixture.txt')), false);

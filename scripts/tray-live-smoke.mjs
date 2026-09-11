@@ -69,7 +69,8 @@ async function remoteMcp(key) {
 }
 try {
   for (const letter of ['a', 'b']) keys.push(await createAccessKey(config, `tray-live-${suffix}-${letter}`));
-  await setup.configureDevice({ gateway: config.gateway, accessKey: keys[0].accessKey, roots: [project] }, { home, startup: false });
+  await setup.configureDevice({ gateway: config.gateway, accessKey: keys[0].accessKey,
+    currentProjectRoot: project }, { home, startup: false });
   state = await stateApi.loadState(home);
   await lifecycle.installServices(state, home, root, lifecycle.COMPONENTS);
   await lifecycle.serviceAction('start', state, home, lifecycle.COMPONENTS);
@@ -89,10 +90,10 @@ try {
   const replaced = await stateApi.loadState(home);
   assert.equal(replaced.deviceId, identity.deviceId);
   assert.equal(replaced.ownerToken, identity.ownerToken);
-  assert.deepEqual(replaced.roots, identity.roots);
+  assert.equal(replaced.currentProjectRoot, identity.currentProjectRoot);
   assert.equal(replaced.accessKey, keys[1].accessKey);
   assert.notEqual(replaced.bindingId, identity.bindingId);
-  await remoteMcp(keys[1].accessKey); passed('replace Access Key retains identity/roots and reconnects with new key');
+  await remoteMcp(keys[1].accessKey); passed('replace Access Key retains identity/project root and reconnects with new key');
   assert.equal((await control(config.gateway, '/v1/enrollment/preflight', keys[0].accessKey, { body: {} })).available, true);
   passed('old Key binding released');
   await actions.stopTeamDevSpace(home);

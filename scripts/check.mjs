@@ -28,6 +28,10 @@ const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8'
 const windowsBootstrap = await readFile('platform/windows/bootstrap.ps1', 'utf8');
 const windowsSigning = await readFile('scripts/sign-internal-windows.ps1', 'utf8');
 const clientSetup = await readFile('client/setup.mjs', 'utf8');
+const clientState = await readFile('client/state.mjs', 'utf8');
+const clientBridge = await readFile('client/bridge.mjs', 'utf8');
+const clientCli = await readFile('client/cli.mjs', 'utf8');
+const clientDesktop = await readFile('client/desktop.mjs', 'utf8');
 const unixBootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
 const macosPreinstall = await readFile('platform/macos/preinstall', 'utf8');
 const macosPostinstall = await readFile('platform/macos/postinstall', 'utf8');
@@ -104,8 +108,8 @@ if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [strin
     !windowsBootstrap.includes("New-Object -ComObject 'Schedule.Service'") ||
     !windowsBootstrap.includes('GetSecurityDescriptor(1)') ||
     !windowsBootstrap.includes("Start-Process -FilePath $cmd -Verb RunAs") ||
-    !windowsBootstrap.includes('exit 10') ||
-    !windowsInstaller.includes('$ResultCode == 10') ||
+    !windowsBootstrap.includes('exit 10') || !windowsBootstrap.includes('onboarding-message.txt') ||
+    !windowsInstaller.includes('$ResultCode == 10') || !windowsInstaller.includes('$SetupMessage') ||
     !windowsInstaller.includes('File /r "${OFFLINE_OBJECTS}\\*.*"') ||
     !windowsInstaller.includes('$PLUGINSDIR\\offline') ||
     windowsBootstrap.includes('$cacheRoot') || windowsBootstrap.includes('$legacyRoot')) {
@@ -117,6 +121,15 @@ if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device
     !clientSetup.includes("'/v1/enrollment/preflight'") || !clientSetup.includes("'/v1/device/release'") ||
     !clientSetup.includes("connection: startup ? 'starting' : 'not-started'")) {
   throw new Error('Existing Enrollment must preserve explicit pause intent, and Access Key replacement must validate before releasing the current Device Binding');
+}
+if (!clientState.includes('currentProjectRoot') || !clientState.includes('allowedRoots: [currentProjectRoot]') ||
+    !clientBridge.includes('state.currentProjectRoot') || clientBridge.includes('configuredWorkspaceRoot') ||
+    clientBridge.includes('comparablePath') || clientCli.includes('roots list') || clientCli.includes("command === 'roots'") ||
+    !clientCli.includes('project-root show | set <path>') || !clientSetup.includes('changeProjectRoot') ||
+    !clientSetup.includes('projectRootAvailable') || !clientSetup.includes('access_key_still_bound') ||
+    !clientDesktop.includes('重置设备绑定') || !windowsInstaller.includes('currentProjectRoot') ||
+    !trayMain.includes('MenuItem::new("项目目录…"') || !macUiMain.includes('"project-root"')) {
+  throw new Error('Team DevSpace must expose exactly one Current Project Root, avoid cross-OS/multi-root path selection, and keep reset/project recovery actions explicit');
 }
 if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
     !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
@@ -171,7 +184,8 @@ if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptanc
     !acceptanceVerifier.includes('acceptance was produced from a dirty source checkout')) {
   throw new Error('Full platform acceptance must remain available as an explicit local/manual diagnostic even though thin macOS packaging does not run it');
 }
-if (!macUiMain.includes('NSStatusBar.system.statusItem') || !macUiMain.includes('image?.isTemplate = true') ||
+if (!macUiMain.includes('NSStatusBar.system.statusItem') || !macUiMain.includes('TeamDevSpaceTemplate') ||
+    !macUiMain.includes('image.isTemplate = true') || macUiMain.includes('systemSymbolName: symbol') ||
     !macUiMain.includes('NSSecureTextField') || !macUiMain.includes('NSOpenPanel') ||
     !macUiMain.includes('flock(descriptor') || !macUiMain.includes('validInstanceID') ||
     clientSetup.includes('osascript') || !trayBuild.includes('return buildMacUi(destination)')) {

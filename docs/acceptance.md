@@ -33,7 +33,7 @@ Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新�
 
 无 systemd 云电脑与普通 Linux 复用同一离线包；运行方式和 `/workspace` 持久目录安装方法见 [Linux standalone](linux-standalone.md)。先保留上述普通 WSL/systemd 完整验收，再执行 `npm run test:standalone`（目标必须实际没有 systemctl），或者在 WSL 中使用文档所列的隔离 mount/PID namespace helper。该 helper 的 root 仅用于创建隔离测试环境，产品和安装测试始终以普通用户运行，不修改宿主的 systemd。
 
-此验收使用真实离线安装器、Node/native modules、Runtime、Bridge 和 MCP，但 Tunnel 与 Enrollment 控制面为显式测试替身；不得将其写成真实 Cloudflare 或网页 ChatGPT 已验收。测试包含进程崩溃/有界退避、孤儿及独立会话子进程回收、PID 复用保护、重复启动、暂停后 start/repair 不复活、恢复、roots 修改范围、升级失败恢复、日志跟随退出和新终端卸载清理。普通 systemd 原生验收同时覆盖从运行中的 standalone 到 systemd 的显式所有权迁移。
+此验收使用真实离线安装器、Node/native modules、Runtime、Bridge 和 MCP，但 Tunnel 与 Enrollment 控制面为显式测试替身；不得将其写成真实 Cloudflare 或网页 ChatGPT 已验收。测试包含进程崩溃/有界退避、孤儿及独立会话子进程回收、PID 复用保护、重复启动、暂停后 start/repair 不复活、恢复、Current Project Root 切换范围、升级失败恢复、日志跟随退出和新终端卸载清理。普通 systemd 原生验收同时覆盖从运行中的 standalone 到 systemd 的显式所有权迁移。
 
 真实 Grok 验收使用独立测试 Key 和 `/workspace` 测试仓库，另外验证实际 cloudflared、公网 MCP、客户端退出后连接、暂停返回 403、恢复与撤销。SDK 验收保留 `realChatGPT: false`；只有网页会话实际调用插件才可以修改该结论。完整 VM 重建/休眠唤醒与本机 Grok 客户端退出不是同一项测试；未运行的平台恢复测试必须明确保留。
 

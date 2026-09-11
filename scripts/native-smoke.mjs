@@ -114,7 +114,7 @@ function removeWindowsFixtureTask(label) {
 const state = {
   schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
   accessKey: `tds_${stateModule.randomSecret()}`, deviceSecret: stateModule.randomSecret(), ownerToken: stateModule.randomSecret(),
-  gateway: 'https://team-devspace-native.invalid', roots: [project],
+  gateway: 'https://team-devspace-native.invalid', currentProjectRoot: project,
   ports: { devspace: await freePort(), bridge: await freePort(), metrics: await freePort() },
 };
 let installed = false;

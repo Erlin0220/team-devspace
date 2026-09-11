@@ -27,7 +27,9 @@ test('macOS UI has one AppKit implementation and Windows retains its Rust build'
   assert.doesNotMatch(workflow, /TEAM_DEVSPACE_TRAY_|tray_fingerprint|rustup/);
   assert.doesNotMatch(rust, /target_os = "macos"/);
   assert.match(swift, /NSStatusBar\.system\.statusItem/);
-  assert.match(swift, /image\?\.isTemplate = true/);
+  assert.match(swift, /TeamDevSpaceTemplate/);
+  assert.match(swift, /image\.isTemplate = true/);
+  assert.doesNotMatch(swift, /systemSymbolName:\s*symbol/);
   assert.match(swift, /@MainActor/);
   assert.match(swift, /NSSecureTextField/);
   assert.match(swift, /NSOpenPanel/);

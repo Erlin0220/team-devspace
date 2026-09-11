@@ -87,35 +87,56 @@ export function normalizeGateway(value) {
   return url.origin;
 }
 
-export async function approvedRoots(values) {
-  if (!Array.isArray(values) || values.length === 0) throw new Error('Choose at least one project directory');
-  const roots = [];
-  for (const value of values) {
-    if (typeof value !== 'string' || !isAbsolute(value) || /[\r\n\x00]/.test(value)) throw new Error('Project directories must be absolute paths');
-    const root = await realpath(value);
-    if (!(await stat(root)).isDirectory()) throw new Error('An Allowed Root must be a directory');
-    if (root === parse(root).root) throw new Error('Select a project directory, not the whole disk');
-    if (!roots.includes(root)) roots.push(root);
+function projectRootError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+export function projectRootFromState(state) {
+  const value = state?.currentProjectRoot ?? (Array.isArray(state?.roots) ? state.roots[0] : undefined);
+  if (typeof value !== 'string' || !isAbsolute(value) || /[\r\n\x00]/.test(value) || value === parse(value).root) return undefined;
+  return value;
+}
+
+export async function approvedProjectRoot(value) {
+  if (typeof value !== 'string' || !isAbsolute(value) || /[\r\n\x00]/.test(value)) {
+    throw projectRootError('project_root_invalid', '请选择完整的项目目录路径');
   }
-  return roots;
+  let root;
+  try { root = await realpath(value); }
+  catch { throw projectRootError('project_root_unavailable', '项目目录不存在或当前不可访问，请重新选择项目目录'); }
+  if (!(await stat(root)).isDirectory()) throw projectRootError('project_root_invalid', '请选择一个项目目录');
+  if (root === parse(root).root) throw projectRootError('project_root_invalid', '请选择具体项目目录，不要选择整个磁盘');
+  return root;
+}
+
+export async function projectRootAvailable(value) {
+  if (!projectRootFromState({ currentProjectRoot: value })) return false;
+  try { return (await stat(value)).isDirectory(); }
+  catch { return false; }
 }
 
 export async function loadState(home = stateHome()) {
   const state = await readJson(join(home, 'state.json'));
+  const currentProjectRoot = projectRootFromState(state);
   if (state.schema !== 1 || typeof state.deviceId !== 'string' ||
       !/^[A-Za-z0-9_-]{43}$/.test(state.deviceSecret ?? '') ||
       !/^[A-Za-z0-9_-]{43}$/.test(state.ownerToken ?? '') ||
-      !Array.isArray(state.roots) || state.roots.length === 0 ||
+      !currentProjectRoot ||
       !['devspace', 'bridge', 'metrics'].every(key => Number.isInteger(state.ports?.[key]) && state.ports[key] >= 1024 && state.ports[key] <= 65535) ||
       new Set(Object.values(state.ports)).size !== 3) throw new Error('Invalid Team DevSpace state; use repair installation');
   state.gateway = normalizeGateway(state.gateway);
+  state.currentProjectRoot = currentProjectRoot;
+  delete state.roots;
   return state;
 }
 
 export async function writeUpstreamConfig(state, home = stateHome()) {
-  // All paths are private to Team DevSpace, never the user's personal ~/.devspace deployment.
+  // Team DevSpace exposes one current project. Upstream DevSpace keeps its native
+  // allowedRoots array contract internally, always with exactly that one root.
+  const currentProjectRoot = projectRootFromState(state);
+  if (!currentProjectRoot) throw projectRootError('project_root_required', '请选择要让 Team DevSpace 操作的项目目录');
   await atomicJson(join(home, 'devspace', 'config.json'), {
-    host: '127.0.0.1', port: state.ports.devspace, allowedRoots: state.roots,
+    host: '127.0.0.1', port: state.ports.devspace, allowedRoots: [currentProjectRoot],
     publicBaseUrl: state.gateway, allowedHosts: ['127.0.0.1', 'localhost'],
     stateDir: join(home, 'upstream-state'), worktreeRoot: join(home, 'worktrees'),
     agentDir: join(home, 'agents'), subagents: { enabled: false, providers: [] }, artifactsEnabled: false,

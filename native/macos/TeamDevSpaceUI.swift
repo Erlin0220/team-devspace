@@ -12,6 +12,9 @@ struct TrayState: Decodable {
     let remoteEnabled: Bool
     let switchKeyText: String
     let switchKeyEnabled: Bool
+    let projectText: String
+    let projectRoot: String?
+    let projectRootEnabled: Bool
     let restartEnabled: Bool
     let repairEnabled: Bool
     let logsEnabled: Bool
@@ -61,16 +64,18 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let formMode: Bool
     private let smoke: Bool
     private var statusItem: NSStatusItem?
+    private var statusIcon: NSImage?
     private var items: [String: NSMenuItem] = [:]
     private var window: NSWindow?
     private var keyField = NSSecureTextField()
-    private var rootsLabel = NSTextField(labelWithString: "")
+    private var projectRootLabel = NSTextField(labelWithString: "")
     private var feedback = NSTextField(wrappingLabelWithString: "")
     private var progress = NSProgressIndicator()
     private var chooseButton = NSButton()
     private var submitButton = NSButton()
     private var cancelButton = NSButton()
-    private var roots: [String] = []
+    private var formProjectRoot = ""
+    private var currentProjectRoot = ""
     private var setup = true
     private var busy = false
     private var complete = false
@@ -137,12 +142,15 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem = item
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let status = add(menu, "status", "正在检查连接…")
+        let status = add(menu, "status", "正在启动…")
         status.isEnabled = false
+        let project = add(menu, "project", "项目：未设置")
+        project.isEnabled = false
         menu.addItem(.separator())
         add(menu, "remote", "暂停远程访问").isEnabled = false
-        menu.addItem(.separator())
+        add(menu, "project-root", "项目目录…").isEnabled = false
         add(menu, "switch-key", "完成设置…").isEnabled = false
+        menu.addItem(.separator())
         let troubleshooting = NSMenu(title: "诊断与修复")
         troubleshooting.autoenablesItems = false
         add(troubleshooting, "restart", "重新连接").isEnabled = false
@@ -157,15 +165,17 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         add(menu, "about", "关于 Team DevSpace")
         add(menu, "exit", "退出 Team DevSpace").keyEquivalent = "q"
         item.menu = menu
-        setIcon("stopped", summary: "正在检查连接…")
+        if let url = Bundle.main.url(forResource: "TeamDevSpaceTemplate", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            image.isTemplate = true
+            image.size = NSSize(width: 18, height: 18)
+            statusIcon = image
+        }
+        setIcon("stopped", summary: "正在启动…")
     }
 
     private func setIcon(_ status: String, summary: String) {
-        let symbol = status == "suspended" ? "pause.circle"
-            : status == "partial" ? "exclamationmark.triangle" : "terminal"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Team DevSpace：\(summary)")
-        image?.isTemplate = true
-        statusItem?.button?.image = image
+        statusItem?.button?.image = statusIcon
         statusItem?.button?.toolTip = "Team DevSpace：\(summary)"
         statusItem?.button?.setAccessibilityLabel("Team DevSpace：\(summary)")
     }
@@ -178,9 +188,9 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
                       let type = object["type"] as? String else { throw ProtocolError.invalid }
                 if type == "form", window == nil,
                    let mode = object["mode"] as? String, ["setup", "replace-key"].contains(mode),
-                   let initialRoots = object["roots"] as? [String], initialRoots.count <= 64 {
+                   let initialProjectRoot = object["projectRoot"] as? String, initialProjectRoot.utf8.count <= 4096 {
                     setup = mode == "setup"
-                    roots = initialRoots
+                    formProjectRoot = initialProjectRoot
                     buildForm()
                     if smoke { emit("form-presented", ["mode": mode]) }
                 } else if smoke, type == "exercise-form", window != nil {
@@ -215,6 +225,9 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         items["remote"]?.title = state.remoteText
         items["remote"]?.representedObject = state.remoteAction
         items["remote"]?.isEnabled = state.remoteEnabled
+        items["project"]?.title = state.projectText
+        items["project-root"]?.isEnabled = state.projectRootEnabled
+        currentProjectRoot = state.projectRoot ?? ""
         items["switch-key"]?.title = state.switchKeyText
         items["switch-key"]?.isEnabled = state.switchKeyEnabled
         items["restart"]?.isEnabled = state.restartEnabled
@@ -240,7 +253,26 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if action == "about" {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Team DevSpace"])
-        } else if action != "status" { emit("menu", ["action": action]) }
+        } else if action == "project-root" {
+            chooseProjectRootFromTray()
+        } else if action != "status" && action != "project" { emit("menu", ["action": action]) }
+    }
+
+    private func chooseProjectRootFromTray() {
+        let picker = NSOpenPanel()
+        picker.canChooseFiles = false
+        picker.canChooseDirectories = true
+        picker.allowsMultipleSelection = false
+        picker.canCreateDirectories = false
+        picker.prompt = "选择"
+        picker.message = "选择 Team DevSpace 当前项目目录"
+        if !currentProjectRoot.isEmpty, FileManager.default.fileExists(atPath: currentProjectRoot) {
+            picker.directoryURL = URL(fileURLWithPath: currentProjectRoot)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if picker.runModal() == .OK, let path = picker.url?.path {
+            emit("menu", ["action": "project-root", "projectRoot": path])
+        }
     }
 
     private func buildForm() {
@@ -261,14 +293,14 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let keyLabel = NSTextField(labelWithString: setup ? "Access Key" : "新的 Access Key")
         var views: [NSView] = [heading, hint, keyLabel, keyField]
         if setup {
-            rootsLabel.lineBreakMode = .byTruncatingMiddle
-            rootsLabel.maximumNumberOfLines = 2
-            refreshRoots()
+            projectRootLabel.lineBreakMode = .byTruncatingMiddle
+            projectRootLabel.maximumNumberOfLines = 2
+            refreshProjectRoot()
             chooseButton = NSButton(title: "选择…", target: self, action: #selector(chooseFolder))
-            let row = NSStackView(views: [rootsLabel, chooseButton])
+            let row = NSStackView(views: [projectRootLabel, chooseButton])
             row.orientation = .horizontal
             row.spacing = 12
-            rootsLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            projectRootLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
             views += [NSTextField(labelWithString: "项目目录"), row]
         }
         progress.style = .spinning
@@ -309,7 +341,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
             progress.widthAnchor.constraint(equalToConstant: 16),
             progress.heightAnchor.constraint(equalToConstant: 16),
         ])
-        if setup, let row = rootsLabel.superview {
+        if setup, let row = projectRootLabel.superview {
             row.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         panel.center()
@@ -318,9 +350,9 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.makeFirstResponder(keyField)
     }
 
-    private func refreshRoots() {
-        rootsLabel.stringValue = roots.isEmpty ? "尚未选择项目目录" : roots.joined(separator: "；")
-        rootsLabel.toolTip = roots.joined(separator: "\n")
+    private func refreshProjectRoot() {
+        projectRootLabel.stringValue = formProjectRoot.isEmpty ? "尚未选择项目目录" : formProjectRoot
+        projectRootLabel.toolTip = formProjectRoot
     }
 
     @objc private func chooseFolder() {
@@ -330,10 +362,13 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         picker.canChooseDirectories = true
         picker.allowsMultipleSelection = false
         picker.prompt = "选择"
-        picker.message = "选择允许文件工具访问的项目目录"
+        picker.message = "选择 Team DevSpace 当前项目目录"
+        if !formProjectRoot.isEmpty, FileManager.default.fileExists(atPath: formProjectRoot) {
+            picker.directoryURL = URL(fileURLWithPath: formProjectRoot)
+        }
         picker.beginSheetModal(for: window) { [weak self] response in
             DispatchQueue.main.async {
-                if response == .OK, let path = picker.url?.path { self?.roots = [path]; self?.refreshRoots() }
+                if response == .OK, let path = picker.url?.path { self?.formProjectRoot = path; self?.refreshProjectRoot() }
             }
         }
     }
@@ -342,12 +377,14 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if complete { requestClose(); return }
         guard !busy, !cancellationSent else { return }
         let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, key.utf8.count <= 256, !setup || !roots.isEmpty else {
+        guard !key.isEmpty, key.utf8.count <= 256, !setup || !formProjectRoot.isEmpty else {
             feedback.stringValue = setup ? "请输入 Access Key，并选择项目目录。" : "请输入完整的 Access Key。"
             return
         }
         showResult("busy", message: "正在验证 Access Key…")
-        emit("submit", ["accessKey": key, "roots": roots])
+        var fields: [String: Any] = ["accessKey": key]
+        if setup { fields["projectRoot"] = formProjectRoot }
+        emit("submit", fields)
     }
 
     private func showResult(_ phase: String, message: String) {

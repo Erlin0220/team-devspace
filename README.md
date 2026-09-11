@@ -93,7 +93,7 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 安装成功后，员工在 ChatGPT 连接共享 App，输入同一个 Access Key 即可。状态检查只报告可观测到的本地/网关健康状态，不会伪造“ChatGPT 已连接”。
 
-Windows/macOS 登录后显示统一的系统托盘/菜单栏入口，可检查真实状态、暂停/恢复远程访问、重启、打开日志和复制脱敏诊断。退出托盘不会停止 runtime/tunnel；托盘崩溃也不改变远程访问状态。Linux 使用稳定 CLI + systemd user service，不额外引入托盘或 supervisor。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
+Windows/macOS 登录后显示统一的系统托盘/菜单栏入口，可检查真实状态、暂停/恢复远程访问、更换当前项目目录、重启、打开日志和复制脱敏诊断。项目目录使用本机系统目录选择器，不做 Windows/macOS/Linux 路径猜测或映射。退出托盘不会停止 runtime/tunnel；托盘崩溃也不改变远程访问状态。Linux 使用稳定 CLI + systemd user service，不额外引入托盘或 supervisor。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
 
 ```sh
 team-devspace status
@@ -105,16 +105,15 @@ team-devspace resume
 team-devspace diagnostics
 team-devspace logs
 team-devspace logs --follow   # Linux: journalctl --user
-team-devspace roots list
-team-devspace roots add <绝对项目目录>
-team-devspace roots remove <绝对项目目录>
+team-devspace project-root show
+team-devspace project-root set <绝对项目目录>
 ```
 
 修改目录会重启本机 runtime，现有 MCP 会话需要重新连接。停止 runtime 会终止它管理的子进程，因此不要在仍需保留的开发命令运行中执行停止、升级或卸载。
 
 ### 权限边界
 
-**Allowed Roots 约束工作区及文件工具，不是 Shell 沙箱。** Shell 以员工自己的系统账户执行，能访问该账户本来有权访问的资源。不要把“选择了项目目录”误解为强制隔离整机；取得 Access Key 的人能远程调用这些开发能力。
+**Current Project Root 约束工作区及文件工具，不是 Shell 沙箱。** Team DevSpace 产品层只暴露一个当前项目目录；upstream DevSpace 内部仍使用 `allowedRoots: [currentProjectRoot]`。Shell 以员工自己的系统账户执行，能访问该账户本来有权访问的资源。不要把“选择了项目目录”误解为强制隔离整机；取得 Access Key 的人能远程调用这些开发能力。
 
 本地 Owner Token、设备 Secret、Tunnel Token 与员工 Access Key 不同。私有状态使用当前用户权限保护；Windows runtime 只绑定 loopback。云端只持久化路由、凭据摘要、加密后的设备 Secret 与运行元数据，不记录 MCP body、源码、Prompt 或 Shell 内容。
 
@@ -126,7 +125,7 @@ team-devspace roots remove <绝对项目目录>
 - macOS：`~/Library/Application Support/TeamDevSpace`
 - Linux：`${XDG_STATE_HOME:-~/.local/state}/team-devspace`
 
-修复和升级保留 Key、Device Binding、Allowed Roots，**不需要重新认证或重新输入 Access Key**；只有管理员已 reset/revoke、状态文件丢失或改用另一个 Gateway/Key 时才需重新 Enrollment。若升级前远程访问已暂停，不会暗中启动 runtime/tunnel 或把 Gateway 改回 active；Linux 保留已安装但 disabled 的固定 user units，恢复时只重新 enable/start。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
+修复和升级保留 Key、Device Binding、Current Project Root，**不需要重新认证或重新输入 Access Key**。管理员执行 Reset 后，原设备或新设备都可用同一个 Key 重新 Enrollment；Revoke 后则需要管理员重新发放。若升级前远程访问已暂停，不会暗中启动 runtime/tunnel 或把 Gateway 改回 active；Linux 保留已安装但 disabled 的固定 user units，恢复时只重新 enable/start。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
 
 macOS 卸载执行一次 `team-devspace uninstall`：它先停止/移除用户 LaunchAgent，再通过 macOS 原生管理员授权删除包拥有的 App、命令入口和安装 receipt；Enrollment 与员工项目不会删除。Windows 使用系统卸载入口。高级隔离测试可通过 `TEAM_DEVSPACE_HOME` 或 CLI `--home` 指定独立状态目录，但不要复用他人的状态文件。
 

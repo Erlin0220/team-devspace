@@ -3,18 +3,18 @@ import { parseArgs } from 'node:util';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
-import { approvedRoots, atomicJson, DEVSPACE_VERSION, loadState, readJson, RELEASE_VERSION,
-  stateHome, writeUpstreamConfig } from './state.mjs';
-import { configureDevice, deviceStatus, macSetupDialog, repairDevice, requestFromFile } from './setup.mjs';
+import { atomicJson, DEVSPACE_VERSION, loadState, readJson, RELEASE_VERSION, stateHome } from './state.mjs';
+import { changeProjectRoot, configureDevice, deviceStatus, macSetupDialog, repairDevice, requestFromFile } from './setup.mjs';
 import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace,
   resumeRemoteAccess, suspendRemoteAccess } from './control.mjs';
 import { runTray } from './tray.mjs';
+import { desktopErrorText } from './desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 
 const HELP = `Team DevSpace
-  setup --credential-file <file.json> --root <project-directory> [--root <another-directory>]
+  setup --credential-file <file.json> --root <project-directory>
   setup --request-file <private-installer-request.json>
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
@@ -23,21 +23,21 @@ const HELP = `Team DevSpace
   suspend | resume                  Fail-closed remote access safety switch
   diagnostics                       Print stable redacted diagnostics
   logs [--follow]                   Show Linux journal/file logs or open desktop logs
-  roots list | add <path> | remove <path>
+  project-root show | set <path>      Show or change this Device's current project
   startup install | remove          Manage native or standalone component startup
   uninstall                         Stop/remove startup; retain Enrollment for repair
   run runtime | tray                Foreground native startup component
   --home <directory>                Isolated local state (advanced)
 
 Use the same Access Key when connecting the Team DevSpace workspace app.
-Allowed Roots constrain file tools, not shell commands: shell executes with your user permissions.
+The Current Project Root constrains file tools, not shell commands: shell executes with your user permissions.
 Linux without systemctl uses standalone supervision. After host/container recreation,
 run repair from the host's startup hook or terminal; standalone is not a boot hook.
 `;
 
 export async function main(argv = process.argv.slice(2)) {
   const { positionals, values } = parseArgs({ args: argv, allowPositionals: true, options: {
-    home: { type: 'string' }, gateway: { type: 'string' }, root: { type: 'string', multiple: true },
+    home: { type: 'string' }, gateway: { type: 'string' }, root: { type: 'string' },
     'credential-file': { type: 'string' }, 'request-file': { type: 'string' },
     'runtime-root': { type: 'string' },
     'no-startup': { type: 'boolean' }, follow: { type: 'boolean' },
@@ -53,7 +53,8 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const execute = () => executeCommand(command, action, argument, values, home);
-  const readOnly = ['status', 'diagnostics', 'logs', 'setup-gui'].includes(command) || (command === 'roots' && action === 'list');
+  const readOnly = ['status', 'diagnostics', 'logs', 'setup-gui'].includes(command) ||
+    (command === 'project-root' && (!action || action === 'show'));
   return readOnly ? execute() : withDeviceOperation(home, execute);
 }
 
@@ -62,7 +63,7 @@ async function executeCommand(command, action, argument, values, home) {
   if (command === 'setup') {
     const input = values['request-file'] ? await requestFromFile(values['request-file'], true)
       : values['credential-file'] ? await requestFromFile(values['credential-file']) : {};
-    if (values.root) input.roots = values.root;
+    if (values.root) input.currentProjectRoot = values.root;
     if (values.gateway) input.gateway = values.gateway;
     result = await configureDevice(input, { home, startup: !values['no-startup'],
       onProgress: values['installer-progress'] ? message => console.log(`[Team DevSpace] ${message}`) : undefined });
@@ -103,28 +104,12 @@ async function executeCommand(command, action, argument, values, home) {
       await serviceAction('remove', state, home);
       result = { startup: 'removed', retainedEnrollment: home,
         note: 'Project files are never deleted. Ask the administrator to revoke this Access Key when retiring the device.' };
-    } else if (command === 'roots') {
-      if (action === 'list') result = { roots: state.roots };
-      else {
+    } else if (command === 'project-root') {
+      if (!action || action === 'show') result = { currentProjectRoot: state.currentProjectRoot };
+      else if (action === 'set') {
         if (!argument) throw new Error('Provide an absolute project directory');
-        let roots;
-        if (action === 'add') roots = await approvedRoots([...state.roots, argument]);
-        else if (action === 'remove') {
-          const path = await realpath(argument).catch(() => resolve(argument));
-          const same = value => process.platform === 'win32' ? value.toLowerCase() === path.toLowerCase() : value === path;
-          roots = state.roots.filter(value => !same(value));
-          if (roots.length === state.roots.length) throw new Error('This directory is not an Allowed Root');
-          if (roots.length === 0) throw new Error('Add another project directory before removing the last Allowed Root');
-        } else throw new Error('Use roots list, roots add, or roots remove');
-        await serviceAction('stop', state, home, ['runtime']);
-        const next = { ...state, roots };
-        await writeUpstreamConfig(next, home);
-        await atomicJson(join(home, 'state.json'), next);
-        const paused = next.remoteAccess === 'suspended';
-        if (!paused) await serviceAction('start', next, home, ['runtime']);
-        result = { roots, note: paused ? 'Project directories updated; remote access remains suspended.'
-          : 'DevSpace restarted; existing MCP sessions must reconnect.' };
-      }
+        result = await changeProjectRoot(argument, home);
+      } else throw new Error('Use project-root show or project-root set <path>');
     } else throw new Error('Unknown command; run team-devspace --help');
   }
   if (values['installer-progress']) {
@@ -147,6 +132,10 @@ if (process.argv[1]) {
   // Node resolves import.meta.url through directory symlinks while argv keeps the
   // invoked path. Treat both paths as the same executable entrypoint.
   if (invokedReal === moduleReal) {
-    main().catch(error => { console.error(`Team DevSpace: ${error.message}`); process.exitCode = 1; });
+    main().catch(error => {
+      const message = ['win32', 'darwin'].includes(process.platform) ? desktopErrorText(error) : error.message;
+      console.error(`Team DevSpace: ${message}`);
+      process.exitCode = 1;
+    });
   }
 }

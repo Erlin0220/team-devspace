@@ -66,6 +66,7 @@ assert.equal(duplicateEvents.some(event => event.event === 'ready'), false, 'A d
 assert.equal(duplicateEvents.some(event => event.event === 'duplicate'), true, 'A duplicate tray must report a clean single-instance rejection');
 const common = {
   checkEnabled: true, switchKeyText: '更换 Access Key…', switchKeyEnabled: true,
+  projectText: '项目：smoke-project', projectRootEnabled: true,
   logsEnabled: true, diagnosticsEnabled: true, diagnosticsText: '复制诊断信息', exitEnabled: true,
 };
 for (const state of [
@@ -135,14 +136,14 @@ async function smokeMacForm(binary, env) {
             try {
               assert.equal(code, 0);
               assert.equal(JSON.parse(output.trim()).event, 'duplicate');
-              send({ type: 'form', mode: 'setup', roots: ['/tmp'] });
+              send({ type: 'form', mode: 'setup', projectRoot: '/tmp' });
             } catch (error) { reject(error); }
           });
         } else if (event.event === 'form-presented') {
           send({ type: 'exercise-form', accessKey: key });
         } else if (event.event === 'submit') {
           assert.equal(event.accessKey, key);
-          assert.deepEqual(event.roots, ['/tmp']);
+          assert.equal(event.projectRoot, '/tmp');
           submissions++;
           send({ type: 'form-result', phase: 'busy', message: '正在验证…' });
           send({ type: 'form-result', phase: submissions === 1 ? 'error' : 'success',

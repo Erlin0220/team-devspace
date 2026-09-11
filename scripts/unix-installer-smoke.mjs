@@ -41,7 +41,8 @@ try {
   }
   await Promise.all(sockets.map(socket => new Promise(resolve => socket.close(resolve))));
   const state = { schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
-    gateway: 'https://offline-smoke.invalid', roots: [work], ports: { devspace: ports[0], bridge: ports[1], metrics: ports[2] } };
+    gateway: 'https://offline-smoke.invalid', currentProjectRoot: work,
+    ports: { devspace: ports[0], bridge: ports[1], metrics: ports[2] } };
   await atomicJson(join(home, 'state.json'), state);
   const manifestPath = join(media, 'release-manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -55,7 +56,7 @@ try {
     const stableCli = join(root, 'bin', 'team-devspace');
     await access(stableCli);
     assert.equal(await readlink(join(cliDir, 'team-devspace')), stableCli);
-    const cli = await run(stableCli, ['roots', 'list'], { cwd: work, env, capture: true });
+    const cli = await run(stableCli, ['project-root', 'show'], { cwd: work, env, capture: true });
     assert.ok(cli.stdout.includes(work), 'Stable Linux CLI must resolve the active version and retained state');
   }
   await writeFile(join(first, 'obsolete'), 'old version');

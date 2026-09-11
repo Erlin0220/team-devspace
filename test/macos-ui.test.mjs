@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { resolve, join } from 'node:path';
+import { access, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { runMacForm } from '../client/macos-ui.mjs';
-import { macText, macProgress, macError } from '../client/desktop.mjs';
+import { desktopErrorText, macText, macProgress, macError } from '../client/desktop.mjs';
 
 const home = join(tmpdir(), 'team-devspace-form-protocol-test');
 const options = scenario => ({ home, helper: process.execPath,
@@ -12,9 +13,9 @@ const options = scenario => ({ home, helper: process.execPath,
 
 test('macOS form keeps validation, retry and success feedback on the same pipe', { timeout: 10000 }, async () => {
   let calls = 0;
-  const result = await runMacForm({ ...options('retry'), submit: async ({ accessKey, roots }, progress) => {
+  const result = await runMacForm({ ...options('retry'), submit: async ({ accessKey, currentProjectRoot }, progress) => {
     assert.equal(accessKey, `tds_${'a'.repeat(43)}`);
-    assert.deepEqual(roots, ['/test/project']);
+    assert.equal(currentProjectRoot, '/test/project');
     if (++calls === 1) throw new Error('invalid_access_key');
     progress('Contacting the Team Gateway and confirming Enrollment...');
     return { enrolled: true, connection: 'starting' };
@@ -100,10 +101,35 @@ test('missing helper is actionable and never prints a child-process command dump
     submit: () => assert.fail() }), /无法启动 macOS 原生界面/);
 });
 
+test('macOS launcher surfaces the existing tray before bootstrap work', async () => {
+  const launch = await readFile('platform/macos/launch-app.sh', 'utf8');
+  const kickstart = launch.indexOf('com.teamdevspace.tray');
+  const bootstrap = launch.indexOf('bootstrap.sh');
+  assert.ok(kickstart >= 0, 'launcher should kickstart the existing tray');
+  assert.ok(bootstrap > kickstart, 'tray kickstart must happen before bootstrap');
+  assert.match(launch, /install-manifest\.json/);
+  assert.match(launch, /release-manifest\.json/);
+});
+
+test('macOS packaging uses the Team DevSpace brand for app and menu bar icons', async () => {
+  await access('platform/macos/devspace-logo-light.png');
+  const [swift, packaging] = await Promise.all([
+    readFile('native/macos/TeamDevSpaceUI.swift', 'utf8'),
+    readFile('scripts/package.mjs', 'utf8'),
+  ]);
+  assert.match(swift, /TeamDevSpaceTemplate/);
+  assert.doesNotMatch(swift, /systemSymbolName:\s*symbol/);
+  assert.match(packaging, /CFBundleIconFile/);
+  assert.match(packaging, /TeamDevSpace\.icns/);
+  assert.match(packaging, /TeamDevSpaceTemplate\.png/);
+});
+
 test('macOS presentation reuses lifecycle facts and redacts credentials', () => {
   assert.equal(macText('Team DevSpace 正常'), '已连接');
   assert.equal(macText('Team DevSpace 本机已暂停，服务端状态未知'), '本机已暂停，服务端状态未知');
   assert.equal(macText('Team DevSpace 未完成 Enrollment'), '需要完成设置');
   assert.equal(macProgress('Installing current-user login startup entries...'), '正在配置登录启动…');
+  assert.match(desktopErrorText(Object.assign(new Error('access_key_already_bound'), { code: 'access_key_already_bound' })), /重置设备绑定/);
+  assert.match(desktopErrorText(Object.assign(new Error('project_root_unavailable'), { code: 'project_root_unavailable' })), /项目目录/);
   assert.doesNotMatch(macError(new Error(`rejected tds_${'a'.repeat(43)}`)), /tds_/);
 });

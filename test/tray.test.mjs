@@ -18,13 +18,16 @@ test('tray ownership is stable per local state directory, not global to every is
 
 test('tray presentation separates persistent status, activity and available actions', () => {
   const readyStatus = { ready: true, devspace: true, bridge: true, tunnel: true,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' };
+    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active',
+    currentProjectRoot: join(homedir(), 'project-a'), currentProjectRootAvailable: true };
   const ready = trayState(readyStatus);
   assert.equal(ready.status, 'ready');
   assert.equal(ready.summary, 'Team DevSpace 正常');
   assert.equal(ready.remoteText, '暂停远程访问');
   assert.equal(ready.remoteAction, 'suspend');
   assert.equal(ready.switchKeyEnabled, true);
+  assert.equal(ready.projectText, '项目：project-a');
+  assert.equal(ready.projectRootEnabled, true);
   assert.equal(ready.restartEnabled, true);
   assert.equal(ready.repairEnabled, true);
 
@@ -74,6 +77,11 @@ test('tray presentation separates persistent status, activity and available acti
   assert.equal(gatewaySuspended.restartEnabled, false);
   assert.equal(gatewaySuspended.repairEnabled, false);
 
+  const missingProject = trayState({ ...readyStatus, ready: false, currentProjectRootAvailable: false });
+  assert.equal(missingProject.status, 'partial');
+  assert.equal(missingProject.summary, 'Team DevSpace 项目目录不可用');
+  assert.equal(missingProject.projectRootEnabled, true);
+
   const disabled = trayState({ ...readyStatus, ready: false, gateway: 'disabled' });
   assert.equal(disabled.summary, 'Team DevSpace 授权已失效');
   assert.equal(disabled.remoteEnabled, false);
@@ -87,12 +95,18 @@ test('tray presentation separates persistent status, activity and available acti
   assert.equal(pendingEnrollment.remoteEnabled, false);
   assert.equal(pendingEnrollment.restartEnabled, false);
 
-  const missing = trayState(null);
+  const missing = trayState(null, { accessKeyMode: 'setup', currentProjectRoot: join(homedir(), 'project-a') });
   assert.equal(missing.summary, 'Team DevSpace 未连接');
   assert.equal(missing.remoteEnabled, false);
   assert.equal(missing.switchKeyText, '完成设置…');
-  assert.equal(missing.switchKeyEnabled, false);
+  assert.equal(missing.switchKeyEnabled, true);
+  assert.equal(missing.projectText, '项目：project-a');
+  assert.equal(missing.projectRootEnabled, true);
   assert.equal(missing.exitEnabled, true);
+
+  const replacing = trayState(null, { accessKeyMode: 'replace-key' });
+  assert.equal(replacing.switchKeyText, '更换 Access Key…');
+  assert.equal(replacing.switchKeyEnabled, true);
 
   const busy = trayState(readyStatus, { busy: true, activity: '正在暂停远程访问…' });
   assert.equal(busy.summary, 'Team DevSpace 正常');
@@ -105,11 +119,30 @@ test('tray presentation separates persistent status, activity and available acti
   assert.equal(busy.exitEnabled, true, 'Exit must remain available while an input dialog or operation is pending');
 });
 
+test('tray publishes the local Access Key action before a slow health refresh completes', { timeout: 3000 }, async () => {
+  const fake = `
+    console.log(JSON.stringify({event:'ready'}));
+    const deadline=setTimeout(()=>process.exit(7),1000);
+    let input='';
+    process.stdin.on('data',chunk=>{input+=chunk; while(input.includes('\\n')){
+      const index=input.indexOf('\\n'); const line=input.slice(0,index); input=input.slice(index+1);
+      if(!line)continue; const state=JSON.parse(line); clearTimeout(deadline);
+      if(state.activity!=='正在启动…'||state.switchKeyText!=='更换 Access Key…'||state.switchKeyEnabled!==true||state.projectText!=='项目：project-a'||state.projectRootEnabled!==true) process.exit(8);
+      process.exit(0);
+    }});
+  `;
+  await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
+    refreshInterval: 60000, operations: {
+      localState: async () => ({ accessKeyMode: 'replace-key', currentProjectRoot: join(homedir(), 'project-a') }),
+      status: async () => new Promise(() => {}),
+    } });
+});
+
 test('tray controller delegates fixed menu actions and exits only after services stop', async () => {
   const calls = [];
   let remoteAccess = 'active';
   let stopped = false;
-  const actions = ['suspend', 'resume', 'restart', 'repair', 'switch-key', 'logs', 'diagnostics', 'exit'];
+  const actions = ['suspend', 'resume', 'restart', 'repair', 'project-root', 'switch-key', 'logs', 'diagnostics', 'exit'];
   const fake = `
     const actions=${JSON.stringify(actions)};
     console.log(JSON.stringify({event:'ready'}));
@@ -131,6 +164,7 @@ test('tray controller delegates fixed menu actions and exits only after services
       resume: async () => { calls.push('resume'); remoteAccess = 'active'; },
       restart: async () => { calls.push('restart'); },
       repair: async () => { calls.push('repair'); },
+      'project-root': async () => { calls.push('project-root'); },
       'switch-key': async () => { calls.push('switch-key'); },
       logs: async () => { calls.push('logs'); },
       diagnostics: async () => { calls.push('diagnostics'); },

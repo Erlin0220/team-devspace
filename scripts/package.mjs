@@ -36,6 +36,25 @@ async function maximumRelativePathLength(directory, base = directory) {
   }
   return maximum;
 }
+async function buildMacAppIcon(source, destination) {
+  const iconset = resolve(`build/TeamDevSpace-${process.arch}.iconset`);
+  const images = [
+    ['icon_16x16.png', 16], ['icon_16x16@2x.png', 32],
+    ['icon_32x32.png', 32], ['icon_32x32@2x.png', 64],
+    ['icon_128x128.png', 128], ['icon_128x128@2x.png', 256],
+    ['icon_256x256.png', 256], ['icon_256x256@2x.png', 512],
+    ['icon_512x512.png', 512], ['icon_512x512@2x.png', 1024],
+  ];
+  await rm(iconset, { recursive: true, force: true });
+  await mkdir(iconset, { recursive: true });
+  try {
+    for (const [name, size] of images) {
+      await run('/usr/bin/sips', ['-z', String(size), String(size), resolve(source), '--out', join(iconset, name)],
+        { capture: true, timeout: 30000 });
+    }
+    await run('/usr/bin/iconutil', ['-c', 'icns', iconset, '-o', destination], { timeout: 30000 });
+  } finally { await rm(iconset, { recursive: true, force: true }); }
+}
 // Only the fingerprint-verified dependency tree is reusable. Generated files are
 // rebuilt even with --reuse-dependencies; an existing directory is not a cache key.
 await mkdir(bundle, { recursive: true });
@@ -94,6 +113,8 @@ if (process.platform === 'win32') {
 } else if (process.platform === 'darwin') {
   const trayContents = join(bundle, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents');
   await mkdir(join(trayContents, 'MacOS'), { recursive: true });
+  await mkdir(join(trayContents, 'Resources'), { recursive: true });
+  await cp('platform/macos/devspace-logo-light.png', join(trayContents, 'Resources', 'TeamDevSpaceTemplate.png'));
   trayBuild = await buildTray(join(trayContents, 'MacOS', 'TeamDevSpaceTray'));
   await chmod(join(trayContents, 'MacOS', 'TeamDevSpaceTray'), 0o755);
   await writeFile(join(trayContents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
@@ -283,6 +304,7 @@ if (!values['prepare-only']) {
     await mkdir(join(contents, 'MacOS'), { recursive: true });
     await mkdir(join(contents, 'Resources'), { recursive: true });
     await cp('platform/unix/bootstrap.sh', join(contents, 'Resources', 'bootstrap.sh'));
+    await buildMacAppIcon('platform/macos/devspace-logo-light.png', join(contents, 'Resources', 'TeamDevSpace.icns'));
     await cp(distribution.manifestPath, join(contents, 'Resources', 'release-manifest.json'));
     await cp(join(distribution.layout, 'objects'), join(contents, 'Resources', 'objects'), { recursive: true });
     await chmod(join(contents, 'Resources', 'bootstrap.sh'), 0o755);
@@ -292,7 +314,8 @@ if (!values['prepare-only']) {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.teamdevspace.app</string>
 <key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpace</string>
-<key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
+<key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>TeamDevSpace.icns</string>
+<key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
 <key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
     await signMacApplication(dirname(contents), macosSigning);

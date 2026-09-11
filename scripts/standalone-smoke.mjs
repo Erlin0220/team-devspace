@@ -70,7 +70,8 @@ async function install(setup = false) {
   const args = [join(media, 'install.sh'), '--root', distribution, '--offline', media];
   if (setup) {
     const request = join(work, 'request.json');
-    await writeFile(request, JSON.stringify({ gateway: `http://127.0.0.1:${server.address().port}`, roots: [project], accessKey: `tds_${'a'.repeat(43)}` }), { mode: 0o600 });
+    await writeFile(request, JSON.stringify({ gateway: `http://127.0.0.1:${server.address().port}`,
+      currentProjectRoot: project, accessKey: `tds_${'a'.repeat(43)}` }), { mode: 0o600 });
     args.push('--setup', 'existing', '--request-file', request);
   }
   return run('/bin/sh', args, { env, capture: true, timeout: 180000 });
@@ -121,7 +122,7 @@ else {
 
   // A new shell with no installer environment still resolves the retained home.
   const freshEnv = { ...process.env, TEAM_DEVSPACE_HOME: '', TEAM_DEVSPACE_DISTRIBUTION_ROOT: '', NODE_OPTIONS: '' };
-  const fresh = await run(stableCli, ['roots', 'list'], { env: freshEnv, capture: true });
+  const fresh = await run(stableCli, ['project-root', 'show'], { env: freshEnv, capture: true });
   assert.ok(fresh.stdout.includes(project));
   const stable = await readState();
   const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${stable.ports.bridge}/mcp`), {
@@ -207,18 +208,19 @@ writeFileSync(process.argv[2], String(child.pid)); child.unref();\n`);
   await sleep(1500);
   assert.equal((await status()).localReady, false);
   assert.equal((await readState()).remoteAccess, 'suspended');
-  await cli('roots', 'add', extra);
+  await cli('project-root', 'set', extra);
   assert.equal((await status()).localReady, false);
+  assert.equal((await readState()).currentProjectRoot, extra);
   await cli('resume');
   assert.equal((await status()).ready, true);
   const tunnelBefore = await record('tunnel');
   const runtimeBefore = await record('runtime');
-  await cli('roots', 'remove', extra);
-  assert.equal((await record('tunnel')).child.pid, tunnelBefore.child.pid, 'roots changes must not restart the tunnel');
+  await cli('project-root', 'set', project);
+  assert.equal((await record('tunnel')).child.pid, tunnelBefore.child.pid, 'project changes must not restart the tunnel');
   assert.notEqual((await record('runtime')).child.pid, runtimeBefore.child.pid);
   await cli('restart');
   assert.equal((await status()).ready, true);
-  console.log('PASS fail-closed suspend/start/repair, resume, roots scope and restart');
+  console.log('PASS fail-closed suspend/start/repair, resume, project-root scope and restart');
 
   const firstActive = await active();
   await install();

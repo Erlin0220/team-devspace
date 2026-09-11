@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import net from 'node:net';
-import { approvedRoots, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway, randomSecret,
-  readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
+import { approvedProjectRoot, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway,
+  projectRootAvailable, projectRootFromState, randomSecret, readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
@@ -14,6 +15,10 @@ import { runMacForm } from './macos-ui.mjs';
 async function hasTunnelCredential(home) {
   try { return Boolean((await readFile(join(home, 'tunnel.token'), 'utf8')).trim()); }
   catch { return false; }
+}
+
+function sameProjectRoot(left, right) {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 async function availablePort(preferred) {
@@ -47,17 +52,37 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
   if (previous?.bindingId && previous.accessKey !== accessKey) {
     throw new Error('This installation already belongs to another Access Key. Use the tray Access Key action so the current Device Binding is released safely first.');
   }
-  const roots = await approvedRoots(input.roots ?? previous?.roots);
+  if (input.roots !== undefined && (!Array.isArray(input.roots) || input.roots.length !== 1)) {
+    throw Object.assign(new Error('Team DevSpace 当前只支持一个项目目录，请只选择一个项目'), { code: 'multiple_project_roots_unsupported' });
+  }
+  const requestedProjectRoot = input.currentProjectRoot ?? input.roots?.[0];
+  const previousProjectRoot = projectRootFromState(previous);
+  const currentProjectRoot = requestedProjectRoot === undefined
+    ? previousProjectRoot
+    : await approvedProjectRoot(requestedProjectRoot);
+  if (!currentProjectRoot) {
+    throw Object.assign(new Error('请选择要让 Team DevSpace 操作的项目目录'), { code: 'project_root_required' });
+  }
+  if (previous?.bindingId && requestedProjectRoot !== undefined &&
+      !sameProjectRoot(previousProjectRoot, currentProjectRoot)) {
+    throw Object.assign(new Error('已绑定设备请使用“项目目录…”或 project-root set 修改项目目录'),
+      { code: 'project_root_change_requires_command' });
+  }
   let state = previous ? await loadState(home) : {
     schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
     ports: { devspace: await availablePort(47670), bridge: await availablePort(47770), metrics: await availablePort(47870) },
   };
-  state = { ...state, gateway, accessKey, roots };
+  state = { ...state, gateway, accessKey, currentProjectRoot };
+  delete state.roots;
   // Publish the first identity without replacement. Concurrent installers must share one binding.
   const published = await atomicJson(join(home, 'state.json'), state, { createOnly: !previous });
   if (!published) {
     state = await loadState(home);
     if (state.gateway !== gateway || state.accessKey !== accessKey) throw new Error('Another setup already enrolled this installation with different credentials');
+    if (!sameProjectRoot(state.currentProjectRoot, currentProjectRoot)) {
+      throw Object.assign(new Error('另一个安装流程已经为此设备选择了不同的项目目录，请重新检查当前项目目录'),
+        { code: 'project_root_conflict' });
+    }
   }
   if (previous?.bindingId && previous?.keyId && previous?.hostname && await hasTunnelCredential(home)) {
     onProgress('Existing Enrollment found. Reusing the current Device Binding...');
@@ -76,7 +101,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
     }
     return { enrolled: true, reusedEnrollment: true, ready: false, connection: startup ? 'starting' : 'not-started',
       remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
-      endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,
+      endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, currentProjectRoot: state.currentProjectRoot,
       startup: startup ? 'installed' : 'not-installed' };
   }
 
@@ -110,7 +135,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
   }
   return { enrolled: true, ready: false, connection: startup ? 'starting' : 'not-started',
     remoteAccess: state.remoteAccess, deviceId: state.deviceId, bindingId: state.bindingId,
-    endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, roots: state.roots,
+    endpoint: state.endpoint, devspaceVersion: DEVSPACE_VERSION, currentProjectRoot: state.currentProjectRoot,
     startup: startup ? 'installed' : 'not-installed' };
 }
 
@@ -156,6 +181,89 @@ try {
   throw new Error('Use the native macOS form for Access Key replacement');
 }
 
+export async function promptProjectRoot(currentProjectRoot, { signal } = {}) {
+  if (process.platform !== 'win32') throw new Error('macOS project selection is handled by its native menu-bar picker');
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+$picker = New-Object System.Windows.Forms.FolderBrowserDialog
+$picker.Description = '选择 Team DevSpace 当前项目目录'
+$picker.ShowNewFolderButton = $false
+if ($env:TEAM_DEVSPACE_CURRENT_PROJECT -and (Test-Path -LiteralPath $env:TEAM_DEVSPACE_CURRENT_PROJECT -PathType Container)) {
+  $picker.SelectedPath = $env:TEAM_DEVSPACE_CURRENT_PROJECT
+}
+try {
+  if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($picker.SelectedPath) }
+} finally { $picker.Dispose() }
+`;
+  try {
+    return (await runWindowsDesktop(script, { signal, timeout: 300000,
+      env: { TEAM_DEVSPACE_CURRENT_PROJECT: currentProjectRoot ?? '' } })).trim() || null;
+  } catch (error) { if (error.name === 'AbortError') return null; throw error; }
+}
+
+async function waitForRuntimeReady(state, home, { request = loopbackRequest, timeout = 15000 } = {}) {
+  const deadline = Date.now() + timeout;
+  do {
+    const [devspace, bridge] = await Promise.all([
+      request(state.ports.devspace, '/healthz', { timeout: 1000 }).then(result => result.status === 200, () => false),
+      request(state.ports.bridge, '/healthz', { timeout: 1000, headers: {
+        Authorization: `Bearer ${state.deviceSecret}`, 'X-Team-Binding-Id': state.bindingId,
+      } }).then(result => result.status === 200, () => false),
+    ]);
+    if (devspace && bridge) return;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  throw Object.assign(new Error('新的项目目录已写入，但本机运行时未能恢复就绪'), { code: 'project_root_runtime_not_ready' });
+}
+
+export function changeProjectRoot(projectRoot, home = stateHome(), options = {}) {
+  return withDeviceOperation(home, () => changeProjectRootUnlocked(projectRoot, home, options));
+}
+
+async function changeProjectRootUnlocked(projectRoot, home, options = {}) {
+  const onProgress = options.onProgress ?? (() => {});
+  const service = options.serviceAction ?? ((action, state) => serviceAction(action, state, home, ['runtime']));
+  const writeConfig = options.writeUpstreamConfig ?? (state => writeUpstreamConfig(state, home));
+  const saveState = options.saveState ?? (state => atomicJson(join(home, 'state.json'), state));
+  const verifyRuntime = options.verifyRuntime ?? (state => waitForRuntimeReady(state, home));
+  const state = await loadState(home);
+  const nextRoot = await approvedProjectRoot(projectRoot);
+  const same = sameProjectRoot(state.currentProjectRoot, nextRoot);
+  if (same) return { changed: false, currentProjectRoot: state.currentProjectRoot };
+
+  const next = { ...state, currentProjectRoot: nextRoot };
+  const shouldRun = Boolean(state.bindingId) && state.remoteAccess !== 'suspended';
+  let stopAttempted = false;
+  try {
+    onProgress('正在切换项目目录…');
+    if (shouldRun) { stopAttempted = true; await service('stop', state); }
+    await writeConfig(next);
+    await saveState(next);
+    if (shouldRun) {
+      await service('start', next);
+      await verifyRuntime(next);
+    }
+    return { changed: true, currentProjectRoot: nextRoot, previousProjectRoot: state.currentProjectRoot,
+      reconnectRequired: shouldRun,
+      note: shouldRun ? '项目目录已更改，请在 ChatGPT 中重新连接。' : '项目目录已更改。' };
+  } catch (error) {
+    const rollbackFailures = [];
+    if (shouldRun && stopAttempted) {
+      try { await service('stop', next); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+    }
+    try { await writeConfig(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+    try { await saveState(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+    if (shouldRun && stopAttempted) {
+      try { await service('start', state); await verifyRuntime(state); }
+      catch (rollbackError) { rollbackFailures.push(rollbackError); }
+    }
+    if (rollbackFailures.length) {
+      throw Object.assign(new Error(`项目目录切换失败，且原目录恢复未完成：${error.message}`), { code: 'project_root_rollback_failed' });
+    }
+    throw Object.assign(new Error(`项目目录切换失败，已恢复原目录：${error.message}`), { code: 'project_root_change_failed' });
+  }
+}
+
 async function enrollWithoutReplacingTray(home, { onProgress, startup, input = {} }) {
   const enrolled = await configureDevice(input, { home, startup: false, onProgress });
   if (!startup) return { ...enrolled, startup: 'not-installed' };
@@ -173,21 +281,29 @@ export function replaceAccessKey(accessKey, home = stateHome(), options = {}) {
 async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgress = () => {}, startup = true } = {}) {
   if (!/^tds_[A-Za-z0-9_-]{43}$/.test(accessKey ?? '')) throw new Error('请输入完整的 Access Key');
   let state = await loadState(home);
-  if (!state.pendingAccessKey && state.accessKey === accessKey) {
-    if (state.bindingId) throw new Error('新的 Access Key 与当前 Access Key 相同');
+  const sameAccessKey = !state.pendingAccessKey && state.accessKey === accessKey;
+  const preserveSameKeyPause = sameAccessKey && state.remoteAccess === 'suspended';
+  if (sameAccessKey && !state.bindingId) {
     // Enrollment may have committed remotely before its response was lost.
     // Retry with the retained identity, not a preflight that rejects bound keys.
     onProgress('正在继续未完成的设备绑定…');
     return { ...await enrollWithoutReplacingTray(home, { onProgress, startup }), recoveredEnrollment: true };
   }
 
-  onProgress('正在验证新的 Access Key…');
+  onProgress(sameAccessKey ? '正在确认管理员重置后的设备绑定状态…' : '正在验证新的 Access Key…');
   const preflight = await control(state.gateway, '/v1/enrollment/preflight', accessKey, { body: {}, timeout: 15000 })
     .catch(error => {
       if (error.status === 404) throw Object.assign(new Error('网关尚未部署更换 Access Key 所需接口，请先更新网关；当前 Key 和连接未更改'), { code: 'gateway_update_required' });
       throw error;
     });
-  if (!preflight.available) throw new Error('这个 Access Key 已绑定到其他设备，请使用未绑定的 Access Key');
+  if (!preflight.available) {
+    if (sameAccessKey) {
+      throw Object.assign(new Error('当前 Access Key 仍处于设备绑定状态；如需重新绑定，请联系管理员执行“重置设备绑定”后再试'),
+        { code: 'access_key_still_bound' });
+    }
+    throw Object.assign(new Error('这个 Access Key 已绑定到其他设备，请联系管理员执行“重置设备绑定”后再试'),
+      { code: 'access_key_already_bound' });
+  }
 
   state = { ...state, pendingAccessKey: accessKey, remoteAccess: 'suspended' };
   await atomicJson(join(home, 'state.json'), state);
@@ -212,7 +328,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   }
 
   await rm(join(home, 'tunnel.token'), { force: true });
-  const next = { ...state, accessKey, remoteAccess: 'active' };
+  const next = { ...state, accessKey, remoteAccess: preserveSameKeyPause ? 'suspended' : 'active' };
   delete next.pendingAccessKey;
   delete next.keyId;
   delete next.bindingId;
@@ -255,7 +371,7 @@ export async function deviceStatus(home = stateHome()) {
     try { return (await loopbackRequest(port, path, { headers, timeout: 3000 })).status === 200; }
     catch { return false; }
   };
-  const [devspace, bridge, tunnel, gateway] = await Promise.all([
+  const [devspace, bridge, tunnel, gateway, currentProjectRootAvailable] = await Promise.all([
     local(state.ports.devspace, '/healthz'),
     local(state.ports.bridge, '/healthz', { Authorization: `Bearer ${state.deviceSecret}`, 'X-Team-Binding-Id': state.bindingId }),
     local(state.ports.metrics, '/ready'),
@@ -264,15 +380,32 @@ export async function deviceStatus(home = stateHome()) {
     }).then(result => ['active', 'suspended'].includes(result.state) && result.bindingId === state.bindingId
       ? result.state : 'invalid-response',
       error => error.status === 403 ? 'disabled' : 'unreachable') : Promise.resolve('not-enrolled'),
+    projectRootAvailable(state.currentProjectRoot),
   ]);
   const desiredRemoteAccess = state.remoteAccess === 'suspended' ? 'suspended' : 'active';
   const remoteAccess = !state.bindingId ? 'not-enrolled'
     : ['active', 'suspended'].includes(gateway) ? gateway : desiredRemoteAccess;
   return { deviceId: state.deviceId, devspaceVersion: DEVSPACE_VERSION, releaseVersion: state.releaseVersion,
-    devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, roots: state.roots,
-    localReady: devspace && bridge && tunnel, desiredRemoteAccess, remoteAccess,
+    devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, currentProjectRoot: state.currentProjectRoot,
+    currentProjectRootAvailable, localReady: devspace && bridge && tunnel, desiredRemoteAccess, remoteAccess,
     enrollmentPending: !state.bindingId || Boolean(state.pendingAccessKey),
-    ready: Boolean(state.bindingId) && devspace && bridge && tunnel && gateway === 'active' && desiredRemoteAccess === 'active' };
+    ready: Boolean(state.bindingId) && currentProjectRootAvailable && devspace && bridge && tunnel &&
+      gateway === 'active' && desiredRemoteAccess === 'active' };
+}
+
+export async function desktopLocalState(home = stateHome()) {
+  const previous = await readJson(join(home, 'state.json'), null);
+  return { accessKeyMode: previous?.bindingId || previous?.pendingAccessKey ? 'replace-key' : 'setup',
+    currentProjectRoot: projectRootFromState(previous) };
+}
+
+export async function macAccessKeyMode(home = stateHome()) {
+  return (await desktopLocalState(home)).accessKeyMode;
+}
+
+export async function macAccessKeyDialog(home = stateHome(), { preserveTray = false, signal, onProgress } = {}) {
+  if (await macAccessKeyMode(home) === 'replace-key') return macReplaceAccessKey(home, { signal, onProgress });
+  return macSetupDialog(home, { preserveTray, signal });
 }
 
 export async function macSetupDialog(home = stateHome(), { preserveTray = false, signal } = {}) {
@@ -282,7 +415,7 @@ export async function macSetupDialog(home = stateHome(), { preserveTray = false,
   if (previous?.bindingId) return preserveTray
     ? enrollWithoutReplacingTray(home, { startup: true })
     : configureDevice({}, { home });
-  return runMacForm({ home, mode: 'setup', roots: previous?.roots ?? [], signal,
+  return runMacForm({ home, mode: 'setup', projectRoot: projectRootFromState(previous), signal,
     submit: async (input, onProgress) => {
       try {
         // The UI owns no state or network logic. Existing operations still own

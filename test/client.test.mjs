@@ -8,8 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { approvedRoots, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
-import { configureDevice, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
+import { approvedProjectRoot, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
+import { changeProjectRoot, configureDevice, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
 import { trayState } from '../client/tray.mjs';
 import { createAccessKey } from '../client/admin.mjs';
 import { launchAgentXml, removeWindowsTask, systemdUserUnit, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
@@ -23,7 +23,7 @@ async function fixture(t) {
   const requests = [];
   const bindingId = randomUUID();
   const keyId = randomUUID();
-  const flags = { reject: false, deviceState: 'active' };
+  const flags = { reject: false, deviceState: 'active', releaseDisabled: false };
   const server = http.createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
@@ -39,6 +39,7 @@ async function fixture(t) {
       response.end(JSON.stringify({ available: !flags.preflightUnavailable })); return;
     }
     if (request.url === '/v1/device/release') {
+      if (flags.releaseDisabled) { response.writeHead(403); response.end(JSON.stringify({ error: 'device_disabled' })); return; }
       response.end(JSON.stringify({ released: true })); return;
     }
     if (request.url === '/v1/admin/keys') {
@@ -70,7 +71,7 @@ test('CLI direct entry still runs through a Unix symlink', { skip: process.platf
   assert.match(stdout, /Team DevSpace/);
 });
 
-test('installation retry/repair preserves identity, key, roots and upstream state outside the package', async t => {
+test('installation retry/repair preserves identity, key, current project and upstream state outside the package', async t => {
   const f = await fixture(t);
   const accessKey = `tds_${randomSecret()}`;
   const input = { gateway: f.gateway, accessKey, roots: [f.project] };
@@ -90,7 +91,7 @@ test('installation retry/repair preserves identity, key, roots and upstream stat
   assert.equal(f.requests.length, enrollmentRequests, 'Existing Enrollment must be reused without another Gateway call');
   assert.equal(repaired.reusedEnrollment, true);
   assert.equal(repaired.deviceId, ready.deviceId);
-  assert.deepEqual(repaired.roots, ready.roots);
+  assert.equal(repaired.currentProjectRoot, ready.currentProjectRoot);
   await rm(join(f.home, 'tunnel.token'));
   const recovered = await configureDevice({}, { home: f.home, startup: false });
   assert.equal(f.requests.length, enrollmentRequests + 1, 'Missing Tunnel credential must trigger one idempotent Enrollment repair');
@@ -106,7 +107,7 @@ test('installation retry/repair preserves identity, key, roots and upstream stat
   assert.equal((await loadState(f.home)).accessKey, accessKey);
 });
 
-test('pending Enrollment can replace a bad Access Key without losing the local identity or roots', async t => {
+test('pending Enrollment can replace a bad Access Key without losing the local identity or current project', async t => {
   const f = await fixture(t);
   const badKey = `tds_${randomSecret()}`;
   const goodKey = `tds_${randomSecret()}`;
@@ -123,7 +124,7 @@ test('pending Enrollment can replace a bad Access Key without losing the local i
   assert.equal(state.deviceId, pending.deviceId);
   assert.equal(state.deviceSecret, pending.deviceSecret);
   assert.equal(state.ownerToken, pending.ownerToken);
-  assert.deepEqual(state.roots, pending.roots);
+  assert.equal(state.currentProjectRoot, pending.currentProjectRoot);
 });
 
 test('reinstall preserves an explicit suspended policy instead of reopening access from observed Gateway state', async t => {
@@ -174,7 +175,7 @@ test('lost key-replacement response remains repairable from the tray using the s
   assert.equal(after.deviceId, before.deviceId);
   assert.equal(after.deviceSecret, before.deviceSecret);
   assert.equal(after.ownerToken, before.ownerToken);
-  assert.deepEqual(after.roots, before.roots);
+  assert.equal(after.currentProjectRoot, before.currentProjectRoot);
 });
 
 test('a pause requested during credential repair must not be overwritten by an older enrollment response', async t => {
@@ -203,22 +204,27 @@ test('a pause requested during credential repair must not be overwritten by an o
   assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
 });
 
-test('CLI can change Allowed Roots while paused without recreating or starting a runtime task',
-  { skip: process.platform !== 'win32' }, async t => {
+test('current project can change while paused without starting runtime or touching Tunnel', async t => {
   const f = await fixture(t);
-  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, roots: [f.project] }, { home: f.home, startup: false });
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+    { home: f.home, startup: false });
   await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
-  const additionalRoot = join(f.home, 'second-project');
-  await mkdir(additionalRoot);
-  const { stdout } = await promisify(execFile)(process.execPath,
-    ['client/cli.mjs', '--home', f.home, 'roots', 'add', additionalRoot], { windowsHide: true, timeout: 30000 });
-  const result = JSON.parse(stdout);
-  assert.equal((await loadState(f.home)).remoteAccess, 'suspended');
-  assert.deepEqual(result.roots, [f.project, additionalRoot]);
-  assert.match(result.note, /suspended/);
+  const nextRoot = join(f.home, 'second-project');
+  await mkdir(nextRoot);
+  let serviceCalls = 0;
+  const result = await changeProjectRoot(nextRoot, f.home, {
+    serviceAction: async () => { serviceCalls++; },
+  });
+  const state = await loadState(f.home);
+  assert.equal(state.remoteAccess, 'suspended');
+  assert.equal(state.currentProjectRoot, await realpath(nextRoot));
+  assert.equal(result.currentProjectRoot, state.currentProjectRoot);
+  assert.equal(result.reconnectRequired, false);
+  assert.equal(serviceCalls, 0);
+  assert.deepEqual((await readJson(join(f.home, 'devspace', 'config.json'))).allowedRoots, [state.currentProjectRoot]);
 });
 
-test('Access Key replacement validates first, preserves local identity and roots, then re-enrolls without reinstalling', async t => {
+test('Access Key replacement validates first, preserves local identity and current project, then re-enrolls without reinstalling', async t => {
   const f = await fixture(t);
   const originalKey = `tds_${randomSecret()}`;
   const replacementKey = `tds_${randomSecret()}`;
@@ -231,10 +237,93 @@ test('Access Key replacement validates first, preserves local identity and roots
   assert.equal(after.deviceId, before.deviceId);
   assert.equal(after.deviceSecret, before.deviceSecret);
   assert.equal(after.ownerToken, before.ownerToken);
-  assert.deepEqual(after.roots, before.roots);
+  assert.equal(after.currentProjectRoot, before.currentProjectRoot);
   assert.equal(after.pendingAccessKey, undefined);
   const replacementRequests = f.requests.slice(-3).map(request => request.path);
   assert.deepEqual(replacementRequests, ['/v1/enrollment/preflight', '/v1/device/release', '/v1/enroll']);
+});
+
+test('Admin Reset allows the same Access Key to re-enroll the retained local Device identity', async t => {
+  const f = await fixture(t);
+  const accessKey = `tds_${randomSecret()}`;
+  await configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: f.project }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  f.flags.releaseDisabled = true; // The administrator already removed the old server binding.
+  const result = await replaceAccessKey(accessKey, f.home, { startup: false });
+  const after = await loadState(f.home);
+  assert.equal(result.replacedAccessKey, true);
+  assert.equal(after.accessKey, accessKey);
+  assert.equal(after.deviceId, before.deviceId);
+  assert.equal(after.deviceSecret, before.deviceSecret);
+  assert.equal(after.ownerToken, before.ownerToken);
+  assert.equal(after.currentProjectRoot, before.currentProjectRoot);
+  assert.deepEqual(f.requests.slice(-3).map(request => request.path),
+    ['/v1/enrollment/preflight', '/v1/device/release', '/v1/enroll']);
+});
+
+test('Admin Reset plus the same Access Key preserves an explicit local pause', async t => {
+  const f = await fixture(t);
+  const accessKey = `tds_${randomSecret()}`;
+  await configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: f.project }, { home: f.home, startup: false });
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  f.flags.releaseDisabled = true;
+  const result = await replaceAccessKey(accessKey, f.home, { startup: false });
+  const after = await loadState(f.home);
+  assert.equal(result.remoteAccess, 'suspended');
+  assert.equal(after.remoteAccess, 'suspended');
+});
+
+test('same Access Key still bound on the server gives an explicit Admin Reset next step', async t => {
+  const f = await fixture(t);
+  const accessKey = `tds_${randomSecret()}`;
+  await configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: f.project }, { home: f.home, startup: false });
+  f.flags.preflightUnavailable = true;
+  const requestsBefore = f.requests.length;
+  await assert.rejects(replaceAccessKey(accessKey, f.home, { startup: false }), error =>
+    error.code === 'access_key_still_bound' && /重置设备绑定/.test(error.message));
+  assert.deepEqual(f.requests.slice(requestsBefore).map(request => request.path), ['/v1/enrollment/preflight']);
+});
+
+test('project change rolls back state/config and restarts the previous root when new runtime validation fails', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+    { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  const nextRoot = join(f.home, 'broken-project');
+  await mkdir(nextRoot);
+  const events = [];
+  await assert.rejects(changeProjectRoot(nextRoot, f.home, {
+    serviceAction: async (action, state) => { events.push(`${action}:${state.currentProjectRoot}`); },
+    verifyRuntime: async state => {
+      if (state.currentProjectRoot === await realpath(nextRoot)) throw new Error('new runtime failed');
+    },
+  }), error => error.code === 'project_root_change_failed' && /已恢复原目录/.test(error.message));
+  const after = await loadState(f.home);
+  assert.equal(after.currentProjectRoot, before.currentProjectRoot);
+  assert.deepEqual((await readJson(join(f.home, 'devspace', 'config.json'))).allowedRoots, [before.currentProjectRoot]);
+  assert.deepEqual(events.map(event => event.split(':', 1)[0]), ['stop', 'start', 'stop', 'start']);
+});
+
+test('project change restores the previous runtime even when the initial stop reports a partial failure', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+    { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  const nextRoot = join(f.home, 'next-project');
+  await mkdir(nextRoot);
+  const events = [];
+  let firstStop = true;
+  await assert.rejects(changeProjectRoot(nextRoot, f.home, {
+    serviceAction: async (action, state) => {
+      events.push(`${action}:${state.currentProjectRoot}`);
+      if (action === 'stop' && firstStop) { firstStop = false; throw new Error('partial stop failure'); }
+    },
+    verifyRuntime: async () => {},
+  }), error => error.code === 'project_root_change_failed' && /已恢复原目录/.test(error.message));
+  const after = await loadState(f.home);
+  assert.equal(after.currentProjectRoot, before.currentProjectRoot);
+  assert.deepEqual((await readJson(join(f.home, 'devspace', 'config.json'))).allowedRoots, [before.currentProjectRoot]);
+  assert.deepEqual(events.map(event => event.split(':', 1)[0]), ['stop', 'stop', 'start']);
 });
 
 test('missing Gateway key-switch capability produces actionable feedback without mutating existing identity', async t => {
@@ -356,6 +445,38 @@ test('concurrent first-time setup publishes exactly one durable device identity'
   assert.equal(new Set(f.requests.map(request => request.body.deviceId)).size, 1);
 });
 
+test('concurrent first-time setup cannot silently replace another selected project root', async t => {
+  const f = await fixture(t);
+  const otherProject = join(f.home, 'other-project');
+  await mkdir(otherProject);
+  const accessKey = `tds_${randomSecret()}`;
+  const results = await Promise.allSettled([
+    configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: f.project }, { home: f.home, startup: false }),
+    configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: otherProject }, { home: f.home, startup: false }),
+  ]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  const rejected = results.find(result => result.status === 'rejected');
+  assert.ok(['project_root_conflict', 'project_root_change_requires_command'].includes(rejected?.reason?.code),
+    `Unexpected conflict code: ${rejected?.reason?.code}`);
+  assert.equal(f.requests.filter(request => request.path === '/v1/enroll').length, 1,
+    'Conflicting local setup must fail before creating a second remote Enrollment request');
+  const state = await loadState(f.home);
+  assert.ok([await realpath(f.project), await realpath(otherProject)].includes(state.currentProjectRoot));
+});
+
+test('an enrolled device cannot bypass project-root rollback by changing the root through setup', async t => {
+  const f = await fixture(t);
+  const accessKey = `tds_${randomSecret()}`;
+  await configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: f.project }, { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  const otherProject = join(f.home, 'other-project');
+  await mkdir(otherProject);
+  await assert.rejects(
+    configureDevice({ gateway: f.gateway, accessKey, currentProjectRoot: otherProject }, { home: f.home, startup: false }),
+    { code: 'project_root_change_requires_command' });
+  assert.equal((await loadState(f.home)).currentProjectRoot, before.currentProjectRoot);
+});
+
 test('concurrent administrator issuance reuses one persisted employee credential', async t => {
   const f = await fixture(t);
   const config = { gateway: f.gateway, adminToken: randomSecret(), directory: f.home };
@@ -371,7 +492,7 @@ test('setup request accepts NSIS UTF-16LE and consumes only the temporary reques
   const home = await mkdtemp(join(tmpdir(), 'team-devspace-request-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const path = join(home, 'request.json');
-  const data = { accessKey: `tds_${randomSecret()}`, roots: ['C:\\project\\\u6d4b\u8bd5'] };
+  const data = { accessKey: `tds_${randomSecret()}`, currentProjectRoot: 'C:\\project\\\u6d4b\u8bd5' };
   await writeFile(path, Buffer.concat([Buffer.from([255, 254]), Buffer.from(JSON.stringify(data), 'utf16le')]));
   assert.deepEqual(await requestFromFile(path, true), data);
   await assert.rejects(access(path), { code: 'ENOENT' });
@@ -380,19 +501,33 @@ test('setup request accepts NSIS UTF-16LE and consumes only the temporary reques
   await access(path);
 });
 
-test('Allowed Roots are explicit existing directories; gateway origin cannot carry secrets or paths', async t => {
-  const home = await mkdtemp(join(tmpdir(), 'team-devspace-roots-'));
+test('Current Project Root is one explicit existing directory; gateway origin cannot carry secrets or paths', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'team-devspace-project-root-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  assert.deepEqual(await approvedRoots([home, home]), [await realpath(home)]);
-  await assert.rejects(approvedRoots([]));
-  await assert.rejects(approvedRoots(['relative']));
-  await assert.rejects(approvedRoots([parse(home).root]));
-  await assert.rejects(approvedRoots([join(home, 'missing')]));
+  assert.equal(await approvedProjectRoot(home), await realpath(home));
+  await assert.rejects(approvedProjectRoot('relative'), { code: 'project_root_invalid' });
+  await assert.rejects(approvedProjectRoot(parse(home).root), { code: 'project_root_invalid' });
+  await assert.rejects(approvedProjectRoot(join(home, 'missing')), { code: 'project_root_unavailable' });
   for (const value of ['http://evil.example', 'https://user:password@example.test', 'https://example.test/mcp', 'https://example.test?token=secret']) {
     assert.throws(() => normalizeGateway(value));
   }
   assert.equal(normalizeGateway('https://example.test/'), 'https://example.test');
   assert.equal(normalizeGateway('http://127.0.0.1:1234'), 'http://127.0.0.1:1234');
+});
+
+test('missing Current Project Root is detected without corrupting retained Enrollment state', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+    { home: f.home, startup: false });
+  await rm(f.project, { recursive: true, force: true });
+  const status = await deviceStatus(f.home);
+  assert.equal(status.currentProjectRootAvailable, false);
+  assert.equal(status.currentProjectRoot, f.project);
+  assert.equal(status.ready, false);
+  const presentation = trayState(status);
+  assert.equal(presentation.status, 'partial');
+  assert.equal(presentation.summary, 'Team DevSpace 项目目录不可用');
+  assert.equal(presentation.projectRootEnabled, true, 'Missing project must keep the reselect action available');
 });
 
 test('remote pause keeps desktop startup entries and disables Windows/Linux startup without deleting them', () => {

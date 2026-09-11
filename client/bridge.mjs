@@ -1,7 +1,6 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { Transform } from 'node:stream';
-import { resolve, sep } from 'node:path';
 import { LocalOAuth } from './oauth.mjs';
 
 const REQUEST_LIMIT = 16 * 1024 * 1024;
@@ -18,31 +17,17 @@ function fail(res, status, message) {
   res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message } }));
 }
 
-function comparablePath(path) {
-  const normalized = resolve(path);
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-}
-
-function configuredWorkspaceRoot(state, requestedPath) {
-  const roots = Array.isArray(state.roots) ? state.roots : [];
-  if (roots.length === 0) return undefined;
-  if (roots.length === 1) return roots[0];
-  if (typeof requestedPath !== 'string' || requestedPath.length === 0) return undefined;
-  const requested = comparablePath(requestedPath);
-  return roots
-    .map(root => ({ root, comparable: comparablePath(root) }))
-    .filter(({ comparable }) => requested === comparable || requested.startsWith(`${comparable}${sep}`))
-    .sort((a, b) => b.comparable.length - a.comparable.length)[0]?.root;
-}
-
 function rewriteOpenWorkspaceMessage(message, state) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
   if (message.method !== 'tools/call' || message.params?.name !== 'open_workspace') return false;
   const arguments_ = message.params.arguments && typeof message.params.arguments === 'object' && !Array.isArray(message.params.arguments)
     ? { ...message.params.arguments }
     : {};
-  const root = configuredWorkspaceRoot(state, arguments_.path);
-  if (!root) return false;
+  const root = state.currentProjectRoot;
+  if (typeof root !== 'string' || !root) return false;
+  // open_workspace requires a path, but Team DevSpace has exactly one current
+  // project on the connected Device. Treat the caller path as compatibility-only:
+  // never map Windows paths to macOS/Linux or select among multiple roots.
   message.params = { ...message.params, arguments: { ...arguments_, path: root } };
   return true;
 }
@@ -87,7 +72,7 @@ export function createBridge(state, home) {
     for (const name of ['accept', 'content-type', 'mcp-protocol-version', 'mcp-session-id', 'last-event-id']) {
       if (typeof req.headers[name] === 'string') headers[name] = req.headers[name];
     }
-    // Responses stay streamed. Requests are bounded and open_workspace calls are normalized to a configured project root.
+    // Responses stay streamed. Requests are bounded; open_workspace is pinned to this Device's one current project.
     const upstream = http.request({ hostname: '127.0.0.1', port: state.ports.devspace,
       path: '/mcp', method: req.method, headers }, response => {
       const output = { 'Cache-Control': 'no-store' };

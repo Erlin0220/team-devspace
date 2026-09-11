@@ -62,6 +62,8 @@ struct TrayState {
     check_enabled: bool,
     switch_key_text: String,
     switch_key_enabled: bool,
+    project_text: String,
+    project_root_enabled: bool,
     restart_enabled: bool,
     repair_enabled: bool,
     logs_enabled: bool,
@@ -85,6 +87,8 @@ impl Default for TrayState {
             check_enabled: true,
             switch_key_text: "完成设置…".into(),
             switch_key_enabled: false,
+            project_text: "项目：未设置".into(),
+            project_root_enabled: false,
             restart_enabled: false,
             repair_enabled: false,
             logs_enabled: true,
@@ -109,6 +113,8 @@ struct Application {
     status: MenuItem,
     remote: MenuItem,
     check: MenuItem,
+    project: MenuItem,
+    project_root: MenuItem,
     switch_key: MenuItem,
     troubleshooting: Submenu,
     restart: MenuItem,
@@ -248,6 +254,8 @@ impl Application {
             status: MenuItem::new("正在检查 Team DevSpace…", false, None),
             remote: MenuItem::new("暂停远程访问", false, None),
             check: MenuItem::new("检查连接", true, None),
+            project: MenuItem::new("项目：未设置", false, None),
+            project_root: MenuItem::new("项目目录…", false, None),
             switch_key: MenuItem::new("更换 Access Key…", false, None),
             troubleshooting: Submenu::new("故障排查", true),
             restart: MenuItem::new("重启连接服务", false, None),
@@ -275,8 +283,10 @@ impl Application {
         let third_separator = PredefinedMenuItem::separator();
         menu.append_items(&[
             &self.status,
+            &self.project,
             &first_separator,
             &self.remote,
+            &self.project_root,
             &self.check,
             &self.switch_key,
             &second_separator,
@@ -298,6 +308,8 @@ impl Application {
         self.remote.set_text(&state.remote_text);
         self.remote.set_enabled(state.remote_enabled);
         self.check.set_enabled(state.check_enabled);
+        self.project.set_text(&state.project_text);
+        self.project_root.set_enabled(state.project_root_enabled);
         self.switch_key.set_text(&state.switch_key_text);
         self.switch_key.set_enabled(state.switch_key_enabled);
         self.restart.set_enabled(state.restart_enabled);
@@ -321,6 +333,7 @@ impl Application {
     fn action(&self, id: &MenuId) -> Option<String> {
         if id == self.remote.id() { Some(self.state.remote_action.clone())
         } else if id == self.check.id() { Some("check".into())
+        } else if id == self.project_root.id() { Some("project-root".into())
         } else if id == self.switch_key.id() { Some("switch-key".into())
         } else if id == self.restart.id() { Some("restart".into())
         } else if id == self.repair.id() { Some("repair".into())
@@ -354,7 +367,7 @@ impl ApplicationHandler<UserEvent> for Application {
                     // A user gesture starts the desktop action in our Node controller.
                     // Delegate foreground permission before its short-lived helper opens UI.
                     #[cfg(target_os = "windows")]
-                    if action == "switch-key" || action == "logs" {
+                    if action == "switch-key" || action == "project-root" || action == "logs" {
                         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
                     }
                     emit("menu", Some(&action));

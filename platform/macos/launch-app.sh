@@ -12,6 +12,35 @@ APP_STARTED="$HOME_ROOT/.app-started"
 /bin/chmod 600 "$APP_STARTED" 2>/dev/null || true
 : > "$LOG"
 /bin/chmod 600 "$LOG" 2>/dev/null || true
+ACTIVE="$ROOT/active-path"
+TRAY_LABEL="com.teamdevspace.tray"
+TRAY_PLIST="$HOME/Library/LaunchAgents/$TRAY_LABEL.plist"
+current=''
+if [ -f "$ACTIVE" ]; then
+  current=$(/usr/bin/sed -n '1p' "$ACTIVE")
+  case "$current" in "$ROOT"/versions/*) ;; *) current='' ;; esac
+fi
+# Reuse the existing launchd-owned tray before any package/bootstrap work. This
+# keeps the visible UI responsive without introducing a second controller or
+# another lifecycle owner. Upgrade work may continue after the current tray is visible.
+if [ -n "$current" ] && [ -f "$TRAY_PLIST" ]; then
+  domain="gui/$(/usr/bin/id -u)"
+  if ! /bin/launchctl print "$domain/$TRAY_LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootstrap "$domain" "$TRAY_PLIST" >/dev/null 2>&1 || true
+  fi
+  /bin/launchctl kickstart "$domain/$TRAY_LABEL" >/dev/null 2>&1 || true
+fi
+# Opening the same installed release should not unpack and verify the offline
+# payload again. Refresh its existing current-user startup entries instead; a
+# missing/partial local install falls through to the transactional bootstrap.
+if [ -n "$current" ] && [ -f "$current/install-manifest.json" ] &&
+   /usr/bin/cmp -s "$current/install-manifest.json" "$RESOURCES/release-manifest.json" &&
+   [ -x "$current/runtime/bin/node" ] && [ -f "$current/client/cli.mjs" ]; then
+  if "$current/runtime/bin/node" "$current/client/cli.mjs" startup install --runtime-root "$current" >> "$LOG" 2>&1; then
+    exit 0
+  fi
+  /usr/bin/printf '%s\n' 'Existing release fast start failed; falling back to bootstrap.' >> "$LOG"
+fi
 # Setup progress, validation errors and cancellation belong to the AppKit form.
 # The marker only confirms entry into this wrapper, not successful enrollment.
 if ! "$RESOURCES/bootstrap.sh" --root "$ROOT" --manifest "$RESOURCES/release-manifest.json" --setup gui >> "$LOG" 2>&1; then

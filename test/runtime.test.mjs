@@ -36,7 +36,7 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   await writeFile(join(home, 'outside.txt'), 'must not be readable through file tools');
   const ports = { devspace: await freePort(), bridge: await freePort(), metrics: await freePort() };
   const state = { schema: 1, deviceId: randomUUID(), bindingId: randomUUID(), keyId: randomUUID(),
-    deviceSecret: randomSecret(), ownerToken: randomSecret(), gateway: 'https://team.example.test', roots: [root], ports };
+    deviceSecret: randomSecret(), ownerToken: randomSecret(), gateway: 'https://team.example.test', currentProjectRoot: root, ports };
   let upstream;
   let bridge;
   let client;
@@ -80,13 +80,14 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   assert.ok(widgetHtml?.includes('https://team.example.test/mcp-app-assets/'), 'Widget assets must use the public Team gateway');
   assert.ok(!widgetHtml?.includes('127.0.0.1'), 'Widget HTML must not expose a local employee origin');
   const accidentalChild = join(root, 'team-devspace');
-  const opened = await client.callTool({ name: 'open_workspace', arguments: { path: accidentalChild, mode: 'checkout' } });
+  const callerLocalPath = process.platform === 'win32' ? 'Z:\\caller\\different-project' : '/caller/different-project';
+  const opened = await client.callTool({ name: 'open_workspace', arguments: { path: callerLocalPath, mode: 'checkout' } });
   assert.ok(!opened.isError, JSON.stringify(opened));
   const openedData = resultObject(opened);
   const workspaceId = openedData.workspaceId ?? openedData.result?.workspaceId;
   const openedRoot = openedData.root ?? openedData.result?.root;
   assert.ok(workspaceId, JSON.stringify(openedData));
-  assert.equal(openedRoot, root, 'The installer-selected project directory must be the workspace root');
+  assert.equal(openedRoot, root, 'The Device current project must be authoritative; caller paths are never mapped or selected');
   await assert.rejects(access(accidentalChild), { code: 'ENOENT' });
   const read = await client.callTool({ name: 'read', arguments: { workspaceId, path: 'readme.txt' } });
   assert.ok(JSON.stringify(read).includes('runtime proof'));

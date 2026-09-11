@@ -23,9 +23,9 @@ _Avoid_: Login, install
 The association between one Access Key and one enrolled Device. Reinstalling on the same Device preserves the binding; moving the key to a different Device requires an Administrator reset.
 _Avoid_: Session
 
-**Allowed Root**:
-A local project directory explicitly approved for DevSpace access. An Employee may add or remove Allowed Roots on their own Device.
-_Avoid_: Workspace, repository root
+**Current Project Root**:
+The one local project directory that Team DevSpace exposes for development on a Device. An Employee may replace it with another local directory. Upstream DevSpace still receives its native `allowedRoots` array internally as `[Current Project Root]`; multi-root selection is not a Team DevSpace product concept.
+_Avoid_: Allowed Roots as a user-facing collection, cross-device path mapping
 
 **Connection**:
 An authenticated ChatGPT-to-Device path using a valid Access Key. One Access Key may support multiple concurrent or reconnecting ChatGPT sessions while remaining bound to one Device.

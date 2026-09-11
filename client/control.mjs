@@ -248,6 +248,7 @@ export async function diagnosticReport(home = stateHome()) {
     bridgeHealth: status.bridge,
     tunnelHealth: status.tunnel,
     gatewayHealth: status.gateway,
+    projectRootAvailable: status.currentProjectRootAvailable,
     recentErrors: await recentErrors(home, state),
   };
 }

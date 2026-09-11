@@ -488,11 +488,15 @@ try {
         Write-Step 'Completing first-run Enrollment after the local installation commit...'
         [void](Invoke-Client $candidate $setup)
         Remove-Item -LiteralPath (Join-Path $InstallPath 'onboarding-error.log') -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $InstallPath 'onboarding-message.txt') -Force -ErrorAction SilentlyContinue
       } catch {
         $setupFailure = $_.Exception.Message
         [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
         $failure = "Team DevSpace is installed, but connection setup did not complete: $setupFailure"
+        $displayFailure = $setupFailure
+        if ($setupFailure -match 'Team DevSpace:\s*(.+)$') { $displayFailure = $Matches[1] }
         [IO.File]::AppendAllText((Join-Path $InstallPath 'onboarding-error.log'), "$(Get-Date -Format o) $failure`r`n")
+        [IO.File]::WriteAllText((Join-Path $InstallPath 'onboarding-message.txt'), $displayFailure, [Text.Encoding]::Unicode)
         Write-Warning $failure
         Write-Warning 'Use Repair connection after network or credential issues are resolved. The installed application will not be rolled back.'
         exit 10

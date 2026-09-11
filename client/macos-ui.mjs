@@ -4,7 +4,7 @@ import { stateHome } from './state.mjs';
 
 // The same executable renders tray and short-lived forms. There is no UI server,
 // on-disk request file, or credential on argv. Only Node commits device changes.
-export async function runMacForm({ home = stateHome(), mode = 'setup', roots = [], submit,
+export async function runMacForm({ home = stateHome(), mode = 'setup', projectRoot, submit,
   signal, onProgress = () => {}, helper, helperArgs, startupTimeout = 10000 } = {}) {
   if (signal?.aborted) return { cancelled: true };
   if (typeof submit !== 'function') throw new TypeError('A form submission handler is required');
@@ -53,18 +53,20 @@ export async function runMacForm({ home = stateHome(), mode = 'setup', roots = [
     if (event.event === 'ready' && !ready) {
       ready = true;
       clearTimeout(startupTimer);
-      if (!closing) send({ type: 'form', mode, roots });
+      if (!closing) send({ type: 'form', mode, projectRoot: projectRoot ?? '' });
     } else if (event.event === 'duplicate') {
       clearTimeout(startupTimer);
       cancel();
     } else if (event.event === 'cancel') cancel();
     else if (event.event === 'submit' && ready && !closing && !busy && !completed) {
       if (typeof event.accessKey !== 'string' || event.accessKey.length > 256 ||
-          !Array.isArray(event.roots) || event.roots.length > 64 ||
-          event.roots.some(root => typeof root !== 'string' || root.length > 4096)) { fail(); return; }
+          (mode === 'setup' && (typeof event.projectRoot !== 'string' || !event.projectRoot || event.projectRoot.length > 4096))) {
+        fail(); return;
+      }
       busy = true;
       send({ type: 'form-result', phase: 'busy', message: '正在验证 Access Key…' });
-      pending = Promise.resolve().then(() => submit({ accessKey: event.accessKey.trim(), roots: event.roots }, message => {
+      pending = Promise.resolve().then(() => submit({ accessKey: event.accessKey.trim(),
+        ...(mode === 'setup' ? { currentProjectRoot: event.projectRoot } : {}) }, message => {
         const text = macProgress(message);
         onProgress(text);
         if (!closing) send({ type: 'form-result', phase: 'busy', message: text });

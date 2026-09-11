@@ -9,7 +9,7 @@ assert.equal(process.argv.some(value => value.includes('tds_')), false);
 let submitted = false;
 let cancelled = false;
 let errors = 0;
-const submit = () => emit({ event: 'submit', accessKey: key, roots: ['/test/project'] });
+const submit = () => emit({ event: 'submit', accessKey: key, projectRoot: '/test/project' });
 const lines = createInterface({ input: process.stdin });
 lines.on('line', line => {
   const message = JSON.parse(line);
@@ -17,7 +17,7 @@ lines.on('line', line => {
   assert.equal(line.includes(key), false);
   if (message.type === 'form') {
     if (scenario === 'cancel') { emit({ event: 'cancel' }); return; }
-    if (scenario === 'invalid') { emit({ event: 'submit', accessKey: 'a'.repeat(257), roots: [] }); return; }
+    if (scenario === 'invalid') { emit({ event: 'submit', accessKey: 'a'.repeat(257), projectRoot: '' }); return; }
     submitted = true;
     submit();
     if (scenario === 'duplicate-submit') submit();

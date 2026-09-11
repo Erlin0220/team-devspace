@@ -66,6 +66,7 @@ Var Arguments
 Var NoStartup
 Var ProgressStyle
 Var SetupPending
+Var SetupMessage
 
 !define PBS_MARQUEE 0x08
 
@@ -193,7 +194,7 @@ Section "Install"
     ${StrRep} $AccessKey $AccessKey '\' '\\'
     ${StrRep} $AccessKey $AccessKey '$\"' '\$\"'
     FileOpen $0 $RequestFile w
-    FileWrite $0 '{"accessKey":"$AccessKey","roots":["$ProjectRoot"]}'
+    FileWrite $0 '{"accessKey":"$AccessKey","currentProjectRoot":"$ProjectRoot"}'
     FileClose $0
   ${EndIf}
 
@@ -212,6 +213,12 @@ Section "Install"
   StrCpy $AccessKey ""
   ${If} $ResultCode == 10
     StrCpy $SetupPending "1"
+    StrCpy $SetupMessage "Connection setup did not complete. Check the installer details, then use Repair connection."
+    IfFileExists "$INSTDIR\onboarding-message.txt" 0 setup_message_ready
+      FileOpen $0 "$INSTDIR\onboarding-message.txt" r
+      FileReadUTF16LE $0 $SetupMessage
+      FileClose $0
+    setup_message_ready:
   ${ElseIf} $ResultCode != 0
     SetErrorLevel 4
     MessageBox MB_OK|MB_ICONEXCLAMATION "Local Team DevSpace installation failed before activation. The previous installed version and Enrollment were retained. Re-run this trusted installer." /SD IDOK
@@ -233,7 +240,7 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   DetailPrint "Team DevSpace local installation is complete."
   ${If} $SetupPending == "1"
-    MessageBox MB_OK|MB_ICONEXCLAMATION "Team DevSpace was installed successfully, but connection setup did not complete. Use 'Repair connection' after checking your Access Key and network. The installed application does not need to be reinstalled." /SD IDOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION "Team DevSpace was installed successfully, but connection setup did not complete.$\r$\n$\r$\n$SetupMessage$\r$\n$\r$\nAfter resolving the issue, use 'Repair connection'. The installed application does not need to be reinstalled." /SD IDOK
   ${EndIf}
 SectionEnd
 
