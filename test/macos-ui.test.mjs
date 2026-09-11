@@ -144,8 +144,8 @@ test('macOS native pipe consumes short input and packaging runs real GUI smoke',
 
 test('macOS native UI reports actual visibility and checks activation policy', async () => {
   const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
-  assert.match(swift, /setActivationPolicy\(\.accessory\)/);
-  assert.match(swift, /setActivationPolicy\(\.regular\)/);
+  assert.match(swift, /activationPolicy\(\) != \.accessory && !app\.setActivationPolicy\(\.accessory\)/);
+  assert.match(swift, /activationPolicy\(\) != \.regular && !app\.setActivationPolicy\(\.regular\)/);
   assert.match(swift, /panel\.isVisible/);
   assert.match(swift, /item\.isVisible/);
   assert.match(swift, /emit\("form-visible"\)/);

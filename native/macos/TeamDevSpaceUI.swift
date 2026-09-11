@@ -524,11 +524,12 @@ struct Main {
             instance = acquired
         } catch { fputs("Team DevSpace could not acquire its UI instance lock.\n", stderr); exit(1) }
         let app = NSApplication.shared
-        if !app.setActivationPolicy(.accessory) {
-            // A setup form must remain recoverable even if accessory activation is unavailable.
-            // The tray must not fall back to a Dock application because that would create a second UI surface.
-            if !form || !app.setActivationPolicy(.regular) {
-                fputs("Team DevSpace could not enter a visible macOS application session.\n", stderr)
+        // LSUIElement already supplies accessory policy for the packaged app.
+        // A redundant policy switch may return false; the current policy is authoritative.
+        if app.activationPolicy() != .accessory && !app.setActivationPolicy(.accessory) {
+            // A setup form may use a regular window, but the tray must stay menu-bar-only.
+            if !form || (app.activationPolicy() != .regular && !app.setActivationPolicy(.regular)) {
+                fputs("Team DevSpace could not enter a visible macOS application session (policy=\(app.activationPolicy().rawValue)).\n", stderr)
                 exit(1)
             }
         }
