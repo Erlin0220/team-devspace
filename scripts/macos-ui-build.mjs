@@ -15,7 +15,7 @@ export function macUiCompileArgs(destination, minimum = release.distribution.mac
 export async function buildMacUi(destination) {
   if (process.platform !== 'darwin') throw new Error('AppKit must be compiled with the macOS Apple SDK');
   await mkdir(dirname(destination), { recursive: true });
-  await run('/usr/bin/xcrun', macUiCompileArgs(destination), { timeout: 180000 });
+  await run('/usr/bin/xcrun', macUiCompileArgs(destination), { timeout: 300000 });
   await chmod(destination, 0o755);
   // Runs without a GUI session, unlike native menu/form acceptance. A successful
   // compiler invocation alone must not be mistaken for employee desktop testing.

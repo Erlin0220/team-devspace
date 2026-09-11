@@ -390,7 +390,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(keyField)
         DispatchQueue.main.async { [weak self, weak panel] in
-            guard let self, let panel, panel.isVisible else {
+            guard let panel, panel.isVisible else {
                 emit("protocol-error", ["reason": "form-not-visible"])
                 self?.stop()
                 return
