@@ -108,11 +108,23 @@ if (process.platform === 'win32') {
 for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
 const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(runtime, 'bin', 'node');
 // The pinned modern npm honors security overrides instead of dependency-published shrinkwrap trees.
-// It is a build-time devDependency, not another employee runtime service.
-const npmCli = resolve('node_modules/npm/bin/npm-cli.js');
-const npmVersion = JSON.parse(await readFile(resolve('node_modules/npm/package.json'), 'utf8')).version;
+// Prefer the exact npm that invoked this script so hosted macOS packaging does not need a redundant
+// repository-wide npm ci. Local development may fall back to the pinned devDependency when the
+// developer's global npm is older.
 const expectedNpm = packageJson.packageManager.replace(/^npm@/, '');
-if (npmVersion !== expectedNpm) throw new Error(`Build requires ${packageJson.packageManager}; bootstrap with npx --yes ${packageJson.packageManager} ci`);
+const npmCandidates = [...new Set([process.env.npm_execpath, resolve('node_modules/npm/bin/npm-cli.js')].filter(Boolean))];
+let npmCli;
+let npmVersion;
+for (const candidate of npmCandidates) {
+  try {
+    await access(candidate);
+    const candidateVersion = (await run(process.execPath, [candidate, '--version'], { capture: true, timeout: 30000 })).stdout.trim();
+    if (candidateVersion === expectedNpm) { npmCli = candidate; npmVersion = candidateVersion; break; }
+  } catch {}
+}
+if (!npmCli) {
+  throw new Error(`Build requires ${packageJson.packageManager}; invoke package with that npm version or install the pinned devDependency first`);
+}
 const version = (await run(node, ['--version'], { capture: true })).stdout.trim();
 if (version !== `v${release.nodeVersion}`) throw new Error('Bundled Node version differs from release manifest');
 const buildEnvironment = {

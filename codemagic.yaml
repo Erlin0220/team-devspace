@@ -21,11 +21,6 @@ workflows:
         - $CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules
         - $CM_BUILD_DIR/build/bundle-darwin-arm64/.dependency-fingerprint
     scripts:
-      - name: Install locked build dependencies
-        script: |
-          set -euo pipefail
-          npm ci --no-fund --no-audit
-
       - name: Prepare native toolchains and pinned cloudflared
         script: |
           set -euo pipefail
@@ -36,7 +31,9 @@ workflows:
             echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
-          rustup toolchain install 1.85.1 --profile minimal --no-self-update
+          if ! rustup toolchain list | grep -Eq '^1\.85\.1(-|$)'; then
+            rustup toolchain install 1.85.1 --profile minimal --no-self-update
+          fi
           rustup show active-toolchain
 
           go_version="$(node -p "require('./release.config.json').cloudflaredGoVersion")"
@@ -123,7 +120,7 @@ workflows:
                 offenders=1
               fi
             done <<< "$versions"
-          done < <(find "$root" -type f -print0)
+          done < <(find "$root" -type f \( -perm -111 -o -name '*.node' -o -name '*.dylib' -o -name '*.so' -o -name '*.bundle' \) -print0)
           [[ "$checked" -gt 0 ]]
           [[ "$offenders" -eq 0 ]]
           echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum"

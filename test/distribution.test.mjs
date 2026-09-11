@@ -28,7 +28,8 @@ const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', cloudflaredSourceCommit: 'f'.repeat(40),
   cloudflaredGoVersion: '1.26.8', gitFallbackVersion: '2.55.0.windows.5',
-  distribution: { mode: 'private-github-release', trustProfile: 'internal-free', targets: ['win32-x64'] },
+  distribution: { mode: 'private-github-release', trustProfile: 'internal-free', macosMinimumVersion: '12.0',
+    targets: ['win32-x64', 'darwin-arm64', 'linux-x64'] },
 };
 
 test('distribution config requires private GitHub Releases, internal-free trust and explicit immutable targets', () => {
@@ -48,13 +49,13 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   t.after(() => rm(work, { recursive: true, force: true }));
   const bundle = join(work, 'bundle');
   const output = join(work, 'release');
-  const directories = ['client', 'platform', 'node_modules/@waishnav/devspace', 'runtime', 'bin', 'git', 'node_modules/example'];
+  const directories = ['client', 'platform', 'node_modules/@waishnav/devspace', 'runtime/bin', 'bin', 'git', 'node_modules/example'];
   for (const directory of directories) await mkdir(join(bundle, directory), { recursive: true });
   const files = {
     'client/cli.mjs': 'client', 'platform/platform.txt': 'platform', 'node_modules/@waishnav/devspace/package.json': '{"version":"1.0.8"}',
     'node_modules/example/index.js': 'dependency', 'node_modules/example/index.js.map': 'source-map',
     'node_modules/example/index.d.ts': 'types', 'node_modules/example/index.d.mts': 'types', 'node_modules/example/index.d.cts': 'types',
-    'runtime/node.exe': 'node', 'bin/cloudflared.exe': 'cloudflared',
+    'runtime/node.exe': 'node', 'runtime/bin/node': 'node', 'bin/cloudflared.exe': 'cloudflared', 'bin/cloudflared': 'cloudflared',
     'bin/team-devspace.cmd': 'command', 'git/git.exe': 'git', 'package.json': '{}', 'package-lock.json': '{}', '.npmrc': '',
     'release.config.json': '{}', 'README.md': 'readme', 'sbom.cdx.json': '{}', 'THIRD-PARTY-NOTICES.txt': 'notices',
     'release-provenance.json': '{}',
@@ -87,7 +88,15 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   const runtimeListing = (await run(tar, ['-tzf', join(built.layout, runtime.path)], { capture: true })).stdout;
   assert.match(runtimeListing, /node_modules\/example\/index\.js/);
   assert.doesNotMatch(runtimeListing, /\.map$|\.d\.ts$|\.d\.mts$|\.d\.cts$/m,
-    'Windows employee runtime must omit source maps and TypeScript declaration files');
+    'Employee runtime archives must omit source maps and TypeScript declaration files');
+  for (const target of ['darwin-arm64', 'linux-x64']) {
+    const unixBuilt = await buildReleaseLayout({ bundle, target, release: baseRelease, tar, outputDirectory: output });
+    const unixRuntime = unixBuilt.components.find(component => component.name === 'devspace-runtime');
+    const unixListing = (await run(tar, ['-tzf', join(unixBuilt.layout, unixRuntime.path)], { capture: true })).stdout;
+    assert.match(unixListing, /node_modules\/example\/index\.js/);
+    assert.doesNotMatch(unixListing, /\.map$|\.d\.ts$|\.d\.mts$|\.d\.cts$/m,
+      `${target} employee runtime must omit source maps and TypeScript declaration files`);
+  }
   assert.doesNotMatch(runtimeListing, /^\.npmrc$|^package-lock\.json$/m);
   await assert.rejects(access(join(built.layout, '.staging')));
   await writeFile(join(bundle, 'package-lock.json'), '{"version":"9.9.9"}');

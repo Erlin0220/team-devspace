@@ -76,7 +76,9 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
     ...(target === 'win32-x64' ? ['bin/team-devspace.cmd'] : []),
   ];
   const cloudflaredPath = target === 'win32-x64' ? 'bin/cloudflared.exe' : 'bin/cloudflared';
-  const runtimeExcludes = target === 'win32-x64' ? ['*.map', '*.d.ts', '*.d.mts', '*.d.cts'] : [];
+  // Source maps and TypeScript declarations are development metadata, not employee runtime inputs.
+  // Exclude them consistently on every platform to reduce archive work and final offline package size.
+  const runtimeExcludes = ['*.map', '*.d.ts', '*.d.mts', '*.d.cts'];
   const components = [
     await componentArchive({ name: 'app', version: release.version, bundle, paths: appPaths, tar, staging, layout }),
     await componentArchive({ name: 'devspace-runtime', version: release.devspaceVersion, bundle,

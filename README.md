@@ -141,11 +141,11 @@ npm run test:tray
 npm run test:native
 ```
 
-`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建后自动清理解压/组装中间文件；员工 runtime 不携带构建用 npm 和 lock/.npmrc。
+`package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建器优先复用启动它且版本完全匹配 `packageManager` 的 npm，避免 hosted macOS 为取得 npm CLI 再完整安装一次仓库依赖；本地全局 npm 版本不匹配时仍可回退到仓库锁定的 npm devDependency。构建后自动清理解压/组装中间文件；所有平台的员工 runtime archive 都排除 source map 与 TypeScript 声明文件，并且不携带构建用 npm 和 lock/.npmrc。
 
 `test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；这些深度验收保留为本地/人工诊断，不进入当前 Codemagic 快速打包路径。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
 
-原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64 使用 Codemagic `mac_mini_m2` 手动构建，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 保留锁定 Node/npm、macOS 12 deployment target、从固定 cloudflared commit 构建、Rust/Go/npm 缓存、release layout 校验以及 Mach-O arm64/最低系统版本检查，但不跑完整测试矩阵和系统级 `.pkg` 安装。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
+原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64 使用 Codemagic `mac_mini_m2` 手动构建，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 保留锁定 Node/npm、macOS 12 deployment target、从固定 cloudflared commit 构建、Rust/Go/npm 缓存、release layout 校验以及 Mach-O arm64/最低系统版本检查；兼容性扫描只枚举可执行文件和 `.node`/`.dylib`/`.so`/`.bundle` 原生候选，不再逐个探测整个 `node_modules`。它不跑完整测试矩阵和系统级 `.pkg` 安装。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 

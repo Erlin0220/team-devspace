@@ -75,6 +75,9 @@ if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('np
     !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || !codemagic.includes('cloudflaredSourceCommit') ||
     !codemagic.includes('cloudflaredGoVersion') || !codemagic.includes('/usr/bin/lipo -archs') ||
     !codemagic.includes('/usr/bin/otool -l') || !codemagic.includes('TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"') ||
+    !codemagic.includes('-perm -111') || !codemagic.includes("-name '*.node'") ||
+    codemagic.includes('find "$root" -type f -print0') || codemagic.includes('npm ci') ||
+    !packageScript.includes('process.env.npm_execpath') ||
     codemagic.includes('/usr/sbin/installer -verboseR') || codemagic.includes('acceptance:platform') ||
     codemagic.includes('triggering:')) {
   throw new Error('Codemagic must stay a manual, macOS-only thin package build with pinned native inputs and cheap compatibility checks');
