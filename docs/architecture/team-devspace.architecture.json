@@ -33,7 +33,7 @@
         "id": "release-install",
         "label": "发布与安装",
         "focus": ["release_pipeline", "local_lifecycle", "local_state", "runtime", "cloudflared", "devspace"],
-        "note": "Windows x64、Apple Silicon Mac、Linux x64 三个平台原生构建，经 private GitHub Release 交由管理员分发，员工机不在线拉 runtime。"
+        "note": "Windows/Linux 按需本地原生构建；Apple Silicon Mac 由 Codemagic M2 手动构建。管理员离线分发，员工机不在线拉 runtime。"
       }
     ]
   },
@@ -173,13 +173,13 @@
     {
       "id": "release_pipeline",
       "type": "external",
-      "label": "CI / Private Release",
-      "sublabel": "5 native targets · SHA-256 · offline",
+      "label": "Native packaging / handoff",
+      "sublabel": "Codemagic macOS · local Win/Linux · SHA-256",
       "pos": [600, 570],
       "size": [210, 82],
       "tag": "管理员离线分发",
       "sources": [
-        { "path": ".github/workflows/build-installers.yml", "line": 1, "label": "Release CI" },
+        { "path": "codemagic.yaml", "line": 1, "label": "macOS package CI" },
         { "path": "docs/distribution.md", "line": 1, "label": "离线发行模型" },
         { "path": "release.config.json", "line": 1, "label": "版本事实源" }
       ]
@@ -222,7 +222,7 @@
       "title": "薄实现与离线交付",
       "items": [
         "官方 DevSpace 保持原版；cloudflared、OS 启动和 Tray 均复用成熟能力，Tray 不做 supervisor。",
-        "5 个原生目标构建 SHA-256 离线包，由 private GitHub Release 交给管理员分发。",
+        "macOS arm64 在 Codemagic M2 手动构建；Windows/Linux 在原生主机按需本地构建，均输出 SHA-256 离线包。",
         "安装验证候选后再切 active slot；失败保留当前版本，员工机不在线安装 runtime。"
       ]
     }

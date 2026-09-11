@@ -18,9 +18,10 @@ const manifest = JSON.parse(await readFile('package.json', 'utf8'));
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const deployment = JSON.parse(await readFile('deployment.config.json', 'utf8'));
 const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
-const releaseWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
+const retiredPackageWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
+const codemagic = await readFile('codemagic.yaml', 'utf8');
 const deployWorkflow = await readFile('.github/workflows/deploy.yml', 'utf8');
-const workflows = `${releaseWorkflow}\n${deployWorkflow}`;
+const workflows = deployWorkflow;
 const packageScript = await readFile('scripts/package.mjs', 'utf8');
 const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const windowsInstaller = await readFile('platform/windows/installer.nsi', 'utf8');
@@ -66,10 +67,17 @@ if (manifest.packageManager !== `npm@${manifest.devDependencies.npm}`) {
 if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string) {
   throw new Error('Gateway must keep privacy-aware Workers Logs enabled');
 }
-if (!releaseWorkflow.includes('gh release create') || !releaseWorkflow.includes("--jq '.private'") ||
-    !releaseWorkflow.includes('healthMatches') ||
-    /\brclone\b|cloudflarestorage\.com|RCLONE_CONFIG_RELEASES/i.test(releaseWorkflow)) {
-  throw new Error('Release workflow must verify the live Gateway and publish only to a verified private GitHub Release');
+if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow.includes('macos-15') ||
+    retiredPackageWorkflow.includes('windows-2022') || retiredPackageWorkflow.includes('linux-x64')) {
+  throw new Error('GitHub Actions native packaging must remain retired; macOS builds on Codemagic and Windows/Linux build locally');
+}
+if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package -- --reuse-dependencies') ||
+    !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || !codemagic.includes('cloudflaredSourceCommit') ||
+    !codemagic.includes('cloudflaredGoVersion') || !codemagic.includes('/usr/bin/lipo -archs') ||
+    !codemagic.includes('/usr/bin/otool -l') || !codemagic.includes('TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"') ||
+    codemagic.includes('/usr/sbin/installer -verboseR') || codemagic.includes('acceptance:platform') ||
+    codemagic.includes('triggering:')) {
+  throw new Error('Codemagic must stay a manual, macOS-only thin package build with pinned native inputs and cheap compatibility checks');
 }
 if (!windowsInstaller.includes('nsExec::ExecToLog') || /ExecWait[^\r\n]*powershell/i.test(windowsInstaller)) {
   throw new Error('Windows install/uninstall bootstrap must use no-console NSIS execution');
@@ -122,11 +130,9 @@ if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(m
     !macosPostinstall.startsWith('#!/bin/sh\nset -u\n') || macosPostinstall.includes('set -eu') ||
     !macosPostinstall.includes('if ! /bin/launchctl asuser') ||
     !macosLaunchApp.includes('setup.log') || !macosLaunchApp.includes('>> "$LOG" 2>&1') ||
-    !releaseWorkflow.includes('/usr/bin/lipo -archs') || !releaseWorkflow.includes('/usr/bin/otool -l') ||
-    !releaseWorkflow.includes('macOS deployment target mismatch: $file') ||
-    !releaseWorkflow.includes('/usr/sbin/installer -verboseR') ||
-    !releaseWorkflow.includes("\\[postinstall\\] skip auto-open")) {
-  throw new Error('macOS packaging must share one minimum-OS source, keep postinstall fail-open, capture setup diagnostics, scan final Mach-O compatibility, and execute a real Installer transaction');
+    !codemagic.includes('/usr/bin/lipo -archs') || !codemagic.includes('/usr/bin/otool -l') ||
+    !codemagic.includes('macOS deployment target mismatch: $file')) {
+  throw new Error('macOS packaging must share one minimum-OS source, keep postinstall fail-open, capture setup diagnostics, and retain cheap Mach-O compatibility checks');
 }
 if (!windowsLauncher.includes('CREATE_NO_WINDOW') || !windowsLauncher.includes('JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE') ||
     windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
@@ -139,24 +145,22 @@ if (!trayCargo.includes('tray-icon = { version = "=0.24.2"') || !trayCargo.inclu
     !trayMain.includes('CreateMutexW') || !trayMain.includes('libc::flock') || !trayMain.includes('emit("duplicate", None)') ||
     !trayMain.includes('include_bytes!("../assets/team-devspace-32.rgba")') ||
     !trayMain.includes('Submenu::new("故障排查"') || !trayMain.includes('MenuItem::new("更换 Access Key…"') ||
-    !releaseWorkflow.includes('npm run package')) {
-  throw new Error('Native tray must stay single-instance, use the branded embedded icon, expose the compact troubleshooting/key lifecycle menu, and enter the native package matrix');
+    !codemagic.includes('npm run package')) {
+  throw new Error('Native tray must stay single-instance, use the branded embedded icon, expose the compact troubleshooting/key lifecycle menu, and enter the macOS package build');
 }
 if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptance.mjs' ||
     !manifest.scripts['acceptance:local']?.includes('npm run acceptance:platform') ||
-    !releaseWorkflow.includes('Run final platform acceptance gate') || !releaseWorkflow.includes('npm run acceptance:platform') ||
-    !releaseWorkflow.includes('npm run verify:acceptance') || !platformAcceptance.includes('finalEntrypointTransaction') ||
+    !platformAcceptance.includes('finalEntrypointTransaction') ||
     !platformAcceptance.includes('traySingleInstance') || !platformAcceptance.includes('sourceDirty') ||
     !nativeSmoke.includes('scopedStaleTaskMigration') ||
     !acceptanceVerifier.includes('published entrypoint differs from the accepted bytes') ||
     !acceptanceVerifier.includes('acceptance was produced from a dirty source checkout')) {
-  throw new Error('Release publication must be gated by one auditable platform acceptance path bound to clean source and the final entrypoint bytes');
+  throw new Error('Full platform acceptance must remain available as an explicit local/manual diagnostic even though thin macOS packaging does not run it');
 }
-if (!releaseWorkflow.includes('Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4') ||
-    !releaseWorkflow.includes('build/tray-target-${{ matrix.target }}') ||
-    !releaseWorkflow.includes('actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9') ||
-    !releaseWorkflow.includes('build/zig-win32-x64')) {
-  throw new Error('Native package CI must reuse the pinned Rust dependency cache and verified Windows Zig toolchain cache');
+if (!codemagic.includes('$HOME/.cargo/registry') || !codemagic.includes('$HOME/Library/Caches/go-build') ||
+    !codemagic.includes('$CM_BUILD_DIR/build/cache') || !codemagic.includes('$CM_BUILD_DIR/build/tray-target-darwin-arm64') ||
+    !codemagic.includes('$CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules')) {
+  throw new Error('Codemagic macOS packaging must reuse the expensive npm, Go, Rust and pinned binary caches');
 }
 if (!/^[a-f0-9]{64}$/.test(binaries.zig?.['win32-x64']?.executableSha256 ?? '')) {
   throw new Error('Cached Windows Zig executable must have an exact SHA-256 pin');
@@ -168,9 +172,6 @@ if (officialActionRefs.length === 0 || officialActionRefs.some(([, , reference])
 for (const required of [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
   'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
-  'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
-  'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
-  'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
 ]) {
   if (!workflows.includes(required)) throw new Error(`GitHub Action must stay on its reviewed Node 24 pin: ${required}`);
 }
@@ -178,13 +179,6 @@ if (wrangler.workers_dev !== false || wrangler.preview_urls !== false ||
     !adminWeb.includes("default-src 'none'") || !adminWeb.includes('/admin/assets/admin.js') ||
     !picoLicense.includes('MIT License')) {
   throw new Error('Admin Web must remain Access-only, CSP-protected and carry the vendored Pico license');
-}
-if (release.distribution.trustProfile === 'internal-free' &&
-    (!releaseWorkflow.includes('WINDOWS_INTERNAL_SIGNING_PFX_BASE64') ||
-      !releaseWorkflow.includes('sign-internal-windows.ps1') ||
-      !releaseWorkflow.includes('macos-signing.mjs prepare') ||
-      !releaseWorkflow.includes('macos-signing.mjs cleanup'))) {
-  throw new Error('Internal-free publication must keep fixed Windows signing and an optional, non-gating protected macOS signing path');
 }
 if (!windowsSigning.includes('Set-AuthenticodeSignature') || !windowsSigning.includes('Get-AuthenticodeSignature') ||
     /addstore|X509Store|TrustedPublisher/i.test(windowsSigning)) {
@@ -203,4 +197,4 @@ if (gateway.protocol !== 'https:' || gateway.username || gateway.password || gat
   throw new Error('Release gateway must be a bare HTTPS single-label subdomain; deployment verifies it against the configured Zone');
 }
 execFileSync('git', ['diff', '--check'], { stdio: 'inherit' });
-console.log('Syntax, release/upstream pins, dependency boundary, private GitHub release policy, Cloudflare gateway metadata, and diff whitespace checks passed.');
+console.log('Syntax, release/upstream pins, dependency boundary, thin Codemagic macOS packaging policy, Cloudflare gateway metadata, and diff whitespace checks passed.');

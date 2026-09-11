@@ -4,7 +4,7 @@
 
 单元/边界测试可以证明 D1 的绑定、凭据校验、流量路由和错误处理。原生启动测试可以证明本机运行和停止没有残留。**它们不能代替真实 Cloudflare Tunnel、真实 ChatGPT 工作空间以及另一台 Mac 的验证。**
 
-最终验收需要两台独立设备同时在线，至少一台 Windows、一台 macOS；macOS arm64/x64 两种安装器各自需要原生构建和平台运行证据。用同一电脑启动两个测试进程只能作为开发测试。
+最终验收需要两台独立设备同时在线，至少一台 Windows、一台 Apple Silicon macOS。当前只发布 macOS arm64；Codemagic 负责生成候选 `.pkg`，同事的真实 Mac 安装和运行结果作为最终平台证据。用同一电脑启动两个测试进程只能作为开发测试。
 
 ## 无凭据的本地验证
 
@@ -17,7 +17,7 @@ npm run acceptance:local
 
 Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，避免覆盖已安装的员工版本；它验证首次 Enrollment 503、Repair、覆盖升级、credential 恢复、损坏 payload 修复、A/B 版本回收、卸载和零测试 Task 残留。`test:native` 使用真实 Task Scheduler/runtime/MCP，并额外制造同一 `TEAM_DEVSPACE_HOME` 的未知旧 owner task 与另一 state home 的 foreign task：前者必须被迁移，后者必须保留。packaged Tray 会真实启动第二个进程，第二个进程必须在创建图标前被 OS single-instance guard 拒绝。
 
-每个平台验收成功后会在该 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。正式 GitHub `publish=true` 时，Windows 先签名，再直接安装/修复/卸载**最终签名 EXE 本身**；publish job 下载三个平台产物后重新计算入口 SHA-256，只有与验收证据完全一致才允许创建 Release。macOS hosted runner 可以验证最终 PKG/bootstrap 与原生 Tray single-instance，但不能伪装成已验证真实员工 LaunchAgent 登录会话；该限制会明确写进 acceptance evidence。
+显式运行 `acceptance:platform` 时仍会在 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。当前 Codemagic 快速打包**不会自动运行这条完整验收**，也不会调用系统级 `installer -pkg`；它只产出经过 release layout 与 Mach-O 兼容性检查的候选 `.pkg`。最终 `.pkg` 安装、Gatekeeper、LaunchAgent、菜单栏和 Enrollment 行为由同事在真实 Mac 上验证。
 
 所有 native/installer smoke 都必须把自己的状态目录和启动项限定在测试作用域并在结束时清理。不要在真实员工设备的状态目录内改造测试夹具。
 

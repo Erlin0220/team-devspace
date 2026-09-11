@@ -37,7 +37,7 @@ D1 迁移不是 Worker 版本回滚的一部分。迁移必须向后兼容，破
 
 不会自动修改收费套餐、迁移已有 DNS 服务、部署 VPS 或把管理员电脑当作 Gateway。即便脚本不购买套餐，仍应确认账号自身的套餐和免费用量；已有付费账号的超额用量可能产生账单，不能将“未点击升级”当作无限免费。
 
-`internal-free` 发布不把 Apple 付费凭据作为发布 gate。若 GitHub `production` 环境完整配置 Developer ID Application/Installer P12 与 App Store Connect API Key，macOS job 会在临时 keychain 中依次 codesign 内层 Tray.app 和安装 App、签名 PKG、提交 `notarytool --wait`、staple 并验证，然后无论成功失败都删除临时材料；只配置一部分字段会失败而不会生成身份不明的发布物。完全未配置时仍明确产出 unsigned/unnotarized 内部包，不能把它描述为已完成签名或公证。
+`internal-free` 当前 macOS 路径由 Codemagic M2 手动构建，默认产出 unsigned/unnotarized `.pkg`，不要求 Apple 付费凭据，也不在快速打包中执行系统级安装事务。仓库仍保留 Developer ID/notarization 支持代码供未来切换正式签名发行，但当前 Codemagic workflow 不注入这些凭据；因此管理员必须把产物明确视为内部未签名候选包，并由真实 Mac 完成安装验收。
 
 ## 设备网络条件
 

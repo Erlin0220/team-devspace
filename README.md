@@ -80,13 +80,13 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 ## 员工安装和使用
 
-管理员先完成云端部署，再从 private GitHub Release 下载并分发对应平台包和该员工的 Access Key。发行目录、离线布局和发布 gate 见 [客户端发行模型](docs/distribution.md)。
+管理员先完成云端部署，再按平台取得安装包并分发对应员工的 Access Key。Windows/Linux 只在对应原生主机本地打包，不再走 GitHub Actions；macOS arm64 由根目录 `codemagic.yaml` 的 Codemagic M2 workflow 手动构建。当前构建产物可直接由管理员下载后分发，private GitHub Release 仅作为可选的固定版本归档/交付位置。发行目录和离线布局见 [客户端发行模型](docs/distribution.md)。
 
 **Windows x64：**管理员分发 `Team-DevSpace-0.2.1-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
 
-**macOS：**使用 Apple Silicon (`arm64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含离线 runtime 组件。`internal-free` 不要求 Apple 付费凭据；凭据齐全的 production job 会签名、公证并 staple，未配置时明确保持 unsigned/unnotarized。管理员只通过 private GitHub Release 交付并核对 SHA-256；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime；Enrollment 失败时菜单栏入口仍保留，并提供“完成设置…”重新输入 Access Key。
+**macOS：**使用 Apple Silicon (`arm64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；workflow 只做原生打包、release layout 校验和 Mach-O/最低系统版本检查，不执行系统级 `.pkg` 安装事务。管理员下载 Codemagic 产物并核对随包 SHA-256，再交给同事真机安装验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。首次打开完成本地校验、解压和原生 Enrollment 对话框，不下载 runtime；Enrollment 失败时菜单栏入口仍保留，并提供“完成设置…”重新输入 Access Key。
 
-**Linux x64：**当前包要求 `x86_64`、glibc 2.34+ 和可用的 systemd user manager。员工只使用 private GitHub Release 中的 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与 `SHA256SUMS`，不要把 Actions 中间 artifact 当成员工安装包。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
+**Linux x64：**当前包要求 `x86_64`、glibc 2.34+ 和可用的 systemd user manager。Linux 当前不走 GitHub Actions；需要时在原生 Linux x64 主机执行 `npm run package`，取得 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与对应 SHA-256。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
 
 内部发行仍可能触发 Windows SmartScreen 或 macOS Gatekeeper 的额外确认；只对管理员提供、SHA-256 已核对的固定版本包建立例外，不要关闭整机安全功能。
 
@@ -143,9 +143,9 @@ npm run test:native
 
 `package` 必须在目标系统/CPU 原生构建，不能跨平台复制 SQLite/PTY 模块。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建后自动清理解压/组装中间文件；员工 runtime 不携带构建用 npm 和 lock/.npmrc。
 
-`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；release workflow 对 Windows x64 和 Linux x64 启用这条 native lifecycle gate。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 另外执行真实离线安装包的事务测试；Unix 打包仍会实际启动 native PTY。
+`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过 JSON-lines 切换四种状态并正常退出；Rust helper 使用 `cargo build --locked`，Windows 构建还检查 PE 必须是原生 x64 GUI 子系统。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；这些深度验收保留为本地/人工诊断，不进入当前 Codemagic 快速打包路径。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
 
-GitHub Actions 的固定版本 release workflow 只覆盖 Windows x64、Apple Silicon macOS 和 Linux x64 三个目标，聚合 native layout 后才允许发布。当前 canonical trust profile 是 `internal-free`：发布前只要求 `production` 环境中的固定 Windows 内部自签 PFX；CI 用它签 Windows 安装器，并把公开证书和当前用户信任脚本一起放进 Windows 离线 ZIP。Apple 凭据不是 gate，但完整配置时会启用 Developer ID app/installer 签名、公证与 staple；未配置时明确记录为 unsigned/unnotarized。CI 会先确认仓库仍为 private，再创建一次性的固定版本 GitHub Release；同版本已存在时直接失败，不覆盖旧发布物。员工机器不需要 GitHub Token，由管理员下载并分发离线包。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
+原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64 使用 Codemagic `mac_mini_m2` 手动构建，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 保留锁定 Node/npm、macOS 12 deployment target、从固定 cloudflared commit 构建、Rust/Go/npm 缓存、release layout 校验以及 Mach-O arm64/最低系统版本检查，但不跑完整测试矩阵和系统级 `.pkg` 安装。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
 
 跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
 

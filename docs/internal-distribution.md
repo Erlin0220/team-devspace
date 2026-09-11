@@ -45,7 +45,7 @@ Self-signed trust is suitable only for devices whose users explicitly trust this
 
 ## macOS
 
-The private macOS `.pkg` defaults to unsigned and unnotarized in `internal-free` mode. When all protected Developer ID and App Store Connect credentials are configured, CI instead signs the apps and PKG, notarizes and staples it. Administrators must still distribute it only from the private GitHub Release and verify the published SHA-256 checksum before handoff.
+The private macOS `.pkg` is currently built manually on Codemagic M2 and remains unsigned/unnotarized in `internal-free` mode. The hosted build keeps only cheap structural/compatibility checks; it does not run the system-level Installer transaction. Administrators download the `.pkg` plus `.sha256`, verify the checksum, and hand it to a real Mac user for installation/LaunchAgent/menu-bar/Enrollment validation. A private GitHub Release can still be used as optional fixed-version storage, but it is not part of the build path.
 
 If Gatekeeper blocks the package, do not disable Gatekeeper globally. On the employee Mac, attempt to open the package once, then use **System Settings → Privacy & Security → Open Anyway** for that administrator-supplied package and complete the normal macOS confirmation flow.
 
@@ -61,9 +61,9 @@ On a headless server, keeping a user service alive after logout is an explicit a
 
 ## Release policy
 
-- GitHub repository must remain private.
-- Fixed `v<version>` releases are immutable by policy and are never overwritten.
-- CI validates all component sizes and SHA-256 digests before creating the Release.
-- Windows publication requires the fixed internal signing PFX in GitHub `production` secrets.
-- macOS publication has no Apple signing/notarization credential requirement in this profile; complete optional credentials activate the normal signing/notarization path.
+- The source repository remains private.
+- GitHub Actions no longer builds native client installers; its remaining workflow is infrastructure deployment only.
+- Windows/Linux packages are created on matching native hosts when needed.
+- macOS arm64 is built manually on Codemagic M2; no push/PR trigger is configured, and the candidate package is unsigned/unnotarized.
+- Fixed `v<version>` private GitHub Releases, when used for administrator storage, remain immutable by policy and are never overwritten.
 - Moving to public distribution later is a separate trust-profile change and must introduce an appropriate public Windows signing service and Apple Developer ID application/installer signing plus notarization; do not silently reuse the internal-free contract.

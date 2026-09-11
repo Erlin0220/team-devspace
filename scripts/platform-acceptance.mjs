@@ -82,7 +82,7 @@ const evidence = {
     zeroResidue: true,
   },
   limitations: process.platform === 'darwin'
-    ? ['GitHub-hosted macOS does not provide the durable employee LaunchAgent login session used in production; PKG/bootstrap and native tray single-instance behavior are still exercised on native macOS.']
+    ? ['Automated/native test hosts do not substitute for a real employee LaunchAgent login session; final macOS installation, menu-bar behavior and Enrollment are validated on an employee Mac.']
     : [],
 };
 const output = resolve(values.output ?? join(directory, 'acceptance.json'));
