@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, mkdir, readFile, rm, writeFile, access, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, access, realpath, symlink } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join, parse } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -60,6 +60,15 @@ async function fixture(t) {
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(home, { recursive: true, force: true }); });
   return { home, project, requests, flags, gateway: `http://127.0.0.1:${server.address().port}`, bindingId, keyId };
 }
+
+test('CLI direct entry still runs through a Unix symlink', { skip: process.platform === 'win32' }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'team-devspace-cli-symlink-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const link = join(directory, 'team-devspace-cli.mjs');
+  await symlink(join(process.cwd(), 'client', 'cli.mjs'), link);
+  const { stdout } = await promisify(execFile)(process.execPath, [link, '--help'], { timeout: 30000 });
+  assert.match(stdout, /Team DevSpace/);
+});
 
 test('installation retry/repair preserves identity, key, roots and upstream state outside the package', async t => {
   const f = await fixture(t);

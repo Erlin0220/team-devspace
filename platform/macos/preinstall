@@ -10,9 +10,11 @@ trap 'code=$?; if [ "$code" -ne 0 ]; then log "FAILED exit=$code"; fi' EXIT
 log 'start'
 # Installer may run as root; the DevSpace runtime must not.
 if [ "${3:-/}" != "/" ]; then log 'skip non-root target'; exit 0; fi
-ARCH=$(/usr/bin/uname -m 2>/dev/null || true)
+KERNEL_ARCH=$(/usr/bin/uname -m 2>/dev/null || true)
+ARCH=$KERNEL_ARCH
+if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then ARCH=arm64; fi
 if [ "$ARCH" != "$EXPECTED_ARCH" ]; then
-  log "ERROR code=UNSUPPORTED_ARCH actual=$ARCH required=$EXPECTED_ARCH"
+  log "ERROR code=UNSUPPORTED_ARCH actual=$ARCH kernel=$KERNEL_ARCH required=$EXPECTED_ARCH"
   echo "Team DevSpace requires Apple Silicon ($EXPECTED_ARCH). This Mac reports $ARCH. See $LOG." >&2
   exit 1
 fi

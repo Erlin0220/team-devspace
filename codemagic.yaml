@@ -11,58 +11,83 @@ workflows:
         TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"
     cache:
       cache_paths:
-        - $HOME/.npm
-        - $HOME/.cargo/registry
-        - $HOME/.cargo/git
-        - $HOME/Library/Caches/go-build
-        - $HOME/.cache/team-devspace
-        - $CM_BUILD_DIR/build/cache
-        - $CM_BUILD_DIR/build/tray-target-darwin-arm64
-        - $CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules
-        - $CM_BUILD_DIR/build/bundle-darwin-arm64/.dependency-fingerprint
+        - $HOME/.cache/team-devspace-native-v1
     scripts:
-      - name: Prepare native toolchains and pinned cloudflared
+      - name: Prepare verified native artifacts
         script: |
           set -euo pipefail
 
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
-              | sh -s -- -y --profile minimal --default-toolchain 1.85.1
-            echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
-            export PATH="$HOME/.cargo/bin:$PATH"
-          fi
-          if ! rustup toolchain list | grep -Eq '^1\.85\.1(-|$)'; then
-            rustup toolchain install 1.85.1 --profile minimal --no-self-update
-          fi
-          rustup show active-toolchain
+          native_cache="$HOME/.cache/team-devspace-native-v1"
+          cloud_cache="$native_cache/cloudflared"
+          tray_cache="$native_cache/tray"
+          mkdir -p "$native_cache"
+          find "$native_cache" -mindepth 1 -maxdepth 1 ! -name cloudflared ! -name tray -exec rm -rf {} +
 
-          go_version="$(node -p "require('./release.config.json').cloudflaredGoVersion")"
-          go_root="$HOME/.cache/team-devspace/go-$go_version"
-          go_archive="$CM_BUILD_DIR/build/cache/go${go_version}.darwin-arm64.tar.gz"
-          if [ ! -x "$go_root/bin/go" ]; then
-            mkdir -p "$(dirname "$go_archive")" "$HOME/.cache/team-devspace"
-            if [ ! -f "$go_archive" ]; then
-              curl --proto '=https' --tlsv1.2 --fail --location --retry 4 \
-                --output "$go_archive" "https://go.dev/dl/go${go_version}.darwin-arm64.tar.gz"
-            fi
-            tar -tzf "$go_archive" >/dev/null
-            unpack="$HOME/.cache/team-devspace/go-unpack"
-            rm -rf "$unpack" "$go_root"
-            mkdir -p "$unpack"
-            tar -xzf "$go_archive" -C "$unpack"
-            mv "$unpack/go" "$go_root"
-            rmdir "$unpack"
-          fi
-          test "$("$go_root/bin/go" version | awk '{print $3}')" = "go$go_version"
-
+          minimum="$(node -p "require('./release.config.json').distribution.macosMinimumVersion")"
           commit="$(node -p "require('./release.config.json').cloudflaredSourceCommit")"
           version="$(node -p "require('./release.config.json').cloudflaredVersion")"
-          minimum="$(node -p "require('./release.config.json').distribution.macosMinimumVersion")"
-          source="$CM_BUILD_DIR/build/cloudflared-source"
-          output="$HOME/.cache/team-devspace/cloudflared-${commit}-${go_version}-macos${minimum}-arm64"
-          if [ ! -x "$output" ] || ! "$output" --version | grep -Fq "$version"; then
-            rm -f "$output"
-            rm -rf "$source"
+          go_version="$(node -p "require('./release.config.json').cloudflaredGoVersion")"
+
+          compatible_macho() {
+            file="$1"
+            [ -x "$file" ] || return 1
+            /usr/bin/file "$file" | /usr/bin/grep -q 'Mach-O' || return 1
+            archs="$(/usr/bin/lipo -archs "$file" 2>/dev/null)" || return 1
+            [[ " $archs " == *" arm64 "* ]] || return 1
+            versions="$(/usr/bin/otool -l "$file" | /usr/bin/awk '
+              $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build=1; legacy=0; next }
+              build && $1 == "minos" { print $2; build=0; next }
+              $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" { legacy=1; build=0; next }
+              legacy && $1 == "version" { print $2; legacy=0 }
+            ')" || return 1
+            [ -n "$versions" ] || return 1
+            while IFS= read -r actual; do
+              /usr/bin/awk -v actual="$actual" -v minimum="$minimum" '
+                function part(v,n,a) { split(v,a,"."); return (a[n] == "" ? 0 : a[n]) + 0 }
+                BEGIN { for (i=1;i<=3;i++) { a=part(actual,i); m=part(minimum,i); if (a<m) exit 0; if (a>m) exit 1 } exit 0 }
+              ' || return 1
+            done <<< "$versions"
+          }
+
+          cloud_builder_sha="$(/usr/bin/shasum -a 256 codemagic.yaml | /usr/bin/awk '{print $1}')"
+          cloud_fingerprint="$(printf '%s\n' \
+            'schema=1' \
+            "builder=$cloud_builder_sha" \
+            "version=$version" \
+            "commit=$commit" \
+            "go=$go_version" \
+            "minimum=$minimum" \
+            'target=darwin-arm64' \
+            'cgo=0' \
+            'flags=-mod=vendor -trimpath -ldflags=-X main.Version' \
+            | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+
+          cloud_hit=0
+          if [ -x "$cloud_cache/cloudflared" ] && [ -f "$cloud_cache/metadata.json" ] && \
+             [ -f "$cloud_cache/cloudflared.sha256" ] && \
+             (cd "$cloud_cache" && /usr/bin/shasum -a 256 -c cloudflared.sha256 >/dev/null 2>&1) && \
+             node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.argv[1]));if(m.schema!==1||m.fingerprint!==process.argv[2]||m.version!==process.argv[3]||m.sourceCommit!==process.argv[4]||m.goVersion!==process.argv[5]||m.minimumMacOS!==process.argv[6]||m.target!=='darwin-arm64')process.exit(1)" \
+               "$cloud_cache/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum" && \
+             "$cloud_cache/cloudflared" --version | /usr/bin/grep -Fq "$version" && \
+             compatible_macho "$cloud_cache/cloudflared"; then
+            cloud_hit=1
+            echo "Reusing verified cloudflared final artifact cache."
+          else
+            rm -rf "$cloud_cache"
+            tools="$CM_BUILD_DIR/build/native-tools"
+            go_root="$tools/go-$go_version"
+            go_archive="$tools/go${go_version}.darwin-arm64.tar.gz"
+            source="$CM_BUILD_DIR/build/cloudflared-source"
+            output="$tools/cloudflared"
+            rm -rf "$tools" "$source"
+            mkdir -p "$tools"
+            curl --proto '=https' --tlsv1.2 --fail --location --retry 4 \
+              --output "$go_archive" "https://go.dev/dl/go${go_version}.darwin-arm64.tar.gz"
+            tar -tzf "$go_archive" >/dev/null
+            tar -xzf "$go_archive" -C "$tools"
+            mv "$tools/go" "$go_root"
+            test "$("$go_root/bin/go" version | /usr/bin/awk '{print $3}')" = "go$go_version"
+
             git init -q "$source"
             git -C "$source" remote add origin https://github.com/cloudflare/cloudflared.git
             git -C "$source" fetch --quiet --depth=1 origin "$commit"
@@ -73,14 +98,60 @@ workflows:
                 "$go_root/bin/go" build -mod=vendor -trimpath -ldflags "-X main.Version=$version" \
                   -o "$output" github.com/cloudflare/cloudflared/cmd/cloudflared
             )
+            chmod 0755 "$output"
+            "$output" --version | /usr/bin/grep -Fq "$version"
+            compatible_macho "$output"
+
+            staging="$native_cache/.cloudflared-${CM_BUILD_ID:-$$}"
+            rm -rf "$staging"
+            mkdir -p "$staging"
+            cp "$output" "$staging/cloudflared"
+            chmod 0755 "$staging/cloudflared"
+            (cd "$staging" && /usr/bin/shasum -a 256 cloudflared > cloudflared.sha256)
+            node -e "const fs=require('fs');fs.writeFileSync(process.argv[1],JSON.stringify({schema:1,fingerprint:process.argv[2],version:process.argv[3],sourceCommit:process.argv[4],goVersion:process.argv[5],minimumMacOS:process.argv[6],target:'darwin-arm64'},null,2)+'\\n')" \
+              "$staging/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum"
+            rm -rf "$cloud_cache"
+            mv "$staging" "$cloud_cache"
           fi
-          "$output" --version
-          echo "TEAM_DEVSPACE_CLOUDFLARED_BINARY=$output" >> "$CM_ENV"
+          echo "TEAM_DEVSPACE_CLOUDFLARED_BINARY=$cloud_cache/cloudflared" >> "$CM_ENV"
+          echo "TEAM_DEVSPACE_CLOUDFLARED_CACHE_HIT=$cloud_hit" >> "$CM_ENV"
+
+          tray_fingerprint="$({
+            printf '%s\n' 'schema=1' 'target=darwin-arm64' "minimum=$minimum" 'xcode=26.0'
+            git ls-files -z -- native/tray scripts/tray-build.mjs | xargs -0 /usr/bin/shasum -a 256
+          } | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+          tray_hit=0
+          if [ -x "$tray_cache/TeamDevSpaceTray" ] && [ -f "$tray_cache/metadata.json" ] && \
+             [ -f "$tray_cache/TeamDevSpaceTray.sha256" ] && \
+             (cd "$tray_cache" && /usr/bin/shasum -a 256 -c TeamDevSpaceTray.sha256 >/dev/null 2>&1) && \
+             node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.argv[1]));if(m.schema!==1||m.fingerprint!==process.argv[2]||m.target!=='darwin-arm64'||m.minimumMacOS!==process.argv[3]||typeof m.rustVersion!=='string'||!Array.isArray(m.metadata?.packages)||!Array.isArray(m.metadata?.resolve?.nodes))process.exit(1)" \
+               "$tray_cache/metadata.json" "$tray_fingerprint" "$minimum" && \
+             compatible_macho "$tray_cache/TeamDevSpaceTray"; then
+            tray_hit=1
+            echo "Reusing verified tray final artifact cache."
+            echo "TEAM_DEVSPACE_TRAY_BINARY=$tray_cache/TeamDevSpaceTray" >> "$CM_ENV"
+            echo "TEAM_DEVSPACE_TRAY_METADATA=$tray_cache/metadata.json" >> "$CM_ENV"
+          else
+            rm -rf "$tray_cache"
+            if ! command -v rustup >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain 1.85.1
+              echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
+              export PATH="$HOME/.cargo/bin:$PATH"
+            fi
+            if ! rustup toolchain list | /usr/bin/grep -Eq '^1\.85\.1(-|$)'; then
+              rustup toolchain install 1.85.1 --profile minimal --no-self-update
+            fi
+            rustup show active-toolchain
+            echo "TEAM_DEVSPACE_TRAY_CACHE_DIR=$tray_cache" >> "$CM_ENV"
+          fi
+          echo "TEAM_DEVSPACE_TRAY_FINGERPRINT=$tray_fingerprint" >> "$CM_ENV"
+          echo "Native artifact cache: cloudflared=$cloud_hit tray=$tray_hit"
 
       - name: Build unsigned macOS package
         script: |
           set -euo pipefail
-          npm run package -- --reuse-dependencies
+          npm run package
           node scripts/verify-release.mjs --target darwin-arm64
 
       - name: Check arm64 and minimum macOS compatibility
@@ -123,7 +194,9 @@ workflows:
           done < <(find "$root" -type f \( -perm -111 -o -name '*.node' -o -name '*.dylib' -o -name '*.so' -o -name '*.bundle' \) -print0)
           [[ "$checked" -gt 0 ]]
           [[ "$offenders" -eq 0 ]]
-          echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum"
+          cache_kb="$(du -sk "$HOME/.cache/team-devspace-native-v1" | /usr/bin/awk '{print $1}')"
+          [[ "$cache_kb" -le 131072 ]]
+          echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum; native cache $((cache_kb / 1024)) MiB"
 
     artifacts:
       - release/Team-DevSpace-*-macos-arm64.pkg

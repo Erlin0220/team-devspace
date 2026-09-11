@@ -1,6 +1,7 @@
-import { access, cp, mkdir } from 'node:fs/promises';
+import { access, chmod, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { downloadPinned, run } from './build-utils.mjs';
+import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { peDetails, WINDOWS_GUI_SUBSYSTEM, WINDOWS_X64_MACHINE, zigCompiler } from './windows-launcher.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
@@ -12,6 +13,72 @@ const RUSTUP = {
 async function commandExists(command) {
   try { await run(command, ['--version'], { capture: true, timeout: 30000 }); return true; }
   catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+const MACOS_TRAY_CACHE_SCHEMA = 1;
+
+export async function readTrayArtifactCache({ binary, metadataPath, fingerprint,
+  target = 'darwin-arm64', minimumMacOS = release.distribution.macosMinimumVersion }) {
+  const manifest = JSON.parse(await readFile(metadataPath, 'utf8'));
+  if (manifest.schema !== MACOS_TRAY_CACHE_SCHEMA || manifest.fingerprint !== fingerprint ||
+      manifest.target !== target || manifest.minimumMacOS !== minimumMacOS ||
+      typeof manifest.rustVersion !== 'string' || !manifest.rustVersion.startsWith('rustc ') ||
+      !Array.isArray(manifest.metadata?.packages) || !Array.isArray(manifest.metadata?.resolve?.nodes) ||
+      !/^[a-f0-9]{64}$/.test(manifest.sha256 ?? '')) {
+    throw new Error('Cached macOS tray metadata differs from the current build contract');
+  }
+  await access(binary, 1);
+  if (await sha256File(binary) !== manifest.sha256) {
+    throw new Error('Cached macOS tray binary hash differs from its metadata');
+  }
+  return { metadata: manifest.metadata, rustVersion: manifest.rustVersion, sha256: manifest.sha256, cached: true };
+}
+
+async function cachedMacTray(destination) {
+  if (process.platform !== 'darwin') return null;
+  const binary = process.env.TEAM_DEVSPACE_TRAY_BINARY;
+  const metadataPath = process.env.TEAM_DEVSPACE_TRAY_METADATA;
+  if (!binary && !metadataPath) return null;
+  if (!binary || !metadataPath || !process.env.TEAM_DEVSPACE_TRAY_FINGERPRINT) {
+    throw new Error('Prepared macOS tray cache is incomplete');
+  }
+  const result = await readTrayArtifactCache({ binary, metadataPath,
+    fingerprint: process.env.TEAM_DEVSPACE_TRAY_FINGERPRINT });
+  await mkdir(dirname(destination), { recursive: true });
+  await cp(binary, destination);
+  await chmod(destination, 0o755);
+  return result;
+}
+
+async function storeMacTrayCache(binary, result) {
+  if (process.platform !== 'darwin') return;
+  const cacheDirectory = process.env.TEAM_DEVSPACE_TRAY_CACHE_DIR;
+  const fingerprint = process.env.TEAM_DEVSPACE_TRAY_FINGERPRINT;
+  if (!cacheDirectory || !fingerprint) return;
+  const sha256 = await sha256File(binary);
+  const staging = `${cacheDirectory}.tmp-${process.pid}-${randomUUID()}`;
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true });
+  try {
+    const cachedBinary = join(staging, 'TeamDevSpaceTray');
+    await cp(binary, cachedBinary);
+    await chmod(cachedBinary, 0o755);
+    await writeFile(join(staging, 'TeamDevSpaceTray.sha256'), `${sha256}  TeamDevSpaceTray\n`);
+    await writeFile(join(staging, 'metadata.json'), `${JSON.stringify({
+      schema: MACOS_TRAY_CACHE_SCHEMA,
+      fingerprint,
+      target: 'darwin-arm64',
+      minimumMacOS: release.distribution.macosMinimumVersion,
+      sha256,
+      rustVersion: result.rustVersion,
+      metadata: result.metadata,
+    }, null, 2)}\n`);
+    await mkdir(dirname(cacheDirectory), { recursive: true });
+    await rm(cacheDirectory, { recursive: true, force: true });
+    await rename(staging, cacheDirectory);
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function cargoCommand() {
@@ -42,6 +109,8 @@ async function cargoCommand() {
 
 export async function buildTray(destination) {
   if (!['win32', 'darwin'].includes(process.platform)) return null;
+  const cached = await cachedMacTray(destination);
+  if (cached) return cached;
   const { cargo, env } = await cargoCommand();
   const targetDirectory = resolve(`build/tray-target-${process.platform}-${process.arch}`);
   const buildEnv = { ...env, CARGO_TARGET_DIR: targetDirectory,
@@ -80,7 +149,10 @@ export async function buildTray(destination) {
     ? join(dirname(resolve(cargo)), process.platform === 'win32' ? 'rustc.exe' : 'rustc') : 'rustc';
   const rustc = await run(rustcCommand,
     ['--version'], { env: buildEnv, capture: true, timeout: 30000 });
-  return { metadata: JSON.parse(metadata.stdout), rustVersion: rustc.stdout.trim() };
+  const result = { metadata: JSON.parse(metadata.stdout), rustVersion: rustc.stdout.trim(),
+    sha256: await sha256File(binary), cached: false };
+  await storeMacTrayCache(binary, result);
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file:///${process.argv[1].replaceAll('\\', '/')}`).href) {

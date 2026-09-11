@@ -135,6 +135,16 @@ async function executeCommand(command, action, argument, values, home) {
   } else console.log(JSON.stringify(result, null, 2));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => { console.error(`Team DevSpace: ${error.message}`); process.exitCode = 1; });
+if (process.argv[1]) {
+  const invoked = resolve(process.argv[1]);
+  const module = fileURLToPath(import.meta.url);
+  const [invokedReal, moduleReal] = await Promise.all([
+    realpath(invoked).catch(() => invoked),
+    realpath(module).catch(() => module),
+  ]);
+  // Node resolves import.meta.url through directory symlinks while argv keeps the
+  // invoked path. Treat both paths as the same executable entrypoint.
+  if (invokedReal === moduleReal) {
+    main().catch(error => { console.error(`Team DevSpace: ${error.message}`); process.exitCode = 1; });
+  }
 }

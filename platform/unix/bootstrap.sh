@@ -21,12 +21,21 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-case "$(uname -s)-$(uname -m)" in
+SYSTEM_NAME=$(uname -s)
+KERNEL_ARCH=$(uname -m)
+MACHINE_ARCH=$KERNEL_ARCH
+# A shell launched from an app bundle can run translated under Rosetta and report
+# x86_64 even on Apple Silicon. Release compatibility follows the machine, not the
+# current shell process, so use the hardware capability bit when macOS provides it.
+if [ "$SYSTEM_NAME" = Darwin ] && [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+  MACHINE_ARCH=arm64
+fi
+case "$SYSTEM_NAME-$MACHINE_ARCH" in
   Darwin-arm64) TARGET=darwin-arm64 ;;
   Darwin-x86_64) TARGET=darwin-x64 ;;
   Linux-x86_64) TARGET=linux-x64 ;;
   Linux-aarch64|Linux-arm64) TARGET=linux-arm64 ;;
-  *) echo 'Unsupported operating system or architecture.' >&2; exit 2 ;;
+  *) echo "Unsupported operating system or architecture: $SYSTEM_NAME-$MACHINE_ARCH." >&2; exit 2 ;;
 esac
 
 case "$TARGET" in
@@ -157,8 +166,11 @@ install_mode=$(sed -n 's/^[[:space:]]*"installMode": "\([^"]*\)",$/\1/p' "$MANIF
 node_version=$(sed -n 's/^[[:space:]]*"nodeVersion": "\([^"]*\)",$/\1/p' "$MANIFEST")
 devspace_version=$(sed -n 's/^[[:space:]]*"devspaceVersion": "\([^"]*\)",$/\1/p' "$MANIFEST")
 cloudflared_version=$(sed -n 's/^[[:space:]]*"cloudflaredVersion": "\([^"]*\)".*$/\1/p' "$MANIFEST")
-[ "$schema" = 1 ] && [ "$trust" = bootstrap-embedded-manifest ] && [ "$manifest_target" = "$TARGET" ] || {
-  echo 'Release manifest does not match this platform.' >&2; exit 2;
+[ "$schema" = 1 ] && [ "$trust" = bootstrap-embedded-manifest ] || {
+  echo "Invalid embedded release manifest contract (schema=${schema:-missing}, trust=${trust:-missing})." >&2; exit 2;
+}
+[ "$manifest_target" = "$TARGET" ] || {
+  echo "Release manifest target ${manifest_target:-missing} does not match detected platform $TARGET (kernel=$SYSTEM_NAME-$KERNEL_ARCH, machine=$MACHINE_ARCH)." >&2; exit 2;
 }
 case "$release" in ''|*[!0-9A-Za-z.-]*) echo 'Invalid fixed release version.' >&2; exit 2 ;; esac
 [ "$install_mode" = offline ] || { echo 'This bootstrap only accepts the offline release contract.' >&2; exit 2; }

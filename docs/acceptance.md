@@ -15,6 +15,14 @@ npm run acceptance:local
 
 `acceptance:local` 是本机单一发布前门槛：依次执行 source/check、全部测试、distribution contract、Gateway dry-run、当前平台真实 package，然后对刚生成的 packaged artifact 执行 `acceptance:platform`。不要再把单独跑过 `test:tray`、`test:native` 或 `test:installer` 当成整体通过；这些脚本仍可用于定位失败。
 
+Windows 主机需要构建 Linux x64 时，使用已经启用 systemd 的 Ubuntu 22.04 WSL2：
+
+```powershell
+npm run acceptance:linux:wsl
+```
+
+该命令把当前 Windows 工作区（包括未提交源码）同步到 WSL ext4 下的 `~/team-devspace-linux`，保留 Linux 原生 `node_modules` 与构建缓存，然后在 WSL 内执行完整 `acceptance:local`。通过后会再次校验 Linux 离线包 SHA-256，并把 `.tar.gz` 与 `.sha256` 复制回 Windows 仓库的 `release/`。默认要求 WSL 使用普通用户、`systemd --user` 可用、Node/npm 与发行固定版本一致；不会用 root daemon 或 GitHub Actions 代替本地 Linux 生命周期验证。未提交源码产生的 `acceptance.json` 会保留 `sourceDirty: true`，只能作为开发验收证据；正式发布前需从干净提交重新运行。WSL 能验证当前 Linux 包和 user-service 生命周期，但不能代替真实 Linux 机器的注销/登录或重启验收。
+
 Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，避免覆盖已安装的员工版本；它验证首次 Enrollment 503、Repair、覆盖升级、credential 恢复、损坏 payload 修复、A/B 版本回收、卸载和零测试 Task 残留。`test:native` 使用真实 Task Scheduler/runtime/MCP，并额外制造同一 `TEAM_DEVSPACE_HOME` 的未知旧 owner task 与另一 state home 的 foreign task：前者必须被迁移，后者必须保留。packaged Tray 会真实启动第二个进程，第二个进程必须在创建图标前被 OS single-instance guard 拒绝。
 
 显式运行 `acceptance:platform` 时仍会在 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。当前 Codemagic 快速打包**不会自动运行这条完整验收**，也不会调用系统级 `installer -pkg`；它只产出经过 release layout 与 Mach-O 兼容性检查的候选 `.pkg`。最终 `.pkg` 安装、Gatekeeper、LaunchAgent、菜单栏和 Enrollment 行为由同事在真实 Mac 上验证。

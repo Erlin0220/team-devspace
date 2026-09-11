@@ -2,7 +2,7 @@
   "node": {
     "win32-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-win-x64.zip", "sha256": "425a5bd68cc95e8eb16bcccd0a75081b48983fc6a26f67126bd4d6c7198231e8" },
     "darwin-arm64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-darwin-arm64.tar.gz", "sha256": "e0f383a215dd3093de6d2c74f87056dc2306a2e09ad494cbffdba28f89046f56" },
-    "linux-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-x64.tar.gz", "sha256": "535eeb608ca1e0b71d49a0e36991d449d5f935fbb04eca61677519b010cd673a" }
+    "linux-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-x64.tar.xz", "sha256": "14d7de44f235534799f8b171a4050d9a6a4bc99c87e053a25d3d54afa580aa20" }
   },
   "cloudflared": {
     "win32-x64": { "url": "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-windows-amd64.exe", "sha256": "83e726ed18ea78c5ad5213c4c3a3a27051393950d2bc8ed4de69bec12d14eaae" },

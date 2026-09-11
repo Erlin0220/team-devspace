@@ -71,8 +71,10 @@ if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow
     retiredPackageWorkflow.includes('windows-2022') || retiredPackageWorkflow.includes('linux-x64')) {
   throw new Error('GitHub Actions native packaging must remain retired; macOS builds on Codemagic and Windows/Linux build locally');
 }
-if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package -- --reuse-dependencies') ||
-    !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || !codemagic.includes('cloudflaredSourceCommit') ||
+if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package') ||
+    codemagic.includes('npm run package -- --reuse-dependencies') ||
+    !codemagic.includes('TEAM_DEVSPACE_CLOUDFLARED_BINARY') || !codemagic.includes('TEAM_DEVSPACE_TRAY_BINARY') ||
+    !codemagic.includes('TEAM_DEVSPACE_TRAY_CACHE_DIR') || !codemagic.includes('cloudflaredSourceCommit') ||
     !codemagic.includes('cloudflaredGoVersion') || !codemagic.includes('/usr/bin/lipo -archs') ||
     !codemagic.includes('/usr/bin/otool -l') || !codemagic.includes('TEAM_DEVSPACE_SKIP_TRAY_TESTS: "1"') ||
     !codemagic.includes('-perm -111') || !codemagic.includes("-name '*.node'") ||
@@ -116,8 +118,10 @@ if (!clientSetup.includes('Existing Enrollment found. Reusing the current Device
 }
 if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
     !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
-    !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed')) {
-  throw new Error('Unix failed candidate activation must still restore the previous local version');
+    !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed') ||
+    !unixBootstrap.includes('/usr/sbin/sysctl -n hw.optional.arm64') ||
+    !unixBootstrap.includes('machine=$MACHINE_ARCH')) {
+  throw new Error('Unix bootstrap must restore failed candidates and detect Apple Silicon by hardware rather than Rosetta process architecture');
 }
 if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
   throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
@@ -130,6 +134,7 @@ if (release.distribution.macosMinimumVersion !== '12.0' || packageScript.split(m
     !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_ARCH__') ||
     !macosPreinstall.includes('__TEAM_DEVSPACE_MACOS_MINIMUM_VERSION__') ||
     !macosPreinstall.includes('code=UNSUPPORTED_ARCH') || !macosPreinstall.includes('code=UNSUPPORTED_MACOS') ||
+    !macosPreinstall.includes('/usr/sbin/sysctl -n hw.optional.arm64') ||
     !macosPostinstall.startsWith('#!/bin/sh\nset -u\n') || macosPostinstall.includes('set -eu') ||
     !macosPostinstall.includes('if ! /bin/launchctl asuser') ||
     !macosLaunchApp.includes('setup.log') || !macosLaunchApp.includes('>> "$LOG" 2>&1') ||
@@ -160,10 +165,18 @@ if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptanc
     !acceptanceVerifier.includes('acceptance was produced from a dirty source checkout')) {
   throw new Error('Full platform acceptance must remain available as an explicit local/manual diagnostic even though thin macOS packaging does not run it');
 }
-if (!codemagic.includes('$HOME/.cargo/registry') || !codemagic.includes('$HOME/Library/Caches/go-build') ||
-    !codemagic.includes('$CM_BUILD_DIR/build/cache') || !codemagic.includes('$CM_BUILD_DIR/build/tray-target-darwin-arm64') ||
-    !codemagic.includes('$CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules')) {
-  throw new Error('Codemagic macOS packaging must reuse the expensive npm, Go, Rust and pinned binary caches');
+if (!codemagic.includes('$HOME/.cache/team-devspace-native-v1') ||
+    !codemagic.includes('cloudflared.sha256') || !codemagic.includes('TeamDevSpaceTray.sha256') ||
+    !codemagic.includes('compatible_macho') || !codemagic.includes('cloud_fingerprint') ||
+    !codemagic.includes('tray_fingerprint') ||
+    ['$HOME/.npm', '$HOME/.cargo/registry', '$HOME/.cargo/git', '$HOME/Library/Caches/go-build',
+      '$CM_BUILD_DIR/build/cache', '$CM_BUILD_DIR/build/tray-target-darwin-arm64',
+      '$CM_BUILD_DIR/build/bundle-darwin-arm64/node_modules'].some(path => codemagic.includes(path))) {
+  throw new Error('Codemagic must cache only verified final cloudflared/tray artifacts, never large reproducible build intermediates');
+}
+if (!packageScript.includes('cloudflaredBuild') || !packageScript.includes('reusedFromBuildCache') ||
+    !trayBuild.includes('readTrayArtifactCache') || !trayBuild.includes('Cached macOS tray binary hash differs')) {
+  throw new Error('macOS final-artifact cache reuse must remain hash-verified and visible in release provenance');
 }
 if (!/^[a-f0-9]{64}$/.test(binaries.zig?.['win32-x64']?.executableSha256 ?? '')) {
   throw new Error('Cached Windows Zig executable must have an exact SHA-256 pin');

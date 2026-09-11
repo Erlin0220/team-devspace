@@ -199,6 +199,7 @@ await writeFile(dependencyMarker, fingerprint);
 const cloudflared = join(bundle, 'bin', process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
 const cfVersion = (await run(cloudflared, ['--version'], { capture: true })).stdout;
 if (!cfVersion.includes(release.cloudflaredVersion)) throw new Error('Bundled cloudflared version differs from release pin');
+const cloudflaredSha256 = await sha256File(cloudflared);
 // The employee manifest describes installed runtime dependencies, not this
 // repository's build tools. This also lets npm inspect the real tree for SBOM
 // generation without reporting deliberately omitted devDependencies as missing.
@@ -218,7 +219,7 @@ await writeFile(join(bundle, 'sbom.cdx.json'), `${JSON.stringify(sbomDocument, n
 // npm's hidden install metadata is not runtime code and carries app-level data.
 await rm(join(bundle, 'node_modules', '.package-lock.json'), { force: true });
 await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
-  `Team DevSpace includes @waishnav/devspace ${release.devspaceVersion} and its locked npm dependency versions; Windows runtime archives omit source maps and TypeScript declaration files only.`,
+  `Team DevSpace includes @waishnav/devspace ${release.devspaceVersion} and its locked npm dependency versions; employee runtime archives omit source maps and TypeScript declaration files only.`,
   'Each dependency retains its own copyright and license files in node_modules. The SBOM lists package licenses.',
   `Node.js ${release.nodeVersion}: https://nodejs.org/ (license and notices in runtime/LICENSE)`,
   `cloudflared ${release.cloudflaredVersion}: Apache-2.0, https://github.com/cloudflare/cloudflared`,
@@ -239,8 +240,17 @@ await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
   release: release.version, target, upstream: { package: '@waishnav/devspace', version: installed.version },
   binaries: Object.fromEntries(downloadKinds.map(kind => [kind, binaries[kind][target]])), lockSha256,
   dependencyFingerprint: fingerprint, dependencyInstallProfile, npmVersion,
+  ...(process.platform === 'darwin' ? { cloudflaredBuild: {
+    version: release.cloudflaredVersion, sourceCommit: release.cloudflaredSourceCommit,
+    goVersion: release.cloudflaredGoVersion, minimumMacOS: release.distribution.macosMinimumVersion,
+    sha256: cloudflaredSha256, reusedFromBuildCache: process.env.TEAM_DEVSPACE_CLOUDFLARED_CACHE_HIT === '1',
+  } } : {}),
   ...(trayBuild ? { tray: { crate: 'tray-icon', version: '0.24.2', rustVersion: trayBuild.rustVersion,
-    lockSha256: createHash('sha256').update(await readFile('native/tray/Cargo.lock')).digest('hex') } } : {}),
+    lockSha256: createHash('sha256').update(await readFile('native/tray/Cargo.lock')).digest('hex'),
+    sha256: await sha256File(process.platform === 'darwin'
+      ? join(bundle, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents', 'MacOS', 'TeamDevSpaceTray')
+      : join(bundle, 'platform', 'windows', 'team-devspace-tray.exe')),
+    reusedFromBuildCache: Boolean(trayBuild.cached) } } : {}),
 }, null, 2));
 console.log(JSON.stringify({ prepared: true, target, bundle, devspace: installed.version, node: version }));
 if (!values['prepare-only']) {
