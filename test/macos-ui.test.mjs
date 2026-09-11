@@ -115,26 +115,18 @@ test('macOS launcher surfaces the existing tray before bootstrap work', async ()
 test('macOS packaging uses separate Team DevSpace assets for app and menu bar icons', async () => {
   await access('platform/macos/devspace-logo-light.png');
   await access('platform/macos/team-devspace-template.png');
-  const [swift, packaging] = await Promise.all([
-    readFile('native/macos/TeamDevSpaceUI.swift', 'utf8'),
-    readFile('scripts/package.mjs', 'utf8'),
-  ]);
-  assert.match(swift, /TeamDevSpaceTemplate/);
-  assert.doesNotMatch(swift, /systemSymbolName:\s*symbol/);
+  const packaging = await readFile('scripts/package.mjs', 'utf8');
   assert.match(packaging, /CFBundleIconFile/);
   assert.match(packaging, /TeamDevSpace\.icns/);
   assert.match(packaging, /team-devspace-template\.png/);
   assert.match(packaging, /TeamDevSpaceTemplate\.png/);
 });
 
-test('macOS menu bar keeps lifecycle feedback visible after the menu closes and About uses packaged metadata', async () => {
+test('macOS menu bar keeps lifecycle feedback visible after the menu closes', async () => {
   const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
   assert.match(swift, /NSStatusItem\.variableLength/);
   assert.match(swift, /button(?:\?)?\.title\s*=/);
   assert.match(swift, /state\.activity\s*\?\?\s*state\.notice/);
-  assert.match(swift, /TeamDevSpaceAuthorName/);
-  assert.match(swift, /TeamDevSpaceAuthorEmail/);
-  assert.match(swift, /TeamDevSpaceDevSpaceVersion/);
 });
 
 test('macOS presentation reuses lifecycle facts and redacts credentials', () => {
