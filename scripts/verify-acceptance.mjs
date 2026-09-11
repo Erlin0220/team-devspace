@@ -33,7 +33,7 @@ for (const target of release.distribution.targets) {
     assert.equal(evidence.checks.nativeStartup, true, 'Windows Task Scheduler lifecycle was not accepted');
     if (requireFinalWindows) assert.equal(evidence.checks.finalEntrypointTransaction, true,
       'The signed Windows installer bytes were not exercised end-to-end on the isolated runner');
-  } else if (target === 'darwin-arm64') {
+  } else if (target.startsWith('darwin-')) {
     assert.equal(evidence.checks.trayProtocol, true, 'macOS native tray protocol was not accepted');
     assert.equal(evidence.checks.traySingleInstance, true, 'macOS tray single-instance invariant was not accepted');
     assert.equal(evidence.checks.finalEntrypointTransaction, true, 'The final macOS PKG was not exercised');

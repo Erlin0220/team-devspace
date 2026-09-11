@@ -13,6 +13,6 @@
     "mode": "private-github-release",
     "trustProfile": "internal-free",
     "macosMinimumVersion": "12.0",
-    "targets": ["win32-x64", "darwin-arm64", "linux-x64"]
+    "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]
   }
 }

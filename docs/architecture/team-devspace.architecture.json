@@ -33,7 +33,7 @@
         "id": "release-install",
         "label": "发布与安装",
         "focus": ["release_pipeline", "local_lifecycle", "local_state", "runtime", "cloudflared", "devspace"],
-        "note": "Windows/Linux 按需本地原生构建；Apple Silicon Mac 由 Codemagic M2 手动构建。管理员离线分发，员工机不在线拉 runtime。"
+        "note": "Windows/Linux 按需本地原生构建；macOS arm64/Intel x64 共用 Codemagic M2 手动构建流程。管理员离线分发，员工机不在线拉 runtime。"
       }
     ]
   },
@@ -222,7 +222,7 @@
       "title": "薄实现与离线交付",
       "items": [
         "官方 DevSpace 保持原版；cloudflared、OS 启动和 Tray 均复用成熟能力，Tray 不做 supervisor。",
-        "macOS arm64 在 Codemagic M2 手动构建；Windows/Linux 在原生主机按需本地构建，均输出 SHA-256 离线包。",
+        "macOS arm64/Intel x64 共用 Codemagic M2 手动 workflow；Windows/Linux 在原生主机按需本地构建，均输出 SHA-256 离线包。",
         "安装验证候选后再切 active slot；失败保留当前版本，员工机不在线安装 runtime。"
       ]
     }

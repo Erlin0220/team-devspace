@@ -5,16 +5,22 @@ import { macUiCompileArgs } from '../scripts/macos-ui-build.mjs';
 import release from '../release.config.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
 
-test('AppKit build uses the pinned deployment floor and only the system toolchain', () => {
-  const args = macUiCompileArgs('build/test-ui');
-  assert.equal(args[0], '--sdk');
-  assert.equal(args[1], 'macosx');
-  assert.equal(args[2], 'swiftc');
-  assert.equal(args.includes('-parse-as-library'), true, 'The single Swift file uses an explicit @main entrypoint');
-  assert.equal(args[args.indexOf('-target') + 1], `arm64-apple-macosx${release.distribution.macosMinimumVersion}`);
-  assert.equal(args[args.indexOf('-framework') + 1], 'AppKit');
-  assert.equal(args.includes('-static-stdlib'), false);
-  assert.throws(() => macUiCompileArgs('build/test-ui', 'latest'), /explicit/);
+test('AppKit build uses the pinned deployment floor and native target architecture', () => {
+  for (const [architecture, triple] of [
+    ['arm64', `arm64-apple-macosx${release.distribution.macosMinimumVersion}`],
+    ['x64', `x86_64-apple-macosx${release.distribution.macosMinimumVersion}`],
+  ]) {
+    const args = macUiCompileArgs('build/test-ui', release.distribution.macosMinimumVersion, architecture);
+    assert.equal(args[0], '--sdk');
+    assert.equal(args[1], 'macosx');
+    assert.equal(args[2], 'swiftc');
+    assert.equal(args.includes('-parse-as-library'), true, 'The single Swift file uses an explicit @main entrypoint');
+    assert.equal(args[args.indexOf('-target') + 1], triple);
+    assert.equal(args[args.indexOf('-framework') + 1], 'AppKit');
+    assert.equal(args.includes('-static-stdlib'), false);
+  }
+  assert.throws(() => macUiCompileArgs('build/test-ui', 'latest', 'arm64'), /explicit/);
+  assert.throws(() => macUiCompileArgs('build/test-ui', release.distribution.macosMinimumVersion, 'ia32'), /Unsupported/);
 });
 
 test('desktop About metadata has one author source and is wired into both native implementations', async () => {
@@ -43,6 +49,10 @@ test('macOS UI has one AppKit implementation and Windows retains its Rust build'
   ]);
   assert.match(builder, /process\.platform === 'darwin'\) return buildMacUi/);
   assert.match(builder, /'build', '--release', '--locked'/);
+  assert.match(workflow, /architecture:/);
+  assert.match(workflow, /- arm64/);
+  assert.match(workflow, /- x64/);
+  assert.match(workflow, /\/usr\/bin\/arch -x86_64/);
   assert.doesNotMatch(workflow, /TEAM_DEVSPACE_TRAY_|tray_fingerprint|rustup/);
   assert.doesNotMatch(rust, /target_os = "macos"/);
   assert.match(swift, /NSStatusBar\.system\.statusItem/);

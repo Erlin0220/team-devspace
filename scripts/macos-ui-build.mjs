@@ -3,9 +3,12 @@ import { dirname, resolve } from 'node:path';
 import { run, sha256File } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
-export function macUiCompileArgs(destination, minimum = release.distribution.macosMinimumVersion) {
+export function macUiCompileArgs(destination, minimum = release.distribution.macosMinimumVersion, architecture = process.arch) {
   if (!/^\d+\.\d+$/.test(minimum)) throw new Error('An explicit macOS deployment target is required');
-  return ['--sdk', 'macosx', 'swiftc', '-parse-as-library', '-swift-version', '5', '-O', '-target', `arm64-apple-macosx${minimum}`,
+  const triple = architecture === 'arm64' ? `arm64-apple-macosx${minimum}`
+    : architecture === 'x64' ? `x86_64-apple-macosx${minimum}` : null;
+  if (!triple) throw new Error(`Unsupported macOS architecture: ${architecture}`);
+  return ['--sdk', 'macosx', 'swiftc', '-parse-as-library', '-swift-version', '5', '-O', '-target', triple,
     '-framework', 'AppKit', resolve('native/macos/TeamDevSpaceUI.swift'), '-o', resolve(destination)];
 }
 

@@ -2,6 +2,7 @@
   "node": {
     "win32-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-win-x64.zip", "sha256": "425a5bd68cc95e8eb16bcccd0a75081b48983fc6a26f67126bd4d6c7198231e8" },
     "darwin-arm64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-darwin-arm64.tar.gz", "sha256": "e0f383a215dd3093de6d2c74f87056dc2306a2e09ad494cbffdba28f89046f56" },
+    "darwin-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-darwin-x64.tar.gz", "sha256": "dc2ccab261fd70c347e4cc52085d8d226f471ccba1fc2a7252283949b31ca9f9" },
     "linux-x64": { "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-x64.tar.xz", "sha256": "14d7de44f235534799f8b171a4050d9a6a4bc99c87e053a25d3d54afa580aa20" }
   },
   "cloudflared": {

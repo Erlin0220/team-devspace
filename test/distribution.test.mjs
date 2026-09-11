@@ -24,6 +24,13 @@ test('runtime cache ignores only app version metadata, not dependency or install
   }
 });
 
+test('macOS preinstall normalizes Intel hardware names to the release x64 target', async () => {
+  const preinstall = await readFile('platform/macos/preinstall', 'utf8');
+  assert.match(preinstall, /if \[ "\$ARCH" = x86_64 \]; then ARCH=x64; fi/);
+  assert.match(preinstall, /EXPECTED_ARCH='__TEAM_DEVSPACE_MACOS_ARCH__'/);
+  assert.doesNotMatch(preinstall, /requires Apple Silicon/);
+});
+
 test('macOS postinstall confirms the app actually started and gives visible recovery guidance', async () => {
   const [postinstall, launchApp] = await Promise.all([
     readFile('platform/macos/postinstall', 'utf8'),
@@ -54,7 +61,7 @@ const baseRelease = {
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', cloudflaredSourceCommit: 'f'.repeat(40),
   cloudflaredGoVersion: '1.26.8', gitFallbackVersion: '2.55.0.windows.5',
   distribution: { mode: 'private-github-release', trustProfile: 'internal-free', macosMinimumVersion: '12.0',
-    targets: ['win32-x64', 'darwin-arm64', 'linux-x64'] },
+    targets: ['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64'] },
 };
 
 test('distribution config requires private GitHub Releases, internal-free trust and explicit immutable targets', () => {
@@ -114,7 +121,7 @@ test('release layout separates app, upstream dependencies, runtimes and optional
   assert.match(runtimeListing, /node_modules\/example\/index\.js/);
   assert.doesNotMatch(runtimeListing, /\.map$|\.d\.ts$|\.d\.mts$|\.d\.cts$/m,
     'Employee runtime archives must omit source maps and TypeScript declaration files');
-  for (const target of ['darwin-arm64', 'linux-x64']) {
+  for (const target of ['darwin-arm64', 'darwin-x64', 'linux-x64']) {
     const unixBuilt = await buildReleaseLayout({ bundle, target, release: baseRelease, tar, outputDirectory: output });
     const unixRuntime = unixBuilt.components.find(component => component.name === 'devspace-runtime');
     const unixListing = (await run(tar, ['-tzf', join(unixBuilt.layout, unixRuntime.path)], { capture: true })).stdout;
@@ -134,12 +141,12 @@ test('release layout separates app, upstream dependencies, runtimes and optional
 test('Unix profile prunes only optional Claude executables and foreign PTYs, preserving SDK and native build', async t => {
   const work = await mkdtemp(join(tmpdir(), 'tds-profile-'));
   t.after(() => rm(work, { recursive: true, force: true }));
-  for (const target of ['darwin-arm64', 'linux-x64']) {
+  for (const target of ['darwin-arm64', 'darwin-x64', 'linux-x64']) {
     const bundle = join(work, target);
     const paths = ['node_modules/@anthropic-ai/claude-agent-sdk', 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64',
       'node_modules/node-pty/build/Release', ...['win32-x64', 'win32-arm64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64']
         .map(platform => `node_modules/node-pty/prebuilds/${platform}`),
-      ...(target === 'darwin-arm64' ? ['node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64',
+      ...(target.startsWith('darwin-') ? ['node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds/darwin-arm64',
         'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds/darwin-x64'] : [])];
     for (const path of paths) {
       await mkdir(join(bundle, path), { recursive: true });
@@ -152,10 +159,11 @@ test('Unix profile prunes only optional Claude executables and foreign PTYs, pre
     await access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk/payload'));
     await access(join(bundle, 'node_modules/node-pty/build/Release/payload'));
     await access(join(bundle, `node_modules/node-pty/prebuilds/${target}/payload`));
-    if (target === 'darwin-arm64') {
+    if (target.startsWith('darwin-')) {
       const piPrebuilds = 'node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/native/darwin/prebuilds';
-      await access(join(bundle, piPrebuilds, 'darwin-arm64', 'payload'));
-      await assert.rejects(access(join(bundle, piPrebuilds, 'darwin-x64')));
+      await access(join(bundle, piPrebuilds, target, 'payload'));
+      const foreign = target === 'darwin-arm64' ? 'darwin-x64' : 'darwin-arm64';
+      await assert.rejects(access(join(bundle, piPrebuilds, foreign)));
     }
     await assert.rejects(access(join(bundle, 'node_modules/node-pty/prebuilds/win32-x64')));
     await assert.rejects(access(join(bundle, 'node_modules/@anthropic-ai/claude-agent-sdk-linux-x64')));

@@ -1,6 +1,16 @@
 workflows:
-  macos-arm64-package:
-    name: macOS arm64 package
+  macos-package:
+    name: macOS package
+    inputs:
+      architecture:
+        description: macOS package architecture
+        type: choice
+        options:
+          - arm64
+          - x64
+        default: arm64
+    labels:
+      - macOS ${{ inputs.architecture }}
     instance_type: mac_mini_m2
     max_build_duration: 45
     environment:
@@ -10,27 +20,65 @@ workflows:
     cache:
       cache_paths:
         - $HOME/.cache/team-devspace-native-v1
+        - $CM_BUILD_DIR/build/cache
     scripts:
       - name: Prepare verified native artifacts
         script: |
           set -euo pipefail
 
+          requested_arch="${{ inputs.architecture }}"
+          case "$requested_arch" in
+            arm64) go_arch=arm64; macho_arch=arm64 ;;
+            x64) go_arch=amd64; macho_arch=x86_64 ;;
+            *) echo "Unsupported macOS architecture: $requested_arch" >&2; exit 2 ;;
+          esac
+          target="darwin-$requested_arch"
           native_cache="$HOME/.cache/team-devspace-native-v1"
-          cloud_cache="$native_cache/cloudflared"
-          mkdir -p "$native_cache"
-          find "$native_cache" -mindepth 1 -maxdepth 1 ! -name cloudflared -exec rm -rf {} +
+          cloud_cache="$native_cache/cloudflared-$target"
+          mkdir -p "$native_cache" "$CM_BUILD_DIR/build/cache"
+          rm -rf "$native_cache/cloudflared"
 
           minimum="$(node -p "require('./release.config.json').distribution.macosMinimumVersion")"
           commit="$(node -p "require('./release.config.json').cloudflaredSourceCommit")"
           version="$(node -p "require('./release.config.json').cloudflaredVersion")"
           go_version="$(node -p "require('./release.config.json').cloudflaredGoVersion")"
 
+          echo "TEAM_DEVSPACE_TARGET=$target" >> "$CM_ENV"
+          echo "TEAM_DEVSPACE_EXPECTED_MACHO_ARCH=$macho_arch" >> "$CM_ENV"
+          if [ "$requested_arch" = x64 ]; then
+            node_url="$(node -p "require('./scripts/binaries.json').node['$target'].url")"
+            node_sha="$(node -p "require('./scripts/binaries.json').node['$target'].sha256")"
+            node_archive="$CM_BUILD_DIR/build/cache/$(/usr/bin/basename "$node_url")"
+            if [ ! -f "$node_archive" ] || [ "$(/usr/bin/shasum -a 256 "$node_archive" 2>/dev/null | /usr/bin/awk '{print $1}')" != "$node_sha" ]; then
+              node_partial="$node_archive.partial"
+              rm -f "$node_partial"
+              curl --proto '=https' --tlsv1.2 --fail --location --retry 4 --output "$node_partial" "$node_url"
+              test "$(/usr/bin/shasum -a 256 "$node_partial" | /usr/bin/awk '{print $1}')" = "$node_sha"
+              mv "$node_partial" "$node_archive"
+            fi
+            package_node_root="$CM_BUILD_DIR/build/package-node-$target"
+            rm -rf "$package_node_root"
+            mkdir -p "$package_node_root"
+            tar -xzf "$node_archive" -C "$package_node_root" --strip-components=1
+            package_node="$package_node_root/bin/node"
+            package_npm_cli="$(npm root -g)/npm/bin/npm-cli.js"
+            expected_npm="$(node -p "require('./package.json').packageManager.replace(/^npm@/,'')")"
+            test -x "$package_node"
+            test -f "$package_npm_cli"
+            if ! PATH="$package_node_root/bin:$PATH" /usr/bin/arch -x86_64 "$package_node" "$package_npm_cli" --version | /usr/bin/grep -Fxq "$expected_npm"; then
+              echo 'Intel macOS packaging requires Rosetta on the Apple Silicon Codemagic runner.' >&2
+              exit 1
+            fi
+            echo "TEAM_DEVSPACE_PACKAGE_NODE=$package_node" >> "$CM_ENV"
+            echo "TEAM_DEVSPACE_PACKAGE_NPM_CLI=$package_npm_cli" >> "$CM_ENV"
+          fi
+
           compatible_macho() {
             file="$1"
             [ -x "$file" ] || return 1
             /usr/bin/file "$file" | /usr/bin/grep -q 'Mach-O' || return 1
             archs="$(/usr/bin/lipo -archs "$file" 2>/dev/null)" || return 1
-            [[ " $archs " == *" arm64 "* ]] || return 1
+            [[ " $archs " == *" $macho_arch "* ]] || return 1
             versions="$(/usr/bin/otool -l "$file" | /usr/bin/awk '
               $1 == "cmd" && $2 == "LC_BUILD_VERSION" { build=1; legacy=0; next }
               build && $1 == "minos" { print $2; build=0; next }
@@ -54,7 +102,7 @@ workflows:
             "commit=$commit" \
             "go=$go_version" \
             "minimum=$minimum" \
-            'target=darwin-arm64' \
+            "target=$target" \
             'cgo=0' \
             'flags=-mod=vendor -trimpath -ldflags=-X main.Version' \
             | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
@@ -63,8 +111,8 @@ workflows:
           if [ -x "$cloud_cache/cloudflared" ] && [ -f "$cloud_cache/metadata.json" ] && \
              [ -f "$cloud_cache/cloudflared.sha256" ] && \
              (cd "$cloud_cache" && /usr/bin/shasum -a 256 -c cloudflared.sha256 >/dev/null 2>&1) && \
-             node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.argv[1]));if(m.schema!==1||m.fingerprint!==process.argv[2]||m.version!==process.argv[3]||m.sourceCommit!==process.argv[4]||m.goVersion!==process.argv[5]||m.minimumMacOS!==process.argv[6]||m.target!=='darwin-arm64')process.exit(1)" \
-               "$cloud_cache/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum" && \
+             node -e "const fs=require('fs');const m=JSON.parse(fs.readFileSync(process.argv[1]));if(m.schema!==1||m.fingerprint!==process.argv[2]||m.version!==process.argv[3]||m.sourceCommit!==process.argv[4]||m.goVersion!==process.argv[5]||m.minimumMacOS!==process.argv[6]||m.target!==process.argv[7])process.exit(1)" \
+               "$cloud_cache/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum" "$target" && \
              "$cloud_cache/cloudflared" --version | /usr/bin/grep -Fq "$version" && \
              compatible_macho "$cloud_cache/cloudflared"; then
             cloud_hit=1
@@ -91,7 +139,7 @@ workflows:
             git -C "$source" checkout --quiet --detach FETCH_HEAD
             (
               cd "$source"
-              MACOSX_DEPLOYMENT_TARGET="$minimum" CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+              MACOSX_DEPLOYMENT_TARGET="$minimum" CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" \
                 "$go_root/bin/go" build -mod=vendor -trimpath -ldflags "-X main.Version=$version" \
                   -o "$output" github.com/cloudflare/cloudflared/cmd/cloudflared
             )
@@ -99,14 +147,14 @@ workflows:
             "$output" --version | /usr/bin/grep -Fq "$version"
             compatible_macho "$output"
 
-            staging="$native_cache/.cloudflared-${CM_BUILD_ID:-$$}"
+            staging="$native_cache/.cloudflared-$target-${CM_BUILD_ID:-$$}"
             rm -rf "$staging"
             mkdir -p "$staging"
             cp "$output" "$staging/cloudflared"
             chmod 0755 "$staging/cloudflared"
             (cd "$staging" && /usr/bin/shasum -a 256 cloudflared > cloudflared.sha256)
-            node -e "const fs=require('fs');fs.writeFileSync(process.argv[1],JSON.stringify({schema:1,fingerprint:process.argv[2],version:process.argv[3],sourceCommit:process.argv[4],goVersion:process.argv[5],minimumMacOS:process.argv[6],target:'darwin-arm64'},null,2)+'\\n')" \
-              "$staging/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum"
+            node -e "const fs=require('fs');fs.writeFileSync(process.argv[1],JSON.stringify({schema:1,fingerprint:process.argv[2],version:process.argv[3],sourceCommit:process.argv[4],goVersion:process.argv[5],minimumMacOS:process.argv[6],target:process.argv[7]},null,2)+'\\n')" \
+              "$staging/metadata.json" "$cloud_fingerprint" "$version" "$commit" "$go_version" "$minimum" "$target"
             rm -rf "$cloud_cache"
             mv "$staging" "$cloud_cache"
           fi
@@ -120,13 +168,18 @@ workflows:
       - name: Build unsigned macOS package
         script: |
           set -euo pipefail
-          npm run package
-          node scripts/verify-release.mjs --target darwin-arm64
+          if [ "$TEAM_DEVSPACE_TARGET" = darwin-x64 ]; then
+            package_node_dir="$(/usr/bin/dirname "$TEAM_DEVSPACE_PACKAGE_NODE")"
+            PATH="$package_node_dir:$PATH" /usr/bin/arch -x86_64 "$TEAM_DEVSPACE_PACKAGE_NODE" "$TEAM_DEVSPACE_PACKAGE_NPM_CLI" run package
+          else
+            npm run package
+          fi
+          node scripts/verify-release.mjs --target "$TEAM_DEVSPACE_TARGET"
 
-      - name: Check arm64 and minimum macOS compatibility
+      - name: Check architecture and minimum macOS compatibility
         script: |
           set -euo pipefail
-          root="build/bundle-darwin-arm64"
+          root="build/bundle-$TEAM_DEVSPACE_TARGET"
           minimum="$(node -p "require('./release.config.json').distribution.macosMinimumVersion")"
           checked=0
           offenders=0
@@ -135,7 +188,7 @@ workflows:
             [[ "$description" == *Mach-O* ]] || continue
             checked=$((checked + 1))
             archs="$(/usr/bin/lipo -archs "$file")"
-            if [[ " $archs " != *" arm64 "* ]]; then
+            if [[ " $archs " != *" $TEAM_DEVSPACE_EXPECTED_MACHO_ARCH "* ]]; then
               echo "macOS architecture mismatch: $file -> $archs" >&2
               offenders=1
               continue
@@ -165,8 +218,8 @@ workflows:
           [[ "$offenders" -eq 0 ]]
           cache_kb="$(du -sk "$HOME/.cache/team-devspace-native-v1" | /usr/bin/awk '{print $1}')"
           [[ "$cache_kb" -le 131072 ]]
-          echo "Verified $checked Mach-O files for arm64 and macOS <= $minimum; native cache $((cache_kb / 1024)) MiB"
+          echo "Verified $checked Mach-O files for $TEAM_DEVSPACE_EXPECTED_MACHO_ARCH and macOS <= $minimum; native cache $((cache_kb / 1024)) MiB"
 
     artifacts:
-      - release/Team-DevSpace-*-macos-arm64.pkg
-      - release/Team-DevSpace-*-macos-arm64.pkg.sha256
+      - release/Team-DevSpace-*-macos-*.pkg
+      - release/Team-DevSpace-*-macos-*.pkg.sha256

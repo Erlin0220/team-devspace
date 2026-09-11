@@ -64,6 +64,6 @@ On a headless server, keeping a user service alive after logout is an explicit a
 - The source repository remains private.
 - GitHub Actions no longer builds native client installers; its remaining workflow is infrastructure deployment only.
 - Windows/Linux packages are created on matching native hosts when needed.
-- macOS arm64 is built manually on Codemagic M2; no push/PR trigger is configured, and the candidate package is unsigned/unnotarized.
+- macOS arm64 and Intel x64 share one manual Codemagic M2 workflow selected by its `architecture` input; no push/PR trigger is configured, and candidate packages are unsigned/unnotarized.
 - Fixed `v<version>` private GitHub Releases, when used for administrator storage, remain immutable by policy and are never overwritten.
 - Moving to public distribution later is a separate trust-profile change and must introduce an appropriate public Windows signing service and Apple Developer ID application/installer signing plus notarization; do not silently reuse the internal-free contract.

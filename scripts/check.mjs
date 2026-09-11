@@ -67,12 +67,17 @@ if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow
     retiredPackageWorkflow.includes('windows-2022') || retiredPackageWorkflow.includes('linux-x64')) {
   throw new Error('GitHub Actions native packaging must remain retired; macOS builds on Codemagic and Windows/Linux build locally');
 }
+if (!release.distribution.targets.includes('darwin-arm64') || !release.distribution.targets.includes('darwin-x64') ||
+    !/^[a-f0-9]{64}$/.test(binaries.node?.['darwin-x64']?.sha256 ?? '')) {
+  throw new Error('macOS release targets must include pinned Apple Silicon and Intel runtimes');
+}
 if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package') ||
+    !codemagic.includes('architecture:') || !codemagic.includes('- x64') || !codemagic.includes('/usr/bin/arch -x86_64') ||
     codemagic.includes('npm run package -- --reuse-dependencies') || codemagic.includes('npm ci') ||
     codemagic.includes('rustup') || codemagic.includes('TEAM_DEVSPACE_TRAY_') ||
     codemagic.includes('/usr/sbin/installer -verboseR') || codemagic.includes('acceptance:platform') ||
     codemagic.includes('triggering:')) {
-  throw new Error('Codemagic must remain a manual, macOS-only thin package build');
+  throw new Error('Codemagic must remain one manual, macOS-only thin package workflow for arm64 and Intel x64');
 }
 
 if (windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {

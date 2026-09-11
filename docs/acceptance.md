@@ -4,7 +4,7 @@
 
 单元/边界测试可以证明 D1 的绑定、凭据校验、流量路由和错误处理。原生启动测试可以证明本机运行和停止没有残留。**它们不能代替真实 Cloudflare Tunnel、真实 ChatGPT 工作空间以及另一台 Mac 的验证。**
 
-最终验收需要两台独立设备同时在线，至少一台 Windows、一台 Apple Silicon macOS。当前只发布 macOS arm64；Codemagic 负责生成候选 `.pkg`，同事的真实 Mac 安装和运行结果作为最终平台证据。用同一电脑启动两个测试进程只能作为开发测试。
+最终验收需要独立真实设备覆盖实际发布架构：至少一台 Windows，并分别用 Apple Silicon macOS 验收 `darwin-arm64`、Intel macOS 验收 `darwin-x64`。两个 macOS 候选 `.pkg` 共用 Codemagic workflow 构建，但 Apple Silicon 上通过 Rosetta 执行 x64 构建只能作为构建期证据，不能替代 Intel Mac 的最终安装和运行验收。用同一电脑启动多个测试进程只能作为开发测试。
 
 ## 无凭据的本地验证
 
