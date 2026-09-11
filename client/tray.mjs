@@ -133,7 +133,10 @@ export async function runTray(home = stateHome(), options = {}) {
   const helper = options.helper ?? trayExecutable(options.root);
   const child = spawn(helper, options.helperArgs ?? [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: await trayInstanceId(home) } });
+  const requireVisible = options.requireVisible ?? (process.platform === 'darwin' && !options.helper);
   let helperClosed = false;
+  let nativeVisible = false;
+  let nativeDuplicate = false;
   let currentStatus = null;
   let currentAccessKeyMode;
   let currentProjectRoot;
@@ -152,6 +155,10 @@ export async function runTray(home = stateHome(), options = {}) {
   let diagnosticsTimer;
   let noticeTimer;
   let shutdownTimer;
+  const startupTimer = requireVisible ? setTimeout(() => {
+    if (!helperClosed && !nativeVisible && !nativeDuplicate) child.kill();
+  }, options.startupTimeout ?? 10000) : undefined;
+  startupTimer?.unref?.();
   const utilities = new Map();
 
   child.stdin.on('error', () => {});
@@ -382,6 +389,14 @@ export async function runTray(home = stateHome(), options = {}) {
         }).catch(() => {});
         void refresh();
       }
+      else if (event.event === 'tray-visible') {
+        nativeVisible = true;
+        clearTimeout(startupTimer);
+      }
+      else if (event.event === 'duplicate') {
+        nativeDuplicate = true;
+        clearTimeout(startupTimer);
+      }
       else if (event.event === 'protocol-error') process.stderr.write('[Team DevSpace tray] native protocol error\n');
       else if (event.event === 'menu' && event.action === 'check') runCheck();
       else if (event.event === 'menu' && ['logs', 'diagnostics'].includes(event.action)) void runUtility(event.action);
@@ -405,8 +420,12 @@ export async function runTray(home = stateHome(), options = {}) {
   clearTimeout(diagnosticsTimer);
   clearTimeout(noticeTimer);
   clearTimeout(shutdownTimer);
+  clearTimeout(startupTimer);
   operationAbort?.abort();
   await mutationPromise;
   await exitPromise;
+  if (requireVisible && !nativeVisible && !nativeDuplicate) {
+    throw new Error('Native macOS tray exited before its menu bar item became visible');
+  }
   if (!exiting && (exit.signal || exit.code !== 0)) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
 }

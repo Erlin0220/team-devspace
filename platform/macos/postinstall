@@ -25,10 +25,10 @@ show_launch_help() {
   fi
 }
 USER_HOME=$(/usr/bin/dscl . -read "/Users/$USER_NAME" NFSHomeDirectory 2>/dev/null | /usr/bin/sed 's/^NFSHomeDirectory: //' || true)
-APP_STARTED=''
+UI_READY=''
 if [ -n "$USER_HOME" ]; then
-  APP_STARTED="$USER_HOME/Library/Application Support/TeamDevSpace/.app-started"
-  /bin/rm -f "$APP_STARTED" 2>/dev/null || true
+  UI_READY="$USER_HOME/Library/Application Support/TeamDevSpace/.ui-ready"
+  /bin/rm -f "$UI_READY" 2>/dev/null || true
 else
   log 'WARN code=USER_HOME_LOOKUP_FAILED; launch confirmation unavailable'
 fi
@@ -36,17 +36,17 @@ if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/ope
   log 'WARN code=AUTO_OPEN_FAILED; install remains successful'
   echo 'Team DevSpace was installed, but it could not be opened automatically. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
   show_launch_help
-elif [ -n "$APP_STARTED" ]; then
+elif [ -n "$UI_READY" ]; then
   attempt=0
-  while [ "$attempt" -lt 15 ] && [ ! -f "$APP_STARTED" ]; do
+  while [ "$attempt" -lt 45 ] && [ ! -f "$UI_READY" ]; do
     /bin/sleep 1
     attempt=$((attempt + 1))
   done
-  if [ -f "$APP_STARTED" ]; then
-    log 'auto-open confirmed by app-start marker'
+  if [ -f "$UI_READY" ]; then
+    log 'auto-open confirmed by visible UI marker'
   else
     log 'WARN code=AUTO_OPEN_UNCONFIRMED; install remains successful'
-    echo 'Team DevSpace was installed, but its first-run application did not confirm startup. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
+    echo 'Team DevSpace was installed, but its first-run UI did not confirm visibility. Open it from Applications to complete Enrollment. See /var/log/team-devspace-install.log.' >&2
     show_launch_help
   fi
 else

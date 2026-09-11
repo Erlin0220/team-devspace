@@ -17,6 +17,7 @@ export async function runMacForm({ home = stateHome(), mode = 'setup', projectRo
   let completed = false;
   let busy = false;
   let ready = false;
+  let visible = false;
   let result;
   let failure;
   let pending = Promise.resolve();
@@ -42,24 +43,44 @@ export async function runMacForm({ home = stateHome(), mode = 'setup', projectRo
     failure = new Error('macOS 界面通信中断，请重新打开 Team DevSpace。');
     cancel();
   };
-  const startupTimer = setTimeout(() => { failure = new Error('macOS 界面未能启动，请重新打开 Team DevSpace。'); cancel(); }, startupTimeout);
+  const startupTimer = setTimeout(() => { failure = new Error('macOS 界面未能显示，请重新打开 Team DevSpace。'); cancel(); }, startupTimeout);
   startupTimer.unref();
   signal?.addEventListener('abort', cancel, { once: true });
   if (signal?.aborted) cancel();
   child.stdin.on('error', () => {});
-  // Do not forward a native process dump to logs: its input can contain a key.
-  child.stderr.resume();
+  // The native helper never receives a credential on argv. Buffer complete stderr lines,
+  // redact credential-shaped values and keep only bounded diagnostics for launch failures.
+  let stderrBuffer = '';
+  const logNativeStderr = line => {
+    const safe = String(line).replace(/tds_[A-Za-z0-9_-]+/g, '[已隐藏]').replace(/[\r\n]+/g, ' ').slice(0, 1000);
+    if (safe) process.stderr.write(`[Team DevSpace macOS UI] ${safe}\n`);
+  };
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', chunk => {
+    stderrBuffer += chunk;
+    if (stderrBuffer.length > 8192) {
+      logNativeStderr('native stderr exceeded the diagnostic limit');
+      stderrBuffer = '';
+    }
+    let newline;
+    while ((newline = stderrBuffer.indexOf('\n')) !== -1) {
+      logNativeStderr(stderrBuffer.slice(0, newline));
+      stderrBuffer = stderrBuffer.slice(newline + 1);
+    }
+  });
   const receive = event => {
     if (event.event === 'ready' && !ready) {
       ready = true;
-      clearTimeout(startupTimer);
       if (!closing) send({ type: 'form', mode, projectRoot: projectRoot ?? '' });
+    } else if (event.event === 'form-visible' && ready && !visible) {
+      visible = true;
+      clearTimeout(startupTimer);
     } else if (event.event === 'duplicate') {
       clearTimeout(startupTimer);
       failure = Object.assign(new Error('Access Key 设置窗口已经打开，请查看当前窗口。'), { code: 'ui_already_open' });
       cancel();
     } else if (event.event === 'cancel') cancel();
-    else if (event.event === 'submit' && ready && !closing && !busy && !completed) {
+    else if (event.event === 'submit' && ready && visible && !closing && !busy && !completed) {
       if (typeof event.accessKey !== 'string' || event.accessKey.length > 256 ||
           (mode === 'setup' && (typeof event.projectRoot !== 'string' || !event.projectRoot || event.projectRoot.length > 4096))) {
         fail(); return;
@@ -101,6 +122,7 @@ export async function runMacForm({ home = stateHome(), mode = 'setup', projectRo
       child.once('close', (code, exitSignal) => resolve({ code, signal: exitSignal }));
     });
     closed = true;
+    if (stderrBuffer) { logNativeStderr(stderrBuffer); stderrBuffer = ''; }
     // A disappearing UI is not permission to abandon a binding transaction.
     // The tray's exit path must wait for this promise before stopping services.
     await pending;

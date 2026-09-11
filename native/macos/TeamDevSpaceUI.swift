@@ -38,6 +38,17 @@ func validInstanceID(_ value: String) -> Bool {
     value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
 }
 
+func markUIVisible() {
+    guard let path = ProcessInfo.processInfo.environment["TEAM_DEVSPACE_UI_READY_MARKER"], !path.isEmpty else { return }
+    let data = Data("\(Date().timeIntervalSince1970)\n".utf8)
+    do {
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    } catch {
+        fputs("Team DevSpace could not update its UI visibility marker.\n", stderr)
+    }
+}
+
 final class InstanceGuard {
     private let descriptor: Int32
     private init(descriptor: Int32) { self.descriptor = descriptor }
@@ -173,6 +184,15 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
             statusIcon = image
         }
         setIcon("stopped", summary: "正在启动…")
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let item = self.statusItem, item.isVisible, item.button != nil else {
+                emit("protocol-error", ["reason": "tray-not-visible"])
+                self?.stop()
+                return
+            }
+            markUIVisible()
+            emit("tray-visible")
+        }
     }
 
     private func setIcon(_ status: String, summary: String, showText: Bool = false) {
@@ -369,6 +389,15 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(keyField)
+        DispatchQueue.main.async { [weak self, weak panel] in
+            guard let self, let panel, panel.isVisible else {
+                emit("protocol-error", ["reason": "form-not-visible"])
+                self?.stop()
+                return
+            }
+            markUIVisible()
+            emit("form-visible")
+        }
     }
 
     private func refreshProjectRoot() {
@@ -480,7 +509,14 @@ struct Main {
             instance = acquired
         } catch { fputs("Team DevSpace could not acquire its UI instance lock.\n", stderr); exit(1) }
         let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
+        if !app.setActivationPolicy(.accessory) {
+            // A setup form must remain recoverable even if accessory activation is unavailable.
+            // The tray must not fall back to a Dock application because that would create a second UI surface.
+            if !form || !app.setActivationPolicy(.regular) {
+                fputs("Team DevSpace could not enter a visible macOS application session.\n", stderr)
+                exit(1)
+            }
+        }
         let delegate = Application(form: form, smoke: CommandLine.arguments.contains("--smoke"))
         app.delegate = delegate
         withExtendedLifetime((instance, delegate)) { app.run() }

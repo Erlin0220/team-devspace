@@ -87,9 +87,11 @@ test('malformed/oversized native messages fail closed without echoing private in
   }
 });
 
-test('a helper that never becomes ready has a bounded startup failure', { timeout: 10000 }, async () => {
-  await assert.rejects(runMacForm({ ...options('no-ready'), startupTimeout: 1000,
-    submit: () => assert.fail('must not submit') }), /未能启动/);
+test('a helper must become visibly presented, not merely process-ready', { timeout: 10000 }, async () => {
+  for (const scenario of ['no-ready', 'ready-no-visible']) {
+    await assert.rejects(runMacForm({ ...options(scenario), startupTimeout: 1000,
+      submit: () => assert.fail('must not submit') }), /未能显示/);
+  }
 });
 
 test('pre-cancelled setup creates no native process', async () => {
@@ -102,12 +104,15 @@ test('missing helper is actionable and never prints a child-process command dump
     submit: () => assert.fail() }), /无法启动 macOS 原生界面/);
 });
 
-test('macOS launcher surfaces the existing tray before bootstrap work', async () => {
+test('macOS launcher surfaces the existing tray before bootstrap work and rejects duplicate wrappers', async () => {
   const launch = await readFile('platform/macos/launch-app.sh', 'utf8');
   const kickstart = launch.indexOf('com.teamdevspace.tray');
   const bootstrap = launch.indexOf('bootstrap.sh');
   assert.ok(kickstart >= 0, 'launcher should kickstart the existing tray');
   assert.ok(bootstrap > kickstart, 'tray kickstart must happen before bootstrap');
+  assert.match(launch, /app-launch\.lock/);
+  assert.match(launch, /acquire_launch_lock/);
+  assert.match(launch, /TEAM_DEVSPACE_UI_READY_MARKER/);
   assert.match(launch, /install-manifest\.json/);
   assert.match(launch, /release-manifest\.json/);
 });
@@ -120,6 +125,18 @@ test('macOS packaging uses separate Team DevSpace assets for app and menu bar ic
   assert.match(packaging, /TeamDevSpace\.icns/);
   assert.match(packaging, /team-devspace-template\.png/);
   assert.match(packaging, /TeamDevSpaceTemplate\.png/);
+  assert.match(packaging, /LSMultipleInstancesProhibited/);
+});
+
+test('macOS native UI reports actual visibility and checks activation policy', async () => {
+  const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
+  assert.match(swift, /setActivationPolicy\(\.accessory\)/);
+  assert.match(swift, /setActivationPolicy\(\.regular\)/);
+  assert.match(swift, /panel\.isVisible/);
+  assert.match(swift, /item\.isVisible/);
+  assert.match(swift, /emit\("form-visible"\)/);
+  assert.match(swift, /emit\("tray-visible"\)/);
+  assert.match(swift, /TEAM_DEVSPACE_UI_READY_MARKER/);
 });
 
 test('macOS menu bar keeps lifecycle feedback visible after the menu closes', async () => {

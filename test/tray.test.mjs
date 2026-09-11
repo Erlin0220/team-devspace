@@ -300,9 +300,27 @@ test('native startup keeps tray separate from runtime and does not expose creden
   assert.ok(task.includes('run&quot; &quot;tray') && !task.includes(state.deviceSecret) && !task.includes(state.accessKey));
   const launch = launchAgentXml(state, 'tray', home, { node: '/app/node', cloudflared: '/app/cloudflared' }, root);
   assert.ok(launch.includes('<key>SuccessfulExit</key><false/>'));
+  assert.ok(launch.includes('<key>LimitLoadToSessionType</key><string>Aqua</string>'));
+  assert.ok(launch.includes('<key>ProcessType</key><string>Interactive</string>'));
+  assert.ok(launch.includes('<key>TEAM_DEVSPACE_UI_READY_MARKER</key>'));
   assert.ok(!launch.includes('<key>KeepAlive</key><true/>'));
   assert.equal(serviceLabel(state, 'tray').endsWith('.tray'), true);
   assert.equal(serviceLabel(state, 'tray', 'darwin'), 'com.teamdevspace.tray');
+});
+
+test('macOS tray controller requires a visible menu-bar handshake', { timeout: 3000 }, async () => {
+  const fake = `
+    console.log(JSON.stringify({event:'ready'}));
+    process.stdin.resume();
+  `;
+  await assert.rejects(runTray('unused', {
+    helper: process.execPath,
+    helperArgs: ['--input-type=module', '-e', fake],
+    requireVisible: true,
+    startupTimeout: 150,
+    refreshInterval: 60000,
+    operations: { status: async () => null },
+  }), /became visible/);
 });
 
 test('diagnostic redaction removes employee and bearer credentials', () => {

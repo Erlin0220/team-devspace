@@ -5,13 +5,29 @@ HOME_ROOT="$HOME/Library/Application Support/TeamDevSpace"
 ROOT="$HOME_ROOT/distribution"
 LOG_DIR="$HOME_ROOT/logs"
 LOG="$LOG_DIR/setup.log"
-APP_STARTED="$HOME_ROOT/.app-started"
+UI_READY="$HOME_ROOT/.ui-ready"
+LAUNCH_LOCK="$HOME_ROOT/app-launch.lock"
 /bin/mkdir -p "$LOG_DIR"
 /bin/chmod 700 "$HOME_ROOT" "$LOG_DIR" 2>/dev/null || true
-/usr/bin/printf '%s\n' "$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$APP_STARTED"
-/bin/chmod 600 "$APP_STARTED" 2>/dev/null || true
 : > "$LOG"
 /bin/chmod 600 "$LOG" 2>/dev/null || true
+acquire_launch_lock() {
+  if /bin/mkdir "$LAUNCH_LOCK" 2>/dev/null; then /usr/bin/printf '%s\n' "$$" > "$LAUNCH_LOCK/pid"; return 0; fi
+  owner=$(/usr/bin/sed -n '1p' "$LAUNCH_LOCK/pid" 2>/dev/null || true)
+  case "$owner" in ''|*[!0-9]*) ;; *)
+    if /bin/kill -0 "$owner" 2>/dev/null || /bin/ps -p "$owner" >/dev/null 2>&1; then return 1; fi
+    ;;
+  esac
+  /bin/rm -rf "$LAUNCH_LOCK"
+  if /bin/mkdir "$LAUNCH_LOCK" 2>/dev/null; then /usr/bin/printf '%s\n' "$$" > "$LAUNCH_LOCK/pid"; return 0; fi
+  return 1
+}
+if ! acquire_launch_lock; then exit 0; fi
+cleanup_launch() { /bin/rm -rf "$LAUNCH_LOCK"; }
+trap cleanup_launch EXIT
+trap 'exit 1' HUP INT TERM
+/bin/rm -f "$UI_READY" 2>/dev/null || true
+export TEAM_DEVSPACE_UI_READY_MARKER="$UI_READY"
 ACTIVE="$ROOT/active-path"
 TRAY_LABEL="com.teamdevspace.tray"
 TRAY_PLIST="$HOME/Library/LaunchAgents/$TRAY_LABEL.plist"

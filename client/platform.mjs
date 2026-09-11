@@ -104,19 +104,21 @@ async function linuxOwnedLegacyUnits(home, components = COMPONENTS) {
 
 export function launchAgentXml(state, component, home, paths, root = installRoot) {
   const program = component === 'tunnel' ? paths.cloudflared : paths.node;
-  const label = serviceLabel(state, component);
+  const label = serviceLabel(state, component, 'darwin');
   const path = [process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', '/opt/homebrew/bin', '/usr/local/bin', join(root, 'runtime', 'bin'), join(root, 'bin')].join(delimiter);
+  const uiEnvironment = component === 'tray'
+    ? `<key>TEAM_DEVSPACE_UI_READY_MARKER</key><string>${xml(join(home, '.ui-ready'))}</string>` : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
 <key>ProgramArguments</key><array>${[program, ...componentArguments(component, home, state, root)].map(arg => `<string>${xml(arg)}</string>`).join('')}</array>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string><key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string><key>NODE_OPTIONS</key><string></string></dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string><key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string><key>NODE_OPTIONS</key><string></string>${uiEnvironment}</dict>
 <key>RunAtLoad</key><true/>${component === 'tray'
-    ? '<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>'
+    ? '<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>LimitLoadToSessionType</key><string>Aqua</string>'
     : '<key>KeepAlive</key><true/>'}<key>ThrottleInterval</key><integer>15</integer>
-<key>ProcessType</key><string>Background</string>
+<key>ProcessType</key><string>${component === 'tray' ? 'Interactive' : 'Background'}</string>
 <key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string>
 <key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string>
 </dict></plist>\n`;
@@ -247,9 +249,20 @@ export async function installServices(state, home = stateHome(), root = installR
       await rm(join(directory, `${legacy}.plist`), { force: true });
     }
     if (disabled.length) await serviceAction('remove', state, home, disabled);
+    const reloaded = [];
+    for (const component of components) {
+      const label = serviceLabel(state, component);
+      if (await native('launchctl', ['print', `${domain}/${label}`], true)) {
+        await native('launchctl', ['bootout', `${domain}/${label}`], true);
+        reloaded.push(component);
+      }
+    }
+    if (reloaded.length) await waitForStopped(state, reloaded);
     for (const component of components) {
       const label = serviceLabel(state, component);
       const target = join(directory, `${label}.plist`);
+      // launchd keeps the loaded job definition even when its plist is overwritten.
+      // Rewrite it only after the old stable job is fully gone.
       await writeFile(target, launchAgentXml(state, component, home, paths, root), { mode: 0o600 });
     }
   } else if (process.platform === 'linux') {

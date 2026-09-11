@@ -326,6 +326,7 @@ if (!values['prepare-only']) {
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.teamdevspace.app</string>
 <key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpace</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>TeamDevSpace.icns</string>
+<key>LSMultipleInstancesProhibited</key><true/>
 ${macBundleMetadata}</dict></plist>\n`);
     await signMacApplication(dirname(contents), macosSigning);
     await mkdir(join(pkgRoot, 'usr', 'local', 'bin'), { recursive: true });

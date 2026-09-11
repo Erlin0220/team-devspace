@@ -16,6 +16,8 @@ lines.on('line', line => {
   // No stored key should ever be sent back to the view.
   assert.equal(line.includes(key), false);
   if (message.type === 'form') {
+    if (scenario === 'ready-no-visible') return;
+    emit({ event: 'form-visible' });
     if (scenario === 'cancel') { emit({ event: 'cancel' }); return; }
     if (scenario === 'invalid') { emit({ event: 'submit', accessKey: 'a'.repeat(257), projectRoot: '' }); return; }
     submitted = true;

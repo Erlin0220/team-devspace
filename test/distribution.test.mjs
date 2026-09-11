@@ -31,21 +31,22 @@ test('macOS preinstall normalizes Intel hardware names to the release x64 target
   assert.doesNotMatch(preinstall, /requires Apple Silicon/);
 });
 
-test('macOS postinstall confirms the app actually started and gives visible recovery guidance', async () => {
+test('macOS postinstall confirms visible UI instead of trusting process startup', async () => {
   const [postinstall, launchApp] = await Promise.all([
     readFile('platform/macos/postinstall', 'utf8'),
     readFile('platform/macos/launch-app.sh', 'utf8'),
   ]);
-  const marker = '.app-started';
+  const marker = '.ui-ready';
   assert.match(launchApp, new RegExp(marker.replace('.', '\\.')),
-    'The app wrapper must publish an immediate start marker before expensive first-run bootstrap work');
-  assert.ok(launchApp.indexOf('> "$APP_STARTED"') < launchApp.indexOf('bootstrap.sh'),
-    'The start marker must be written before bootstrap/extraction can delay the Access Key dialog');
+    'The app wrapper must pass a dedicated visible-UI marker into the native UI process');
+  assert.match(launchApp, /TEAM_DEVSPACE_UI_READY_MARKER/);
+  assert.doesNotMatch(launchApp, /\.app-started/,
+    'Entering the shell wrapper must not be treated as successful onboarding UI');
   assert.match(postinstall, new RegExp(marker.replace('.', '\\.')),
-    'The installer must wait for the same app-start marker instead of trusting open(1) alone');
-  assert.ok(postinstall.indexOf('/bin/rm -f "$APP_STARTED"') < postinstall.indexOf("/usr/bin/open '/Applications/Team DevSpace.app'"),
-    'A stale marker must be removed before requesting a new app launch');
-  assert.match(postinstall, /while \[ "\$attempt" -lt 15 \] && \[ ! -f "\$APP_STARTED" \]/);
+    'The installer must wait for the visible UI marker instead of trusting open(1) alone');
+  assert.ok(postinstall.indexOf('/bin/rm -f "$UI_READY"') < postinstall.indexOf("/usr/bin/open '/Applications/Team DevSpace.app'"),
+    'A stale UI marker must be removed before requesting a new app launch');
+  assert.match(postinstall, /while \[ "\$attempt" -lt 45 \] && \[ ! -f "\$UI_READY" \]/);
   assert.match(postinstall, /AUTO_OPEN_UNCONFIRMED/);
   assert.match(postinstall, /display alert "Team DevSpace 需要完成设置"/);
   assert.match(postinstall, /隐私与安全性/);
