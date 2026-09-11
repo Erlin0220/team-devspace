@@ -16,6 +16,7 @@
     "test:tray": "node scripts/tray-smoke.mjs",
     "test:installer": "node scripts/installer-smoke.mjs",
     "test:installer:unix": "node scripts/unix-installer-smoke.mjs",
+    "test:standalone": "node scripts/standalone-smoke.mjs",
     "test:distribution": "node --test --test-concurrency=1 test/distribution.test.mjs",
     "acceptance:platform": "node scripts/platform-acceptance.mjs",
     "acceptance:local": "npm run check && npm test && npm run test:distribution && npm run deploy -- --dry-run && npm run package -- --reuse-dependencies && npm run acceptance:platform",

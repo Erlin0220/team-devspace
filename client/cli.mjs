@@ -19,18 +19,20 @@ const HELP = `Team DevSpace
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
   repair                            Recreate local startup or resume pending Enrollment
-  start | stop | restart            Control your user-session runtime
+  start | stop | restart            Control your user-owned runtime
   suspend | resume                  Fail-closed remote access safety switch
   diagnostics                       Print stable redacted diagnostics
-  logs [--follow]                   Show Linux journal logs or open the desktop log directory
+  logs [--follow]                   Show Linux journal/file logs or open desktop logs
   roots list | add <path> | remove <path>
-  startup install | remove          Manage native user-login startup
+  startup install | remove          Manage native or standalone component startup
   uninstall                         Stop/remove startup; retain Enrollment for repair
   run runtime | tray                Foreground native startup component
   --home <directory>                Isolated local state (advanced)
 
 Use the same Access Key when connecting the Team DevSpace workspace app.
 Allowed Roots constrain file tools, not shell commands: shell executes with your user permissions.
+Linux without systemctl uses standalone supervision. After host/container recreation,
+run repair from the host's startup hook or terminal; standalone is not a boot hook.
 `;
 
 export async function main(argv = process.argv.slice(2)) {

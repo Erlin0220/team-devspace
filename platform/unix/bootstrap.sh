@@ -47,8 +47,22 @@ case "$TARGET" in
       echo 'Team DevSpace Linux x64 requires glibc 2.34 or newer.' >&2; exit 2;
     }
     export TEAM_DEVSPACE_DISTRIBUTION_ROOT="$ROOT"
-    STATE_HOME="${TEAM_DEVSPACE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/team-devspace}"
-    CLI_DIR="${TEAM_DEVSPACE_CLI_DIR:-$HOME/.local/bin}"
+    retained_home=''
+    if [ -f "$ROOT/state-home" ]; then retained_home=$(sed -n '1p' "$ROOT/state-home"); fi
+    if [ -n "$retained_home" ] && [ -n "${TEAM_DEVSPACE_HOME:-}" ] && [ "$retained_home" != "$TEAM_DEVSPACE_HOME" ]; then
+      echo 'This distribution already owns a different state directory; refusing to replace its Enrollment.' >&2; exit 2
+    fi
+    STATE_HOME="${TEAM_DEVSPACE_HOME:-${retained_home:-${XDG_STATE_HOME:-$HOME/.local/state}/team-devspace}}"
+    case "$STATE_HOME" in /*) ;; *) echo 'Linux state home must be an absolute path.' >&2; exit 2 ;; esac
+    case "$STATE_HOME" in "$ROOT"|"$ROOT"/*) echo 'Keep device state outside the replaceable distribution directory.' >&2; exit 2 ;; esac
+    export TEAM_DEVSPACE_HOME="$STATE_HOME"
+    retained_cli=''
+    if [ -f "$ROOT/cli-directory" ]; then retained_cli=$(sed -n '1p' "$ROOT/cli-directory"); fi
+    if [ -n "$retained_cli" ] && [ -n "${TEAM_DEVSPACE_CLI_DIR:-}" ] && [ "$retained_cli" != "$TEAM_DEVSPACE_CLI_DIR" ]; then
+      echo 'This distribution already owns a different command directory; refusing to leave a stale CLI link.' >&2; exit 2
+    fi
+    CLI_DIR="${TEAM_DEVSPACE_CLI_DIR:-${retained_cli:-$HOME/.local/bin}}"
+    case "$CLI_DIR" in /*) ;; *) echo 'Linux command directory must be an absolute path.' >&2; exit 2 ;; esac
     CLI_LINK="$CLI_DIR/team-devspace"
     STABLE_CLI="$ROOT/bin/team-devspace"
     ;;
@@ -96,6 +110,14 @@ install_linux_cli() {
     *) return 0 ;;
   esac
   mkdir -p "$ROOT/bin" "$CLI_DIR"
+  # Deployment metadata, not another device state: the stable command must find
+  # retained Enrollment in a new shell without installer-only environment vars.
+  printf '%s\n' "$STATE_HOME" > "$ROOT/state-home.$$"
+  chmod 600 "$ROOT/state-home.$$"
+  mv "$ROOT/state-home.$$" "$ROOT/state-home"
+  printf '%s\n' "$CLI_DIR" > "$ROOT/cli-directory.$$"
+  chmod 600 "$ROOT/cli-directory.$$"
+  mv "$ROOT/cli-directory.$$" "$ROOT/cli-directory"
   temporary_cli="$ROOT/bin/team-devspace.$$"
   cp "$candidate/platform/unix/command.sh" "$temporary_cli"
   chmod 755 "$temporary_cli"
@@ -252,7 +274,7 @@ candidate="$VERSIONS/$release-$(printf '%s' "$manifest_hash" | cut -c1-12)-$$"
 mv "$stage" "$candidate"
 stage=''
 current=$(active_path || true)
-if [ -n "$current" ]; then
+if [ -n "$current" ] && { [ "$SYSTEM_NAME" != Linux ] || [ -f "$STATE_HOME/state.json" ]; }; then
   case "$TARGET" in linux-*) stop_version="$candidate" ;; *) stop_version="$current" ;; esac
   if ! invoke_client "$stop_version" stop; then
     rm -rf "$candidate"
@@ -343,7 +365,10 @@ case "$TARGET" in
     if [ ! -f "$STATE_HOME/state.json" ]; then
       echo "Run $CLI_LINK setup --credential-file <employee-key.json> --root <project-directory> to enroll this device."
     elif [ "$refresh_startup" = 1 ]; then
-      echo "Linux user services were refreshed through the stable $CLI_LINK entrypoint."
+      echo "Linux services were refreshed through the stable $CLI_LINK entrypoint."
+      if ! command -v systemctl >/dev/null 2>&1; then
+        echo 'Standalone services run independently of this terminal. After a full host/container recreation, run team-devspace repair through your host startup hook or cloud-computer terminal.'
+      fi
     fi
     ;;
 esac

@@ -10,6 +10,7 @@ import { deviceStatus } from './setup.mjs';
 import { atomicJson, installRoot, loadState, privateDirectory, stateHome } from './state.mjs';
 import { openWindowsDirectory } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
+import { linuxServiceManager } from './linux-lifecycle.mjs';
 
 const exec = promisify(execFile);
 const REDACTED = '<REDACTED>';
@@ -199,9 +200,10 @@ async function manifestIdentity() {
 
 async function recentErrors(home, state = null) {
   const summaries = [];
+  const journal = process.platform === 'linux' && await linuxServiceManager().catch(() => 'unavailable') === 'systemd-user';
   for (const component of ['runtime', 'tunnel', 'tray']) {
     let lines = [];
-    if (process.platform === 'linux' && COMPONENTS.includes(component)) {
+    if (journal && COMPONENTS.includes(component)) {
       try {
         const unit = `${serviceLabel(state ?? { deviceId: '' }, component)}.service`;
         const { stdout } = await exec('journalctl', ['--user', '--no-pager', '--output=cat', '-p', 'warning', '-n', '40', '-u', unit],
@@ -239,6 +241,7 @@ export async function diagnosticReport(home = stateHome()) {
     devspace: state.devspaceVersion,
     platform: process.platform,
     architecture: process.arch,
+    ...(process.platform === 'linux' ? { lifecycle: await linuxServiceManager().catch(() => 'unavailable') } : {}),
     remoteAccess: status.remoteAccess,
     desiredRemoteAccess: status.desiredRemoteAccess,
     devspaceHealth: status.devspace,
@@ -267,6 +270,35 @@ export async function copyDiagnosticReport(home = stateHome()) {
 
 export async function openLogs(home = stateHome(), { launch, follow = false } = {}) {
   if (process.platform === 'linux') {
+    const manager = await linuxServiceManager().catch(() => 'unavailable');
+    if (manager !== 'systemd-user') {
+      const paths = COMPONENTS.flatMap(component => ['.log', '.error.log'].map(suffix => join(home, 'logs', `${component}${suffix}`)));
+      if (!follow) {
+        for (const path of paths) {
+          const text = await readTail(path).catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+          if (text) process.stdout.write(`=== ${path} ===\n${redactDiagnostic(text)}\n`);
+        }
+      } else {
+        // Reuse the host's standard tail utility; no log service or new IPC.
+        await new Promise((resolveLogs, reject) => {
+          const child = spawn('tail', ['-n', '200', '-F', ...paths], { stdio: ['ignore', 'pipe', 'inherit'] });
+          child.stdout.setEncoding('utf8');
+          let pending = '';
+          child.stdout.on('data', chunk => {
+            pending += chunk;
+            const end = pending.lastIndexOf('\n');
+            if (end >= 0) { process.stdout.write(redactDiagnostic(pending.slice(0, end + 1))); pending = pending.slice(end + 1); }
+            if (pending.length > 65536) pending = '<truncated log line>';
+          });
+          const stop = () => child.kill('SIGTERM');
+          process.once('SIGTERM', stop); process.once('SIGINT', stop);
+          const cleanup = () => { process.off('SIGTERM', stop); process.off('SIGINT', stop); };
+          child.once('error', error => { cleanup(); reject(error); });
+          child.once('exit', (code, signal) => { cleanup(); code === 0 || signal ? resolveLogs() : reject(new Error(`tail exited with code ${code}`)); });
+        });
+      }
+      return { source: 'files', paths, lifecycle: manager };
+    }
     const state = await loadState(home);
     const units = COMPONENTS.map(component => `${serviceLabel(state, component)}.service`);
     const args = ['--user', '--no-pager', '--output=short-iso', ...(follow ? ['--follow'] : ['-n', '200']),

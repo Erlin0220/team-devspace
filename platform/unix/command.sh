@@ -1,6 +1,6 @@
 #!/bin/sh
 # Stable Linux CLI entrypoint. The active version is resolved at invocation time so
-# systemd and user commands never bind to a retired version directory.
+# lifecycle managers and user commands never bind to a retired version directory.
 set -eu
 
 SELF=$(readlink -f "$0")
@@ -16,4 +16,9 @@ case "$APP" in "$ROOT/versions"/*) ;; *) echo 'Invalid active version pointer.' 
 }
 
 export TEAM_DEVSPACE_DISTRIBUTION_ROOT="$ROOT"
+if [ -z "${TEAM_DEVSPACE_HOME:-}" ] && [ -f "$ROOT/state-home" ]; then
+  TEAM_DEVSPACE_HOME=$(sed -n '1p' "$ROOT/state-home")
+  case "$TEAM_DEVSPACE_HOME" in /*) ;; *) echo 'Invalid retained state path.' >&2; exit 1 ;; esac
+  export TEAM_DEVSPACE_HOME
+fi
 exec "$APP/runtime/bin/node" "$APP/client/cli.mjs" "$@"

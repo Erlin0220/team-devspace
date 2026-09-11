@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { join, delimiter, resolve } from 'node:path';
 import { installRoot, privateDirectory, stateHome } from './state.mjs';
+import { linuxServiceManager } from './linux-lifecycle.mjs';
 
 const exec = promisify(execFile);
 export const COMPONENTS = ['runtime', 'tunnel'];
@@ -253,7 +254,12 @@ export async function installServices(state, home = stateHome(), root = installR
     }
   } else if (process.platform === 'linux') {
     if (process.getuid() === 0) throw new Error('Install user startup as the employee, not root');
-    await native('systemctl', ['--user', 'show-environment']);
+    const { installStandalone, hasStandaloneStartup, standaloneAction } = await import('./standalone.mjs');
+    if (await linuxServiceManager() === 'standalone') return installStandalone(state, home, root, scope);
+    if (await hasStandaloneStartup(home, scope)) {
+      await standaloneAction('remove', state, home, [...scope].reverse());
+      await waitForStopped(state, scope);
+    }
     const directory = systemdUserDirectory();
     await mkdir(directory, { recursive: true });
     if (scope.includes('runtime')) await access(join(root, 'runtime', 'bin', 'node'));
@@ -306,7 +312,20 @@ export async function serviceAction(action, state, home = stateHome(), component
     await serviceAction('stop', state, home, components);
     return serviceAction('start', state, home, components);
   }
+  if (components.some(component => !STARTUP_COMPONENTS.includes(component))) throw new Error('Unknown startup component');
   const ordered = ['stop', 'disable', 'remove'].includes(action) ? [...components].reverse() : components;
+  if (process.platform === 'linux') {
+    const { standaloneAction, hasStandaloneStartup } = await import('./standalone.mjs');
+    if (await linuxServiceManager() === 'standalone') {
+      await standaloneAction(action, state, home, ordered);
+      if (['stop', 'disable', 'remove'].includes(action)) await waitForStopped(state, components);
+      return;
+    }
+    if (await hasStandaloneStartup(home, components)) {
+      if (action === 'start') throw new Error('Standalone startup exists on a systemd host. Run repair to transfer ownership before starting systemd jobs.');
+      await standaloneAction(action, state, home, ordered);
+    }
+  }
   const windowsOwned = process.platform === 'win32' && action !== 'start'
     ? await windowsOwnedLifecycleLabels(await windowsSid(), home, components) : [];
   const macOwned = process.platform === 'darwin' && action !== 'start'

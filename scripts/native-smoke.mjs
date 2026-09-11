@@ -129,6 +129,20 @@ try {
   await writeFile(join(home, 'tunnel.token'), 'not-a-live-tunnel-credential', { mode: 0o600 });
   installed = true;
   if (process.platform === 'linux') {
+    // Prove an explicit repair/install can transfer a live standalone owner to
+    // native systemd without ever running both managers for the same home.
+    const standalone = await import(pathToFileURL(join(bundle, 'client', 'standalone.mjs')));
+    const distributionRoot = process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT;
+    delete process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT;
+    try {
+      await standalone.installStandalone(state, home, bundle, ['runtime']);
+      await standalone.standaloneAction('start', state, home, ['runtime']);
+      await waitForPorts(true);
+    } finally { process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT = distributionRoot; }
+    await assert.rejects(platform.serviceAction('start', state, home, ['runtime']), /transfer ownership/);
+    await platform.installServices(state, home);
+    await waitForPorts(false);
+    assert.equal(await standalone.hasStandaloneStartup(home), false);
     const directory = platform.systemdUserDirectory();
     const legacyDeviceId = randomUUID();
     const legacy = `com.teamdevspace.${legacyDeviceId.replaceAll('-', '')}.runtime.service`;
@@ -228,7 +242,7 @@ try {
   installed = false;
   console.log(JSON.stringify({ passed: true, platform: process.platform, architecture: process.arch,
     actualNativeStartup: true, packagedRuntime: true, authenticatedMcp: true,
-    stopRestartCleanup: true, ...(process.platform === 'linux' ? { legacyUnitMigration: true } : {}),
+    stopRestartCleanup: true, ...(process.platform === 'linux' ? { legacyUnitMigration: true, standaloneOwnershipTransfer: true } : {}),
     ...(process.platform === 'win32' ? { noConsoleSupervisor: true, scopedStaleTaskMigration: true } : {}),
     realCloudflare: false, realChatGPT: false }));
 } catch (error) {
