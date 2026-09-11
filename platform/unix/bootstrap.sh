@@ -39,6 +39,7 @@ case "$SYSTEM_NAME-$MACHINE_ARCH" in
 esac
 
 case "$TARGET" in
+  darwin-*) STATE_HOME="${TEAM_DEVSPACE_HOME:-$HOME/Library/Application Support/TeamDevSpace}" ;;
   linux-*)
     [ "$(id -u)" -ne 0 ] || { echo 'Install Team DevSpace as the employee user, not root or sudo.' >&2; exit 2; }
     case "$ROOT" in /*) ;; *) echo 'Linux distribution root must be an absolute path.' >&2; exit 2 ;; esac
@@ -249,10 +250,17 @@ rollback_candidate() {
   failure=$1
   cleanup_failed=0
   restore_failed=0
-  invoke_client "$candidate" uninstall || cleanup_failed=1
-  if [ -n "$current" ] && ! invoke_client "$candidate" startup install --runtime-root "$current"; then restore_failed=1; fi
+  # A form can fail before Enrollment creates state.json. In that case there is
+  # no device identity for the CLI to load; use the existing owned-startup fallback.
+  if [ -f "$STATE_HOME/state.json" ]; then
+    invoke_client "$candidate" uninstall || cleanup_failed=1
+  else
+    remove_native_startup_fallback || cleanup_failed=1
+  fi
+  if [ -n "$current" ] && [ -f "$STATE_HOME/state.json" ] &&
+     ! invoke_client "$candidate" startup install --runtime-root "$current"; then restore_failed=1; fi
   if [ -z "$current" ]; then remove_linux_cli; fi
-  rm -rf "$candidate"
+  if [ "$cleanup_failed" = 0 ]; then rm -rf "$candidate"; fi
   if [ "$cleanup_failed" = 1 ] && [ "$restore_failed" = 1 ]; then
     echo "$failure; candidate startup cleanup and previous startup restoration both failed." >&2
   elif [ "$restore_failed" = 1 ]; then
@@ -377,7 +385,7 @@ candidate="$VERSIONS/$release-$(printf '%s' "$manifest_hash" | cut -c1-12)-$$"
 mv "$stage" "$candidate"
 stage=''
 current=$(active_path || true)
-if [ -n "$current" ] && { [ "$SYSTEM_NAME" != Linux ] || [ -f "$STATE_HOME/state.json" ]; }; then
+if [ -n "$current" ] && [ -f "$STATE_HOME/state.json" ]; then
   case "$TARGET" in linux-*) stop_version="$candidate" ;; *) stop_version="$current" ;; esac
   if ! invoke_client "$stop_version" stop; then
     rm -rf "$candidate"

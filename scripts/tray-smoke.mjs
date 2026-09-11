@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { access, mkdtemp, stat } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
 
@@ -24,19 +27,33 @@ catch (error) {
   binary = resolve(packaged);
   await access(binary);
 }
-const env = { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: randomBytes(32).toString('hex') };
+const smokeHome = await mkdtemp(join(tmpdir(), 'team-devspace-ui-smoke-'));
+const marker = join(smokeHome, '.ui-ready');
+const env = { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: randomBytes(32).toString('hex'),
+  TEAM_DEVSPACE_UI_READY_MARKER: marker };
 const child = spawn(binary, process.platform === 'darwin' ? ['--smoke'] : [],
   { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 let duplicate;
 process.once('exit', () => {
   if (child.exitCode === null) child.kill();
   if (duplicate && duplicate.exitCode === null) duplicate.kill();
+  rmSync(smokeHome, { recursive: true, force: true });
 });
 let stderr = '';
+let trayVisible = false;
 let protocolErrors = 0;
 const applied = [];
 const menuActions = [];
-child.stderr.on('data', chunk => { stderr += chunk; });
+child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
+async function waitFor(predicate, description) {
+  const deadline = Date.now() + 10000;
+  while (!predicate()) {
+    if (child.exitCode !== null || child.signalCode !== null || Date.now() >= deadline) {
+      throw new Error(`Native UI did not ${description} while stdin remained open: ${stderr}`);
+    }
+    await delay(20);
+  }
+}
 const ready = new Promise((resolveReady, reject) => {
   const timer = setTimeout(() => reject(new Error('Native tray did not become ready')), 10000);
   child.once('error', error => { clearTimeout(timer); reject(error); });
@@ -44,12 +61,18 @@ const ready = new Promise((resolveReady, reject) => {
   createInterface({ input: child.stdout }).on('line', line => {
     const event = JSON.parse(line);
     if (event.event === 'protocol-error') protocolErrors++;
+    if (event.event === 'tray-visible') trayVisible = true;
     if (event.event === 'state-applied') applied.push(event.status);
     if (event.event === 'menu') menuActions.push(event.action);
     if (event.event === 'ready') { clearTimeout(timer); resolveReady(); }
   });
 });
 await ready;
+if (process.platform === 'darwin') {
+  await waitFor(() => trayVisible, 'show the menu-bar item');
+  await access(marker);
+  assert.equal((await stat(marker)).mode & 0o777, 0o600);
+}
 duplicate = spawn(binary, [], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let duplicateStdout = '';
 let duplicateStderr = '';
@@ -81,7 +104,19 @@ for (const state of [
   { ...common, status: 'ready', summary: 'Team DevSpace 正常', activity: '正在检查连接…', remoteText: '暂停远程访问',
     remoteAction: 'suspend', remoteEnabled: false, checkEnabled: false, switchKeyEnabled: false,
     restartEnabled: false, repairEnabled: false, exitEnabled: false },
-]) child.stdin.write(`${JSON.stringify(state)}\n`);
+]) {
+  const expected = applied.length + 1;
+  const bytes = Buffer.from(`${JSON.stringify(state)}\n`);
+  if (process.platform === 'darwin') {
+    // Split inside a UTF-8 character. One short JSON line must be consumed
+    // without waiting for 4096 bytes, the next command, or EOF.
+    const split = bytes.indexOf(Buffer.from('项目')) + 1;
+    child.stdin.write(bytes.subarray(0, split));
+    await delay(20);
+    child.stdin.write(bytes.subarray(split));
+    await waitFor(() => applied.length === expected, 'apply a short fragmented state message');
+  } else child.stdin.write(bytes);
+}
 if (process.platform === 'darwin') {
   // Exercise real NSMenu targets without executing connection operations.
   child.stdin.write(`${JSON.stringify({ ...common, status: 'ready', summary: '已连接',
@@ -91,6 +126,8 @@ if (process.platform === 'darwin') {
     child.stdin.write(`${JSON.stringify({ exerciseMenu: action })}\n`);
   }
   child.stdin.write('not-json\n{}\n');
+  await waitFor(() => applied.length === 6 && menuActions.length === 7 && protocolErrors === 2,
+    'process coalesced commands and malformed input');
   await smokeMacForm(binary, env);
 }
 child.stdin.end();
@@ -108,19 +145,22 @@ if (process.platform === 'darwin') {
 console.log(JSON.stringify({ passed: true, platform: process.platform, nativeTray: true,
   protocol: 'json-lines', packagedArtifact: binary.includes(`bundle-${target}`), lifecycleIndependent: true,
   singleInstance: true, isolatedInstance: true,
-  ...(process.platform === 'darwin' ? { appKitMenus: true, setupFormRetry: true, malformedInput: true } : {}) }));
+  ...(process.platform === 'darwin' ? { appKitMenus: true, setupFormRetry: true, malformedInput: true,
+    trayVisible: true, formVisible: true, shortMessagesBeforeEOF: true, fragmentedUTF8: true } : {}) }));
 
 async function smokeMacForm(binary, env) {
   const form = spawn(binary, ['form', '--smoke'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   let duplicateForm;
   let timer;
   let submissions = 0;
+  let visible = false;
+  let stderr = '';
   const key = `tds_${'a'.repeat(43)}`;
   const send = value => form.stdin.write(`${JSON.stringify(value)}\n`);
   const done = new Promise((resolveDone, reject) => {
-    timer = setTimeout(() => reject(new Error('AppKit form smoke timed out')), 15000);
+    timer = setTimeout(() => reject(new Error(`AppKit form smoke timed out before EOF: ${stderr}`)), 15000);
     form.once('error', reject);
-    form.stderr.resume();
+    form.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
     form.stdin.on('error', () => {});
     createInterface({ input: form.stdout }).on('line', line => {
       try {
@@ -139,7 +179,8 @@ async function smokeMacForm(binary, env) {
               send({ type: 'form', mode: 'setup', projectRoot: '/tmp' });
             } catch (error) { reject(error); }
           });
-        } else if (event.event === 'form-presented') {
+        } else if (event.event === 'form-visible') {
+          visible = true;
           send({ type: 'exercise-form', accessKey: key });
         } else if (event.event === 'submit') {
           assert.equal(event.accessKey, key);
@@ -157,7 +198,7 @@ async function smokeMacForm(binary, env) {
       } catch (error) { reject(error); }
     });
     form.once('close', code => {
-      try { assert.equal(code, 0); assert.equal(submissions, 2); resolveDone(); }
+      try { assert.equal(code, 0, stderr); assert.equal(visible, true); assert.equal(submissions, 2); resolveDone(); }
       catch (error) { reject(error); }
     });
   });

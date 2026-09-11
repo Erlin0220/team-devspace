@@ -104,16 +104,31 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // stdout writes are serialized on the main queue, including EOF.
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var buffer = Data()
-            while let chunk = try? FileHandle.standardInput.read(upToCount: 4096), !chunk.isEmpty {
-                buffer.append(chunk)
-                if buffer.count > 65536 {
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            while true {
+                // FileHandle.read(upToCount:) can wait for the requested count or EOF.
+                // JSON-lines is interactive: process a short read without closing stdin.
+                let count = chunk.withUnsafeMutableBytes { Darwin.read(STDIN_FILENO, $0.baseAddress, $0.count) }
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    fputs("Team DevSpace UI input read failed (errno=\(errno)).\n", stderr)
                     DispatchQueue.main.async { emit("protocol-error"); self?.stop() }
                     return
                 }
+                if count == 0 { break }
+                buffer.append(contentsOf: chunk.prefix(count))
                 while let newline = buffer.firstIndex(of: 10) {
+                    guard buffer.distance(from: buffer.startIndex, to: newline) <= 65536 else {
+                        DispatchQueue.main.async { emit("protocol-error"); self?.stop() }
+                        return
+                    }
                     let line = Data(buffer[..<newline])
                     buffer.removeSubrange(...newline)
                     DispatchQueue.main.async { self?.receive(line) }
+                }
+                if buffer.count > 65536 {
+                    DispatchQueue.main.async { emit("protocol-error"); self?.stop() }
+                    return
                 }
             }
             DispatchQueue.main.async { self?.stop() }

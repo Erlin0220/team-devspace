@@ -136,6 +136,10 @@ if (process.platform === 'win32') {
 <key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
 <key>CFBundlePackageType</key><string>APPL</string>${macBundleMetadata}</dict></plist>\n`);
   await signMacApplication(dirname(trayContents), macosSigning);
+  // Exercise this exact native app in the builder's GUI session. Headless
+  // --self-test cannot catch a pipe that blocks before showing the setup form.
+  await run(process.execPath, [resolve('scripts/tray-smoke.mjs'),
+    join(trayContents, 'MacOS', 'TeamDevSpaceTray')], { timeout: 45000 });
 }
 for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
 const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(runtime, 'bin', 'node');

@@ -128,6 +128,20 @@ test('macOS packaging uses separate Team DevSpace assets for app and menu bar ic
   assert.match(packaging, /LSMultipleInstancesProhibited/);
 });
 
+test('macOS native pipe consumes short input and packaging runs real GUI smoke', async () => {
+  const [swift, packaging, smoke] = await Promise.all([
+    readFile('native/macos/TeamDevSpaceUI.swift', 'utf8'),
+    readFile('scripts/package.mjs', 'utf8'),
+    readFile('scripts/tray-smoke.mjs', 'utf8'),
+  ]);
+  assert.match(swift, /Darwin\.read\(STDIN_FILENO/);
+  assert.doesNotMatch(swift, /FileHandle\.standardInput\.read\(upToCount:/);
+  assert.match(swift, /errno == EINTR/);
+  assert.match(packaging, /scripts\/tray-smoke\.mjs/);
+  assert.match(smoke, /shortMessagesBeforeEOF: true/);
+  assert.ok(smoke.indexOf('await waitFor(() => applied.length === expected') < smoke.indexOf('child.stdin.end()'));
+});
+
 test('macOS native UI reports actual visibility and checks activation policy', async () => {
   const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
   assert.match(swift, /setActivationPolicy\(\.accessory\)/);

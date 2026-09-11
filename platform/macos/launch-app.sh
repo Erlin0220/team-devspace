@@ -9,23 +9,34 @@ UI_READY="$HOME_ROOT/.ui-ready"
 LAUNCH_LOCK="$HOME_ROOT/app-launch.lock"
 /bin/mkdir -p "$LOG_DIR"
 /bin/chmod 700 "$HOME_ROOT" "$LOG_DIR" 2>/dev/null || true
-: > "$LOG"
-/bin/chmod 600 "$LOG" 2>/dev/null || true
 acquire_launch_lock() {
   if /bin/mkdir "$LAUNCH_LOCK" 2>/dev/null; then /usr/bin/printf '%s\n' "$$" > "$LAUNCH_LOCK/pid"; return 0; fi
   owner=$(/usr/bin/sed -n '1p' "$LAUNCH_LOCK/pid" 2>/dev/null || true)
-  case "$owner" in ''|*[!0-9]*) ;; *)
-    if /bin/kill -0 "$owner" 2>/dev/null || /bin/ps -p "$owner" >/dev/null 2>&1; then return 1; fi
-    ;;
-  esac
-  /bin/rm -rf "$LAUNCH_LOCK"
+  # A missing PID may be a concurrent owner still publishing it. Never steal it.
+  case "$owner" in ''|*[!0-9]*) return 1 ;; esac
+  if /bin/kill -0 "$owner" 2>/dev/null || /bin/ps -p "$owner" >/dev/null 2>&1; then return 1; fi
+  # Serialize stale-lock reclamation; never recursively remove another launcher's lock.
+  /bin/mkdir "$LAUNCH_LOCK/reclaim" 2>/dev/null || return 1
+  if [ "$(/usr/bin/sed -n '1p' "$LAUNCH_LOCK/pid" 2>/dev/null || true)" != "$owner" ]; then
+    /bin/rmdir "$LAUNCH_LOCK/reclaim" 2>/dev/null || true
+    return 1
+  fi
+  /bin/rm -f "$LAUNCH_LOCK/pid"
+  /bin/rmdir "$LAUNCH_LOCK/reclaim" "$LAUNCH_LOCK" 2>/dev/null || return 1
   if /bin/mkdir "$LAUNCH_LOCK" 2>/dev/null; then /usr/bin/printf '%s\n' "$$" > "$LAUNCH_LOCK/pid"; return 0; fi
   return 1
 }
 if ! acquire_launch_lock; then exit 0; fi
-cleanup_launch() { /bin/rm -rf "$LAUNCH_LOCK"; }
+cleanup_launch() {
+  if [ "$(/usr/bin/sed -n '1p' "$LAUNCH_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    /bin/rm -f "$LAUNCH_LOCK/pid"
+    /bin/rmdir "$LAUNCH_LOCK" 2>/dev/null || true
+  fi
+}
 trap cleanup_launch EXIT
 trap 'exit 1' HUP INT TERM
+: > "$LOG"
+/bin/chmod 600 "$LOG" 2>/dev/null || true
 /bin/rm -f "$UI_READY" 2>/dev/null || true
 export TEAM_DEVSPACE_UI_READY_MARKER="$UI_READY"
 ACTIVE="$ROOT/active-path"
@@ -52,13 +63,17 @@ fi
 if [ -n "$current" ] && [ -f "$current/install-manifest.json" ] &&
    /usr/bin/cmp -s "$current/install-manifest.json" "$RESOURCES/release-manifest.json" &&
    [ -x "$current/runtime/bin/node" ] && [ -f "$current/client/cli.mjs" ]; then
-  if "$current/runtime/bin/node" "$current/client/cli.mjs" startup install --runtime-root "$current" >> "$LOG" 2>&1; then
+  if [ ! -f "$HOME_ROOT/state.json" ]; then
+    # Cancelling first-run setup leaves a valid payload, but no enrolled device.
+    # Reopen the form rather than calling startup install/stop on missing state.
+    if "$current/runtime/bin/node" "$current/client/cli.mjs" setup-gui >> "$LOG" 2>&1; then exit 0; fi
+  elif "$current/runtime/bin/node" "$current/client/cli.mjs" startup install --runtime-root "$current" >> "$LOG" 2>&1; then
     exit 0
   fi
   /usr/bin/printf '%s\n' 'Existing release fast start failed; falling back to bootstrap.' >> "$LOG"
 fi
 # Setup progress, validation errors and cancellation belong to the AppKit form.
-# The marker only confirms entry into this wrapper, not successful enrollment.
+# Only the native form/menu writes the visibility marker; wrapper entry is not readiness.
 if ! "$RESOURCES/bootstrap.sh" --root "$ROOT" --manifest "$RESOURCES/release-manifest.json" --setup gui >> "$LOG" 2>&1; then
   /usr/bin/osascript -e 'display alert "Team DevSpace 启动失败" message "本地程序启动失败。请重新打开 Team DevSpace；如果仍然失败，请查看 ~/Library/Application Support/TeamDevSpace/logs/setup.log。" as critical' >/dev/null 2>&1 || true
   exit 1
