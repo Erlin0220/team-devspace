@@ -21,6 +21,13 @@ if (!release.distribution.targets.includes(target)) {
 }
 const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
+const author = packageJson.author;
+if (!author || typeof author.name !== 'string' || !author.name.trim() ||
+    typeof author.email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(author.email)) {
+  throw new Error('package.json must define the Team DevSpace author name and email');
+}
+const plistText = value => String(value).replace(/[<>&"']/g, character =>
+  ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[character]);
 if (packageJson.dependencies['@waishnav/devspace'] !== release.devspaceVersion) {
   throw new Error('Release manifest and upstream runtime pin disagree');
 }
@@ -114,7 +121,7 @@ if (process.platform === 'win32') {
   const trayContents = join(bundle, 'platform', 'macos', 'Team DevSpace Tray.app', 'Contents');
   await mkdir(join(trayContents, 'MacOS'), { recursive: true });
   await mkdir(join(trayContents, 'Resources'), { recursive: true });
-  await cp('platform/macos/devspace-logo-light.png', join(trayContents, 'Resources', 'TeamDevSpaceTemplate.png'));
+  await cp('platform/macos/team-devspace-template.png', join(trayContents, 'Resources', 'TeamDevSpaceTemplate.png'));
   trayBuild = await buildTray(join(trayContents, 'MacOS', 'TeamDevSpaceTray'));
   await chmod(join(trayContents, 'MacOS', 'TeamDevSpaceTray'), 0o755);
   await writeFile(join(trayContents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
@@ -123,6 +130,9 @@ if (process.platform === 'win32') {
 <key>CFBundleName</key><string>Team DevSpace</string><key>CFBundleExecutable</key><string>TeamDevSpaceTray</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
+<key>TeamDevSpaceDevSpaceVersion</key><string>${plistText(release.devspaceVersion)}</string>
+<key>TeamDevSpaceAuthorName</key><string>${plistText(author.name)}</string>
+<key>TeamDevSpaceAuthorEmail</key><string>${plistText(author.email)}</string>
 <key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
   await signMacApplication(dirname(trayContents), macosSigning);
 }
@@ -317,6 +327,9 @@ if (!values['prepare-only']) {
 <key>CFBundlePackageType</key><string>APPL</string><key>CFBundleIconFile</key><string>TeamDevSpace.icns</string>
 <key>CFBundleShortVersionString</key><string>${release.version}</string>
 <key>CFBundleVersion</key><string>${release.version}</string><key>LSUIElement</key><true/>
+<key>TeamDevSpaceDevSpaceVersion</key><string>${plistText(release.devspaceVersion)}</string>
+<key>TeamDevSpaceAuthorName</key><string>${plistText(author.name)}</string>
+<key>TeamDevSpaceAuthorEmail</key><string>${plistText(author.email)}</string>
 <key>LSMinimumSystemVersion</key><string>${release.distribution.macosMinimumVersion}</string></dict></plist>\n`);
     await signMacApplication(dirname(contents), macosSigning);
     await mkdir(join(pkgRoot, 'usr', 'local', 'bin'), { recursive: true });

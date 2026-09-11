@@ -56,6 +56,7 @@ export async function runMacForm({ home = stateHome(), mode = 'setup', projectRo
       if (!closing) send({ type: 'form', mode, projectRoot: projectRoot ?? '' });
     } else if (event.event === 'duplicate') {
       clearTimeout(startupTimer);
+      failure = Object.assign(new Error('Access Key 设置窗口已经打开，请查看当前窗口。'), { code: 'ui_already_open' });
       cancel();
     } else if (event.event === 'cancel') cancel();
     else if (event.event === 'submit' && ready && !closing && !busy && !completed) {

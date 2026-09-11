@@ -230,7 +230,9 @@ async function installAttempt() {
   env.TEAM_DEVSPACE_SETUP_REQUEST_FILE = requestFile;
   const code = await execute(installer, ['/S', `/D=${install}`]);
   delete env.TEAM_DEVSPACE_SETUP_REQUEST_FILE;
-  assert.equal(code, 0, await readFile(join(install, 'bootstrap-error.log'), 'utf8').catch(() => 'No bootstrap diagnostic was written'));
+  const diagnostic = await readFile(join(install, 'bootstrap-error.log'), 'utf8').catch(async () =>
+    readFile(join(install, 'bootstrap-launch-error.log'), 'utf8').catch(() => 'No bootstrap diagnostic was written'));
+  assert.equal(code, 0, diagnostic);
   assert.equal(await exists(requestFile), false, 'Temporary credential input must be consumed');
   return readJson(join(home, 'state.json'));
 }

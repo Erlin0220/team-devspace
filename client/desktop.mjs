@@ -59,6 +59,7 @@ export function desktopErrorText(error) {
     project_root_change_requires_command: '当前设备已完成绑定，请通过“项目目录…”修改项目目录。',
     project_root_conflict: '另一个安装流程已经选择了不同的项目目录，请检查当前项目后再继续。',
     multiple_project_roots_unsupported: 'Team DevSpace 当前只支持一个项目目录，请只选择一个项目。',
+    ui_already_open: 'Access Key 设置窗口已经打开，请查看当前窗口。',
     'Enter the Access Key assigned by your administrator': '请输入管理员发放的完整 Access Key。',
     'Gateway returned an incompatible Enrollment': '连接服务版本不兼容，请联系管理员。',
   };

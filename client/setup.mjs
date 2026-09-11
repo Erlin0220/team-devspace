@@ -236,11 +236,18 @@ async function changeProjectRootUnlocked(projectRoot, home, options = {}) {
   let stopAttempted = false;
   try {
     onProgress('正在切换项目目录…');
-    if (shouldRun) { stopAttempted = true; await service('stop', state); }
+    if (shouldRun) {
+      onProgress('正在停止当前项目连接…');
+      stopAttempted = true;
+      await service('stop', state);
+    }
+    onProgress('正在保存新的项目目录…');
     await writeConfig(next);
     await saveState(next);
     if (shouldRun) {
+      onProgress('正在启动新的项目连接…');
       await service('start', next);
+      onProgress('正在确认新的项目连接…');
       await verifyRuntime(next);
     }
     return { changed: true, currentProjectRoot: nextRoot, previousProjectRoot: state.currentProjectRoot,
@@ -344,22 +351,30 @@ export function repairDevice(home = stateHome(), options = {}) {
   return withDeviceOperation(home, () => repairDeviceUnlocked(home, options));
 }
 
-async function repairDeviceUnlocked(home = stateHome(), { preserveTray = false } = {}) {
+async function repairDeviceUnlocked(home = stateHome(), { preserveTray = false, onProgress = () => {} } = {}) {
   const previous = await readJson(join(home, 'state.json'), null);
   if (!previous) throw new Error('Team DevSpace is installed but has not been configured yet; run setup with the administrator-issued Access Key and project directory');
   if (previous.pendingAccessKey) {
-    const replaced = await replaceAccessKey(previous.pendingAccessKey, home);
+    onProgress('正在继续未完成的 Access Key 设置…');
+    const replaced = await replaceAccessKey(previous.pendingAccessKey, home, { onProgress });
     return { ...replaced, repaired: true, recoveredEnrollment: true };
   }
   const recoveredEnrollment = !previous.bindingId || !await hasTunnelCredential(home);
-  if (recoveredEnrollment) await configureDevice({}, { home, startup: false });
+  if (recoveredEnrollment) {
+    onProgress('正在恢复设备绑定…');
+    await configureDevice({}, { home, startup: false, onProgress });
+  }
   const state = await loadState(home);
   const scope = preserveTray ? COMPONENTS : undefined;
+  onProgress('正在重建本机连接服务…');
   await serviceAction('remove', state, home, scope);
   await writeUpstreamConfig(state, home);
   await installServices(state, home, undefined, scope);
   const startComponents = enabledStartupComponents(state).filter(component => !preserveTray || component !== 'tray');
-  if (startComponents.length) await serviceAction('start', state, home, startComponents);
+  if (startComponents.length) {
+    onProgress('正在启动本机连接…');
+    await serviceAction('start', state, home, startComponents);
+  }
   return { repaired: true, enrolled: true, recoveredEnrollment,
     connection: state.remoteAccess === 'suspended' ? 'suspended' : 'starting',
     deviceId: state.deviceId, bindingId: state.bindingId, startup: 'installed' };

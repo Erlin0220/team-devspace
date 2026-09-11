@@ -21,14 +21,16 @@ $activeFile = Join-Path $InstallPath 'active.json'
 $stateHome = if ($env:TEAM_DEVSPACE_HOME) { [IO.Path]::GetFullPath($env:TEAM_DEVSPACE_HOME) }
   else { Join-Path $env:LOCALAPPDATA 'TeamDevSpace' }
 $shaPattern = '^[a-f0-9]{64}$'
+$elevatedSystemDirectory = Join-Path $env:SystemRoot 'System32'
 # NSIS is a 32-bit process, so its Windows PowerShell child is also commonly
-# 32-bit. In that process, System32 is redirected to SysWOW64 and the real
-# Task Scheduler store under System32\Tasks appears to be missing. Sysnative
-# is the supported WOW64 escape hatch for reaching the native system directory.
+# 32-bit. In that process, System32 is redirected to SysWOW64 and Sysnative is
+# the supported escape hatch for this process's direct native-tool access.
+# Never pass Sysnative to a -Verb RunAs launch: the UAC/ShellExecute side no
+# longer has the originating WOW64 virtual-path context.
 $nativeSystemDirectory = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
   Join-Path $env:SystemRoot 'Sysnative'
 } else {
-  Join-Path $env:SystemRoot 'System32'
+  $elevatedSystemDirectory
 }
 
 function Write-Step([string]$Message) {
@@ -128,18 +130,21 @@ function Invoke-LegacyTaskCleanupIfNeeded {
   $legacy = @($known | Where-Object { Test-LegacyTaskNeedsElevation $_ })
   if ($legacy.Count -eq 0) { return }
   Write-Step 'Migrating legacy administrator-owned startup tasks once...'
-  # Launch the elevated helper through Sysnative when this bootstrap is running
-  # under WOW64, but use the canonical System32 path inside that 64-bit helper.
-  # The Sysnative alias exists only for 32-bit processes and is not resolvable
-  # after cmd.exe itself has crossed into the native 64-bit view.
-  $schtasks = Join-Path (Join-Path $env:SystemRoot 'System32') 'schtasks.exe'
-  $cmd = Join-Path $nativeSystemDirectory 'cmd.exe'
+  # UAC launches through ShellExecute, outside the originating WOW64 virtual
+  # path context. Use a single hidden PowerShell helper instead of a console shell so
+  # the one-time legacy migration never flashes a console window.
+  $schtasks = Join-Path $elevatedSystemDirectory 'schtasks.exe'
+  $elevatedPowerShell = Join-Path $elevatedSystemDirectory 'WindowsPowerShell\v1.0\powershell.exe'
+  $escapedTool = $schtasks.Replace("'", "''")
   $commands = foreach ($name in $legacy) {
     # Names are derived only from validated Team DevSpace lifecycle labels.
-    "`"$schtasks`" /End /TN `"$name`" >nul 2>&1 & `"$schtasks`" /Delete /TN `"$name`" /F >nul 2>&1 || exit /b 1"
+    $escapedName = $name.Replace("'", "''")
+    "& '$escapedTool' /End /TN '$escapedName' *> `$null; & '$escapedTool' /Delete /TN '$escapedName' /F *> `$null; if (`$LASTEXITCODE -ne 0) { exit 1 }"
   }
-  $arguments = "/d /s /c `"$($commands -join ' & ') & exit /b 0`""
-  $process = Start-Process -FilePath $cmd -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+  $script = "`$ErrorActionPreference = 'SilentlyContinue'; $($commands -join '; '); exit 0"
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+  $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $encoded)
+  $process = Start-Process -FilePath $elevatedPowerShell -Verb RunAs -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
   if ($process.ExitCode -ne 0) { throw 'Legacy Team DevSpace startup tasks require one-time administrator cleanup.' }
 }
 
@@ -221,7 +226,15 @@ function Invoke-Client([string]$Root, [string[]]$Arguments, [switch]$AllowFailur
 }
 
 function Test-NeedGitFallback {
-  return -not (Get-Command git.exe -ErrorAction SilentlyContinue)
+  foreach ($entry in @($env:PATH -split ';')) {
+    $directory = $entry.Trim('"')
+    if ([string]::IsNullOrWhiteSpace($directory)) { continue }
+    $git = Join-Path $directory 'git.exe'
+    if (-not (Test-Path -LiteralPath $git -PathType Leaf)) { continue }
+    $bash = Join-Path (Split-Path $directory -Parent) 'bin\bash.exe'
+    if (Test-Path -LiteralPath $bash -PathType Leaf) { return $false }
+  }
+  return $true
 }
 
 function Assert-Manifest([object]$Manifest) {
@@ -480,7 +493,18 @@ try {
       manifestSha256 = $manifestSha; path = $candidate
       previous = $null
     }
-    Write-AtomicJson $activeFile $next
+    try {
+      Write-AtomicJson $activeFile $next
+    } catch {
+      $activationFailure = $_.Exception.Message
+      $recovery = 'candidate startup was removed'
+      if ($hasEnrollment) {
+        [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
+        if ($active) { Restore-Previous $active $candidate; $recovery = 'previous version was restored' }
+      }
+      Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
+      throw "Local activation pointer update failed; ${recovery}: $activationFailure"
+    }
     Write-Step "Team DevSpace $($manifest.release) local application is installed."
 
     if (-not $hasEnrollment) {

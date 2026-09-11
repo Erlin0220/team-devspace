@@ -48,10 +48,13 @@ export function suspendRemoteAccess(home = stateHome(), dependencies = {}) {
 async function suspendRemoteAccessUnlocked(home = stateHome(), dependencies = {}) {
   const deactivate = dependencies.deactivateRemoteStartup ?? deactivateRemoteStartup;
   const sendControl = dependencies.control ?? control;
+  const onProgress = dependencies.onProgress ?? (() => {});
   let state = await loadState(home);
   // Persist the user's safety intent first. Even if the network disappears mid-operation,
   // a later runtime start must still observe that remote access is supposed to stay closed.
+  onProgress('正在保存暂停状态…');
   state = await saveRemoteAccess(state, home, 'suspended');
+  onProgress('正在停止本机连接并同步服务端…');
   const [local, gateway] = await Promise.allSettled([
     deactivate(state, home),
     sendControl(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 }),
@@ -65,6 +68,7 @@ async function suspendRemoteAccessUnlocked(home = stateHome(), dependencies = {}
   if (gateway.status === 'rejected') {
     throw new Error(`本机已暂停，Gateway 状态暂未确认：${gateway.reason?.message ?? gateway.reason}`);
   }
+  onProgress('正在确认暂停状态…');
   return deviceStatus(home);
 }
 
@@ -94,12 +98,15 @@ async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {})
   const install = dependencies.installServices ?? installServices;
   const service = dependencies.serviceAction ?? serviceAction;
   const statusOf = dependencies.deviceStatus ?? deviceStatus;
+  const onProgress = dependencies.onProgress ?? (() => {});
   let state = await loadState(home);
   try {
     // The runtime enforces the persisted pause. Start it only after confirming
     // Gateway denial, then lift the local pause before spawning the process.
+    onProgress('正在准备恢复远程访问…');
     await sendControl(state.gateway, '/v1/device/suspend', state.deviceSecret, { body: identity(state), timeout: 15000 });
     state = await saveRemoteAccess(state, home, 'active');
+    onProgress('正在启动本机连接…');
     if (process.platform === 'linux') {
       await install(state, home, undefined, COMPONENTS);
       await service('start', state, home, COMPONENTS);
@@ -116,12 +123,14 @@ async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {})
         await service('start', state, home, COMPONENTS);
       }
     }
+    onProgress('正在等待本机与连接通道就绪…');
     const deadline = Date.now() + 60000;
     let resumed = false;
     let readinessError;
     do {
       const status = await statusOf(home);
       if (status.localReady && ['suspended', 'active'].includes(status.gateway)) {
+        onProgress('正在确认远程访问…');
         try {
           // cloudflared /ready means an edge connection, not that the Gateway
           // can already reach this device. Keep denial until its probe succeeds.
@@ -136,6 +145,7 @@ async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {})
       await sleep(1000);
     } while (Date.now() < deadline);
     if (!resumed) throw readinessError ?? new Error('Local runtime, bridge or tunnel is not ready.');
+    onProgress('正在确认恢复状态…');
   } catch (error) {
     try { state = await saveRemoteAccess(state, home, 'suspended'); }
     catch { error = new Error(`${error.message}; could not persist the local pause; startup cleanup is required`); }
@@ -146,15 +156,20 @@ async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {})
   return statusOf(home);
 }
 
-export function restartTeamDevSpace(home = stateHome()) {
-  return withDeviceOperation(home, () => restartTeamDevSpaceUnlocked(home));
+export function restartTeamDevSpace(home = stateHome(), dependencies = {}) {
+  return withDeviceOperation(home, () => restartTeamDevSpaceUnlocked(home, dependencies));
 }
 
-async function restartTeamDevSpaceUnlocked(home = stateHome()) {
+async function restartTeamDevSpaceUnlocked(home = stateHome(), dependencies = {}) {
+  const onProgress = dependencies.onProgress ?? (() => {});
+  const service = dependencies.serviceAction ?? serviceAction;
+  const statusOf = dependencies.deviceStatus ?? deviceStatus;
   const state = await loadState(home);
   if (state.remoteAccess === 'suspended') throw new Error('Remote access is suspended; resume it before restarting connection services');
-  await serviceAction('restart', state, home, COMPONENTS);
-  return deviceStatus(home);
+  onProgress('正在重启本机连接…');
+  await service('restart', state, home, COMPONENTS);
+  onProgress('正在确认连接状态…');
+  return statusOf(home);
 }
 
 export function stopTeamDevSpace(home = stateHome()) {

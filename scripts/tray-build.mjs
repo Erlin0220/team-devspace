@@ -1,4 +1,4 @@
-import { access, cp, mkdir } from 'node:fs/promises';
+import { access, cp, mkdir, readFile } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { downloadPinned, run, sha256File } from './build-utils.mjs';
 import { peDetails, WINDOWS_GUI_SUBSYSTEM, WINDOWS_X64_MACHINE, zigCompiler } from './windows-launcher.mjs';
@@ -43,8 +43,18 @@ export async function buildTray(destination) {
   if (process.platform === 'darwin') return buildMacUi(destination);
   if (process.platform !== 'win32') return null;
   const { cargo, env } = await cargoCommand();
+  const [release, packageJson] = await Promise.all([
+    readFile('release.config.json', 'utf8').then(JSON.parse),
+    readFile('package.json', 'utf8').then(JSON.parse),
+  ]);
+  const author = packageJson.author;
+  if (!author?.name || !author?.email) throw new Error('package.json must define the Team DevSpace author name and email');
   const targetDirectory = resolve(`build/tray-target-${process.platform}-${process.arch}`);
-  const buildEnv = { ...env, CARGO_TARGET_DIR: targetDirectory };
+  const buildEnv = { ...env, CARGO_TARGET_DIR: targetDirectory,
+    TEAM_DEVSPACE_APP_VERSION: release.version,
+    TEAM_DEVSPACE_DEVSPACE_VERSION: release.devspaceVersion,
+    TEAM_DEVSPACE_AUTHOR_NAME: author.name,
+    TEAM_DEVSPACE_AUTHOR_EMAIL: author.email };
   const gnuLinker = buildEnv.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER ??
     process.env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER;
   if (gnuLinker) {

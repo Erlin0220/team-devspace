@@ -174,6 +174,37 @@ test('tray controller delegates fixed menu actions and exits only after services
   assert.deepEqual(calls, actions);
 });
 
+test('long-running tray mutations publish immediate busy feedback and retain a completion notice briefly', { timeout: 5000 }, async () => {
+  let releaseResume;
+  const resumeGate = new Promise(resolve => { releaseResume = resolve; });
+  const fake = `
+    console.log(JSON.stringify({event:'ready'}));
+    let buffer='', phase=0;
+    const deadline=setTimeout(()=>process.exit(7),3000);
+    process.stdin.on('end',()=>{clearTimeout(deadline);process.exit(0)});
+    process.stdin.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\\n')){
+      const index=buffer.indexOf('\\n'), state=JSON.parse(buffer.slice(0,index)); buffer=buffer.slice(index+1);
+      if(phase===0 && !state.activity){phase=1;console.log(JSON.stringify({event:'menu',action:'resume'}));}
+      else if(phase===1 && state.activity==='正在恢复远程访问…' && state.remoteEnabled===false){phase=2;console.log(JSON.stringify({event:'test-release'}));}
+      else if(phase===2 && state.notice==='远程访问已恢复' && !state.activity){clearTimeout(deadline);process.exit(0);}
+    }});
+  `;
+  const status = { ready: true, devspace: true, bridge: true, tunnel: true,
+    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' };
+  const helper = process.execPath;
+  const helperArgs = ['--input-type=module', '-e', fake];
+  await runTray('unused', { helper, helperArgs, refreshInterval: 60000, successNoticeDuration: 500, operations: {
+    localState: async () => ({ accessKeyMode: 'replace-key', currentProjectRoot: join(homedir(), 'project-a') }),
+    status: async () => status,
+    resume: async ({ onProgress }) => {
+      onProgress?.('正在恢复远程访问…');
+      setTimeout(() => releaseResume(), 25);
+      await resumeGate;
+      return status;
+    },
+  } });
+});
+
 test('exit cancels a pending Access Key prompt instead of remaining busy forever', { timeout: 5000 }, async () => {
   let aborted = false;
   let exitCalls = 0;

@@ -49,8 +49,19 @@ try {
   const bootstrap = join(media, process.platform === 'linux' ? 'install.sh' : 'bootstrap.sh');
   const install = () => run('/bin/sh', [bootstrap, '--root', root, '--manifest', manifestPath,
     '--offline', media, '--setup', 'none'], { cwd: work, env, timeout: 240000 });
+  const uninstall = () => run('/bin/sh', [bootstrap, '--mode', 'uninstall', '--root', root],
+    { cwd: work, env, timeout: 240000 });
   const active = () => readFile(join(root, 'active-path'), 'utf8').then(value => value.trim());
+  const foreignRoot = join(work, 'not owned by Team DevSpace');
+  const foreignSentinel = join(foreignRoot, 'keep.txt');
+  await mkdir(foreignRoot);
+  await writeFile(foreignSentinel, 'keep');
+  await assert.rejects(run('/bin/sh', [bootstrap, '--root', foreignRoot, '--manifest', manifestPath,
+    '--offline', media, '--setup', 'none'], { cwd: work, env, timeout: 240000 }), /exited/);
+  assert.equal(await readFile(foreignSentinel, 'utf8'), 'keep');
+
   await install();
+  assert.equal((await readFile(join(root, '.team-devspace-distribution'), 'utf8')).trim(), 'team-devspace-distribution-v1');
   const first = await active();
   if (process.platform === 'linux') {
     const stableCli = join(root, 'bin', 'team-devspace');
@@ -63,6 +74,9 @@ try {
   const stale = join(root, 'cache/sha256', '0'.repeat(64));
   await mkdir(stale);
   await writeFile(join(stale, 'old'), 'old artifact');
+  const staleLock = join(root, 'install.lock');
+  await mkdir(staleLock);
+  await writeFile(join(staleLock, 'pid'), '99999999\n');
   await install();
   const second = await active();
   assert.notEqual(first, second);
@@ -82,9 +96,19 @@ try {
   assert.ok(await exists(join(repaired, 'runtime/bin/node')));
   assert.equal(await exists(join(root, 'install.lock')), false);
   assert.equal((await readdir(join(root, 'staging'))).length, 0);
+
+  const retainedFile = join(root, 'user-file-must-survive.txt');
+  await writeFile(retainedFile, 'retain');
+  await rm(join(repaired, 'runtime/bin/node'));
+  await uninstall();
+  assert.equal(await readFile(retainedFile, 'utf8'), 'retain');
+  assert.equal(await exists(join(root, 'versions')), false);
+  assert.equal(await exists(join(root, '.team-devspace-distribution')), false);
+  if (process.platform === 'linux') assert.equal(await exists(join(cliDir, 'team-devspace')), false);
   console.log(JSON.stringify({ passed: true, target, actualOfflinePackage: true, pathsWithSpaces: true,
     nativeModulesFromInstalledTree: true, repair: true, failedRepairRetainsActive: true,
-    retiredVersionsCollected: true, cacheGarbageCollected: true,
+    retiredVersionsCollected: true, cacheGarbageCollected: true, staleInstallerLockRecovered: true,
+    unownedRootProtected: true, damagedClientUninstallFallback: true, unknownRootFilesPreserved: true,
     stableLinuxCli: process.platform === 'linux', nativeLoginSessionTested: false }));
 } finally {
   for (const socket of sockets) if (socket.listening) await new Promise(resolve => socket.close(resolve));

@@ -26,6 +26,15 @@ const ACTION_TEXT = {
   logs: '打开日志', diagnostics: '复制诊断信息', exit: '关闭 Team DevSpace',
 };
 
+const SUCCESS_TEXT = {
+  suspend: '远程访问已暂停',
+  resume: '远程访问已恢复',
+  restart: '连接服务已重启',
+  repair: '连接已修复',
+  'project-root': '项目目录已更改',
+  'switch-key': 'Access Key 已更新',
+};
+
 function traySummary(status, gatewayState, desiredRemoteAccess) {
   const enrolled = status.remoteAccess !== 'not-enrolled';
   if (!enrolled) return { visual: 'stopped', text: 'Team DevSpace 未完成 Enrollment' };
@@ -54,12 +63,13 @@ function projectMenuText(root) {
   return root ? `项目：${basename(root) || root}` : '项目：未设置';
 }
 
-export function trayState(status, { busy = false, exiting = false, activity, alert, diagnosticsCopied = false,
+export function trayState(status, { busy = false, exiting = false, activity, notice, alert, diagnosticsCopied = false,
   accessKeyMode, currentProjectRoot } = {}) {
   if (!status) return {
     status: 'stopped',
     summary: 'Team DevSpace 未连接',
     activity: activity || undefined,
+    notice: notice || undefined,
     alert: alert || undefined,
     remoteText: '暂停远程访问',
     remoteAction: 'suspend',
@@ -90,6 +100,7 @@ export function trayState(status, { busy = false, exiting = false, activity, ale
     status: summary.visual,
     summary: summary.text,
     activity: activity || undefined,
+    notice: notice || undefined,
     alert: alert || undefined,
     remoteText: pausePending ? '重试暂停远程访问' : gatewaySuspended ? '恢复远程访问' : '暂停远程访问',
     remoteAction: pausePending ? 'suspend' : gatewaySuspended ? 'resume' : 'suspend',
@@ -129,6 +140,7 @@ export async function runTray(home = stateHome(), options = {}) {
   let initializing = true;
   let mutationBusy = false;
   let currentActivity;
+  let currentNotice;
   let generation = 0;
   let refreshPromise = null;
   let mutationPromise = Promise.resolve();
@@ -138,6 +150,7 @@ export async function runTray(home = stateHome(), options = {}) {
   let exitPromise = Promise.resolve();
   let interval;
   let diagnosticsTimer;
+  let noticeTimer;
   let shutdownTimer;
   const utilities = new Map();
 
@@ -150,11 +163,13 @@ export async function runTray(home = stateHome(), options = {}) {
     const value = trayState(currentStatus, {
       busy: mutationBusy || exitRequested, exiting: exitRequested,
       activity: currentActivity ?? (initializing ? '正在启动…' : undefined),
+      notice: currentNotice,
       accessKeyMode: currentAccessKeyMode, currentProjectRoot, ...extra,
     });
     if (process.platform === 'darwin') {
       value.summary = macText(value.summary);
       if (value.activity) value.activity = macText(value.activity);
+      if (value.notice) value.notice = macText(value.notice);
       if (value.alert) value.alert = macText(value.alert);
     }
     send(value);
@@ -162,10 +177,10 @@ export async function runTray(home = stateHome(), options = {}) {
 
   const operations = options.operations ?? {
     status: () => deviceStatus(home),
-    suspend: () => suspendRemoteAccess(home),
-    resume: () => resumeRemoteAccess(home),
-    restart: () => restartTeamDevSpace(home),
-    repair: () => repairDevice(home, { preserveTray: true }),
+    suspend: ({ onProgress } = {}) => suspendRemoteAccess(home, { onProgress }),
+    resume: ({ onProgress } = {}) => resumeRemoteAccess(home, { onProgress }),
+    restart: ({ onProgress } = {}) => restartTeamDevSpace(home, { onProgress }),
+    repair: ({ onProgress } = {}) => repairDevice(home, { preserveTray: true, onProgress }),
     localState: () => desktopLocalState(home),
     'project-root': async ({ signal, onProgress, projectRoot }) => {
       const selected = projectRoot ?? (process.platform === 'win32'
@@ -239,8 +254,28 @@ export async function runTray(home = stateHome(), options = {}) {
     })();
   };
 
+  const clearNotice = () => {
+    clearTimeout(noticeTimer);
+    noticeTimer = undefined;
+    currentNotice = undefined;
+  };
+
+  const armNoticeClear = () => {
+    clearTimeout(noticeTimer);
+    if (!currentNotice) return;
+    noticeTimer = setTimeout(() => {
+      currentNotice = undefined;
+      if (!exitRequested) present();
+    }, options.successNoticeDuration ?? 1800);
+    noticeTimer.unref?.();
+  };
+
   const runMutation = (action, input = {}) => {
-    if (mutationBusy || exitRequested) return;
+    if (mutationBusy || exitRequested) {
+      if (mutationBusy && !exitRequested) present({ notice: currentActivity ?? '操作正在进行，请稍候…' });
+      return;
+    }
+    clearNotice();
     mutationBusy = true;
     operationAbort = new AbortController();
     currentActivity = ACTIVITY_TEXT[action] ?? '正在执行操作…';
@@ -255,11 +290,13 @@ export async function runTray(home = stateHome(), options = {}) {
         if (result?.currentProjectRoot) currentProjectRoot = result.currentProjectRoot;
         currentStatus = await operations.status();
         currentProjectRoot = currentStatus?.currentProjectRoot ?? currentProjectRoot;
+        if (!result?.cancelled) currentNotice = SUCCESS_TEXT[action];
         process.stdout.write(`[Team DevSpace tray] ${action}: ${result?.cancelled ? 'cancelled' : 'complete'}\n`);
         return result;
       } catch (error) {
         if (exitRequested && error.name === 'AbortError') return null;
         if (!exitRequested) { try { currentStatus = await operations.status(); } catch {} }
+        clearNotice();
         alert = actionError(action, error);
         process.stderr.write(`[Team DevSpace tray] ${action}: ${alert}\n`);
         return null;
@@ -270,6 +307,7 @@ export async function runTray(home = stateHome(), options = {}) {
           currentActivity = undefined;
           generation++;
           present(alert ? { alert } : undefined);
+          if (!alert) armNoticeClear();
         }
       }
     })();
@@ -292,6 +330,7 @@ export async function runTray(home = stateHome(), options = {}) {
         exiting = true;
         clearInterval(interval);
         clearTimeout(diagnosticsTimer);
+        clearTimeout(noticeTimer);
         currentActivity = '本地服务已停止，正在退出…';
         present();
         child.stdin.end();
@@ -364,6 +403,7 @@ export async function runTray(home = stateHome(), options = {}) {
   });
   clearInterval(interval);
   clearTimeout(diagnosticsTimer);
+  clearTimeout(noticeTimer);
   clearTimeout(shutdownTimer);
   operationAbort?.abort();
   await mutationPromise;

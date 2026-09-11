@@ -72,24 +72,76 @@ VERSIONS="$ROOT/versions"
 STAGING="$ROOT/staging"
 CACHE="$ROOT/cache/sha256"
 ACTIVE="$ROOT/active-path"
-mkdir -p "$VERSIONS" "$STAGING" "$CACHE"
-# POSIX mkdir is atomic on both macOS and Linux. Never run activation/cache GC
-# concurrently. Traps release this lock; SIGKILL recovery fails closed with a
-# diagnostic rather than stealing a potentially live installer's lock.
+OWNER_MARKER="$ROOT/.team-devspace-distribution"
+OWNER_VALUE='team-devspace-distribution-v1'
 LOCK="$ROOT/install.lock"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "Another installer may be active. Lock: $LOCK (owner PID: $(cat "$LOCK/pid" 2>/dev/null || echo unknown)). If no installer is running, remove this stale lock directory and retry." >&2
-  exit 1
+
+legacy_owned_root() {
+  [ -f "$ACTIVE" ] && [ -d "$VERSIONS" ] || return 1
+  value=$(sed -n '1p' "$ACTIVE" 2>/dev/null || true)
+  case "$value" in "$VERSIONS"/*) return 0 ;; *) return 1 ;; esac
+}
+owned_root() {
+  [ -f "$OWNER_MARKER" ] && [ "$(sed -n '1p' "$OWNER_MARKER" 2>/dev/null || true)" = "$OWNER_VALUE" ] && return 0
+  legacy_owned_root
+}
+assert_distribution_root() {
+  [ ! -L "$ROOT" ] || { echo "Distribution root must not be a symlink: $ROOT" >&2; exit 2; }
+  [ ! -e "$ROOT" ] || [ -d "$ROOT" ] || { echo "Distribution root is not a directory: $ROOT" >&2; exit 2; }
+  if [ -d "$ROOT" ] && ! owned_root && [ -n "$(ls -A "$ROOT" 2>/dev/null)" ]; then
+    echo "Refusing to install into a non-empty directory not owned by Team DevSpace: $ROOT" >&2
+    exit 2
+  fi
+  mkdir -p "$ROOT"
+  marker_tmp="$OWNER_MARKER.$$.tmp"
+  printf '%s\n' "$OWNER_VALUE" > "$marker_tmp"
+  chmod 600 "$marker_tmp"
+  mv "$marker_tmp" "$OWNER_MARKER"
+}
+
+if [ "$MODE" = uninstall ]; then
+  [ -e "$ROOT" ] || exit 0
+  [ ! -L "$ROOT" ] || { echo "Refusing to uninstall through a symlinked distribution root: $ROOT" >&2; exit 2; }
+  owned_root || { echo "Refusing to uninstall an unowned distribution directory: $ROOT" >&2; exit 2; }
+else
+  assert_distribution_root
+  mkdir -p "$VERSIONS" "$STAGING" "$CACHE"
 fi
-printf '%s\n' "$$" > "$LOCK/pid"
+
+# POSIX mkdir is atomic on both macOS and Linux. A killed installer can leave a
+# lock directory behind; reclaim it only when it contains a numeric PID that no
+# longer exists. Missing/invalid ownership metadata remains fail-closed.
+acquire_install_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then printf '%s\n' "$$" > "$LOCK/pid"; return 0; fi
+  owner_pid=$(sed -n '1p' "$LOCK/pid" 2>/dev/null || true)
+  case "$owner_pid" in
+    ''|*[!0-9]*)
+      echo "Another installer may be active. Lock has a missing or invalid owner PID: $LOCK" >&2
+      return 1
+      ;;
+  esac
+  if kill -0 "$owner_pid" 2>/dev/null || ps -p "$owner_pid" >/dev/null 2>&1; then
+    echo "Another installer is active. Lock: $LOCK (owner PID: $owner_pid)." >&2
+    return 1
+  fi
+  echo "Reclaiming stale installer lock from exited PID $owner_pid." >&2
+  rm -rf "$LOCK"
+  if mkdir "$LOCK" 2>/dev/null; then printf '%s\n' "$$" > "$LOCK/pid"; return 0; fi
+  echo "Another installer acquired the lock while stale-lock recovery was in progress: $LOCK" >&2
+  return 1
+}
+acquire_install_lock || exit 1
 components_file=''
 stage=''
 partial=''
+remove_root_on_exit=0
 cleanup() {
   [ -z "$components_file" ] || rm -f "$components_file"
   [ -z "$partial" ] || rm -f "$partial"
   [ -z "$stage" ] || rm -rf "$stage"
   rm -rf "$LOCK"
+  [ "$remove_root_on_exit" = 1 ] || return 0
+  rmdir "$ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -139,6 +191,51 @@ remove_linux_cli() {
   if [ -L "$CLI_LINK" ] && [ "$(readlink "$CLI_LINK" 2>/dev/null || true)" = "$STABLE_CLI" ]; then rm -f "$CLI_LINK"; fi
 }
 
+remove_native_startup_fallback() {
+  case "$TARGET" in
+    darwin-*)
+      domain="gui/$(id -u)"
+      directory="$HOME/Library/LaunchAgents"
+      fallback_home="${TEAM_DEVSPACE_HOME:-$HOME/Library/Application Support/TeamDevSpace}"
+      for component in runtime tunnel tray; do
+        label="com.teamdevspace.$component"
+        plist="$directory/$label.plist"
+        [ -f "$plist" ] && /usr/bin/grep -F "$fallback_home" "$plist" >/dev/null 2>&1 || continue
+        /bin/launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
+        /bin/launchctl print "$domain/$label" >/dev/null 2>&1 && return 1
+        rm -f "$plist"
+      done
+      ;;
+    linux-*)
+      for component in runtime tunnel; do
+        [ ! -f "$STATE_HOME/startup/$component.standalone.json" ] || {
+          echo 'Standalone startup still exists; re-run the installer to repair before uninstalling.' >&2
+          return 1
+        }
+      done
+      directory="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+      for unit in team-devspace-runtime.service team-devspace-tunnel.service; do
+        unit_file="$directory/$unit"
+        [ -f "$unit_file" ] && grep -F "$STATE_HOME" "$unit_file" >/dev/null 2>&1 || continue
+        command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 || {
+          echo 'systemd user manager is unavailable; re-run the installer to repair before uninstalling.' >&2
+          return 1
+        }
+        systemctl --user stop "$unit" >/dev/null 2>&1 || true
+        systemctl --user is-active --quiet "$unit" && return 1
+        systemctl --user disable "$unit" >/dev/null 2>&1 || true
+        rm -f "$unit_file"
+      done
+      command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+remove_distribution_payload() {
+  rm -rf "$VERSIONS" "$STAGING" "$ROOT/cache" "$ROOT/bin"
+  rm -f "$ACTIVE" "$ROOT/previous-path" "$ROOT/state-home" "$ROOT/cli-directory" "$OWNER_MARKER"
+}
+
 restore_active() {
   if [ -n "$current" ]; then
     restore_tmp="$ACTIVE.$$.restore"
@@ -173,9 +270,15 @@ rollback_candidate() {
 
 if [ "$MODE" = uninstall ]; then
   current=$(active_path || true)
-  [ -z "$current" ] || invoke_client "$current" uninstall
+  if [ -n "$current" ] && invoke_client "$current" uninstall; then
+    :
+  else
+    echo 'Installed client uninstall failed; using native startup cleanup fallback.' >&2
+    remove_native_startup_fallback
+  fi
   remove_linux_cli
-  rm -rf "$ROOT"
+  remove_distribution_payload
+  remove_root_on_exit=1
   exit 0
 fi
 

@@ -73,6 +73,8 @@ struct TrayState {
     #[serde(default)]
     activity: Option<String>,
     #[serde(default)]
+    notice: Option<String>,
+    #[serde(default)]
     alert: Option<String>,
 }
 
@@ -96,6 +98,7 @@ impl Default for TrayState {
             diagnostics_text: "复制诊断信息".into(),
             exit_enabled: true,
             activity: None,
+            notice: None,
             alert: None,
         }
     }
@@ -121,6 +124,7 @@ struct Application {
     repair: MenuItem,
     logs: MenuItem,
     diagnostics: MenuItem,
+    about: MenuItem,
     exit: MenuItem,
     state: TrayState,
 }
@@ -145,7 +149,7 @@ fn bounded_text(value: &str, max_chars: usize) -> String {
 }
 
 fn menu_status_text(state: &TrayState) -> String {
-    bounded_text(state.activity.as_deref().unwrap_or(&state.summary), 36)
+    bounded_text(state.activity.as_deref().or(state.notice.as_deref()).unwrap_or(&state.summary), 36)
 }
 
 fn set_pixel(rgba: &mut [u8], x: i32, y: i32, rgb: [u8; 3]) {
@@ -238,13 +242,25 @@ fn icon(status: &str) -> Icon {
 }
 
 #[cfg(target_os = "windows")]
-fn show_error_alert(message: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND};
+fn show_message_box(message: &str, error: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND};
     let title = "Team DevSpace\0".encode_utf16().collect::<Vec<_>>();
     let text = format!("{message}\0").encode_utf16().collect::<Vec<_>>();
+    let icon = if error { MB_ICONERROR } else { MB_ICONINFORMATION };
     unsafe {
-        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | icon | MB_SETFOREGROUND);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn show_about() {
+    let app_version = option_env!("TEAM_DEVSPACE_APP_VERSION").unwrap_or("dev");
+    let devspace_version = option_env!("TEAM_DEVSPACE_DEVSPACE_VERSION").unwrap_or("unknown");
+    let author = option_env!("TEAM_DEVSPACE_AUTHOR_NAME").unwrap_or("");
+    let email = option_env!("TEAM_DEVSPACE_AUTHOR_EMAIL").unwrap_or("");
+    show_message_box(&format!(
+        "Team DevSpace\n\n版本：{app_version}\nDevSpace：{devspace_version}\n\n作者：{author} ({email})"
+    ), false);
 }
 
 impl Application {
@@ -262,6 +278,7 @@ impl Application {
             repair: MenuItem::new("修复连接", false, None),
             logs: MenuItem::new("打开日志", true, None),
             diagnostics: MenuItem::new("复制诊断信息", true, None),
+            about: MenuItem::new("关于 Team DevSpace", true, None),
             exit: MenuItem::new("关闭并退出 Team DevSpace", true, None),
             state: TrayState::default(),
         }
@@ -292,6 +309,7 @@ impl Application {
             &second_separator,
             &self.troubleshooting,
             &third_separator,
+            &self.about,
             &self.exit,
         ]).expect("create tray menu");
         TrayIconBuilder::new()
@@ -326,7 +344,7 @@ impl Application {
         let alert = state.alert.take();
         self.state = state;
         if let Some(message) = alert {
-            show_error_alert(&bounded_text(&message, 220));
+            show_message_box(&bounded_text(&message, 220), true);
         }
     }
 
@@ -339,6 +357,7 @@ impl Application {
         } else if id == self.repair.id() { Some("repair".into())
         } else if id == self.logs.id() { Some("logs".into())
         } else if id == self.diagnostics.id() { Some("diagnostics".into())
+        } else if id == self.about.id() { Some("about".into())
         } else if id == self.exit.id() { Some("exit".into())
         } else { None }
     }
@@ -364,6 +383,10 @@ impl ApplicationHandler<UserEvent> for Application {
             UserEvent::InputClosed => event_loop.exit(),
             UserEvent::Menu(id) => {
                 if let Some(action) = self.action(&id) {
+                    if action == "about" {
+                        show_about();
+                        return;
+                    }
                     // A user gesture starts the desktop action in our Node controller.
                     // Delegate foreground permission before its short-lived helper opens UI.
                     #[cfg(target_os = "windows")]

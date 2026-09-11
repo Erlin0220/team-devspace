@@ -105,9 +105,20 @@ if (!windowsBootstrap.includes("@('startup', 'install', '--runtime-root', [strin
     !windowsBootstrap.includes('Remove-KnownStartupEntries') || !windowsBootstrap.includes('Invoke-LegacyTaskCleanupIfNeeded') ||
     !windowsBootstrap.includes("[Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess") ||
     !windowsBootstrap.includes("Join-Path $env:SystemRoot 'Sysnative'") ||
+    !windowsBootstrap.includes("$elevatedSystemDirectory = Join-Path $env:SystemRoot 'System32'") ||
+    windowsBootstrap.includes("$cmd = Join-Path $nativeSystemDirectory 'cmd.exe'") ||
+    windowsBootstrap.includes("$cmd = Join-Path $elevatedSystemDirectory 'cmd.exe'") ||
+    !windowsBootstrap.includes("$elevatedPowerShell = Join-Path $elevatedSystemDirectory 'WindowsPowerShell\\v1.0\\powershell.exe'") ||
+    !windowsBootstrap.includes("'-WindowStyle', 'Hidden', '-EncodedCommand'") ||
     !windowsBootstrap.includes("New-Object -ComObject 'Schedule.Service'") ||
     !windowsBootstrap.includes('GetSecurityDescriptor(1)') ||
-    !windowsBootstrap.includes("Start-Process -FilePath $cmd -Verb RunAs") ||
+    !windowsBootstrap.includes("Start-Process -FilePath $elevatedPowerShell -Verb RunAs") ||
+    !windowsBootstrap.includes('-WindowStyle Hidden -Wait -PassThru') ||
+    !windowsBootstrap.includes("Join-Path $directory 'git.exe'") || !windowsBootstrap.includes("'bin\\bash.exe'") ||
+    windowsBootstrap.includes('return -not (Get-Command git.exe -ErrorAction SilentlyContinue)') ||
+    !windowsBootstrap.includes("$recovery = 'candidate startup was removed'") ||
+    !windowsBootstrap.includes("$recovery = 'previous version was restored'") ||
+    !windowsBootstrap.includes('Local activation pointer update failed; ${recovery}') ||
     !windowsBootstrap.includes('exit 10') || !windowsBootstrap.includes('onboarding-message.txt') ||
     !windowsInstaller.includes('$ResultCode == 10') || !windowsInstaller.includes('$SetupMessage') ||
     !windowsInstaller.includes('File /r "${OFFLINE_OBJECTS}\\*.*"') ||
@@ -134,9 +145,13 @@ if (!clientState.includes('currentProjectRoot') || !clientState.includes('allowe
 if (!unixBootstrap.includes('invoke_client "$candidate" uninstall') ||
     !unixBootstrap.includes('invoke_client "$candidate" startup install --runtime-root "$current"') ||
     !unixBootstrap.includes('candidate startup cleanup and previous startup restoration both failed') ||
+    !unixBootstrap.includes('OWNER_MARKER="$ROOT/.team-devspace-distribution"') ||
+    !unixBootstrap.includes('remove_distribution_payload') || unixBootstrap.includes('rm -rf "$ROOT"') ||
+    !unixBootstrap.includes('kill -0 "$owner_pid"') || !unixBootstrap.includes('Reclaiming stale installer lock') ||
+    !unixBootstrap.includes('remove_native_startup_fallback') ||
     !unixBootstrap.includes('/usr/sbin/sysctl -n hw.optional.arm64') ||
     !unixBootstrap.includes('machine=$MACHINE_ARCH')) {
-  throw new Error('Unix bootstrap must restore failed candidates and detect Apple Silicon by hardware rather than Rosetta process architecture');
+  throw new Error('Unix bootstrap must keep rollback, owned-root uninstall, stale-lock recovery, damaged-client cleanup and native Apple Silicon detection');
 }
 if (macosPreinstall.includes('cli.mjs" stop') || !macosPreinstall.includes('/usr/bin/ditto')) {
   throw new Error('macOS preinstall must preserve a recoverable legacy copy without stopping the active user session');
@@ -185,6 +200,8 @@ if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptanc
   throw new Error('Full platform acceptance must remain available as an explicit local/manual diagnostic even though thin macOS packaging does not run it');
 }
 if (!macUiMain.includes('NSStatusBar.system.statusItem') || !macUiMain.includes('TeamDevSpaceTemplate') ||
+    !packageScript.includes("platform/macos/team-devspace-template.png") ||
+    !packageScript.includes("platform/macos/devspace-logo-light.png") ||
     !macUiMain.includes('image.isTemplate = true') || macUiMain.includes('systemSymbolName: symbol') ||
     !macUiMain.includes('NSSecureTextField') || !macUiMain.includes('NSOpenPanel') ||
     !macUiMain.includes('flock(descriptor') || !macUiMain.includes('validInstanceID') ||

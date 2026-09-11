@@ -35,11 +35,12 @@ test('macOS form ignores duplicate submissions while the transaction is pending'
   assert.equal(calls, 1);
 });
 
-test('closing an idle form or encountering another form never submits a credential', { timeout: 10000 }, async () => {
-  for (const scenario of ['cancel', 'duplicate']) {
-    const result = await runMacForm({ ...options(scenario), submit: () => assert.fail('must not submit') });
-    assert.equal(result.cancelled, true);
-  }
+test('closing an idle form cancels, while a duplicate form reports an actionable visible error', { timeout: 10000 }, async () => {
+  const cancelled = await runMacForm({ ...options('cancel'), submit: () => assert.fail('must not submit') });
+  assert.equal(cancelled.cancelled, true);
+  await assert.rejects(
+    runMacForm({ ...options('duplicate'), submit: () => assert.fail('must not submit') }),
+    error => error.code === 'ui_already_open' && /已经打开/.test(error.message));
 });
 
 test('closing during enrollment waits for the transaction, not just the native process', { timeout: 10000 }, async () => {
@@ -111,8 +112,9 @@ test('macOS launcher surfaces the existing tray before bootstrap work', async ()
   assert.match(launch, /release-manifest\.json/);
 });
 
-test('macOS packaging uses the Team DevSpace brand for app and menu bar icons', async () => {
+test('macOS packaging uses separate Team DevSpace assets for app and menu bar icons', async () => {
   await access('platform/macos/devspace-logo-light.png');
+  await access('platform/macos/team-devspace-template.png');
   const [swift, packaging] = await Promise.all([
     readFile('native/macos/TeamDevSpaceUI.swift', 'utf8'),
     readFile('scripts/package.mjs', 'utf8'),
@@ -121,7 +123,18 @@ test('macOS packaging uses the Team DevSpace brand for app and menu bar icons', 
   assert.doesNotMatch(swift, /systemSymbolName:\s*symbol/);
   assert.match(packaging, /CFBundleIconFile/);
   assert.match(packaging, /TeamDevSpace\.icns/);
+  assert.match(packaging, /team-devspace-template\.png/);
   assert.match(packaging, /TeamDevSpaceTemplate\.png/);
+});
+
+test('macOS menu bar keeps lifecycle feedback visible after the menu closes and About uses packaged metadata', async () => {
+  const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
+  assert.match(swift, /NSStatusItem\.variableLength/);
+  assert.match(swift, /button(?:\?)?\.title\s*=/);
+  assert.match(swift, /state\.activity\s*\?\?\s*state\.notice/);
+  assert.match(swift, /TeamDevSpaceAuthorName/);
+  assert.match(swift, /TeamDevSpaceAuthorEmail/);
+  assert.match(swift, /TeamDevSpaceDevSpaceVersion/);
 });
 
 test('macOS presentation reuses lifecycle facts and redacts credentials', () => {

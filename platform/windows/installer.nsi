@@ -220,10 +220,14 @@ Section "Install"
       FileClose $0
     setup_message_ready:
   ${ElseIf} $ResultCode != 0
+    FileOpen $0 "$INSTDIR\bootstrap-launch-error.log" w
+    FileWrite $0 "Bootstrap process result: $ResultCode$\r$\n"
+    FileClose $0
     SetErrorLevel 4
     MessageBox MB_OK|MB_ICONEXCLAMATION "Local Team DevSpace installation failed before activation. The previous installed version and Enrollment were retained. Re-run this trusted installer." /SD IDOK
     Abort
   ${EndIf}
+  Delete "$INSTDIR\bootstrap-launch-error.log"
 
   WriteRegStr HKCU "${PRODUCT_KEY}" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "Team DevSpace"
@@ -261,6 +265,10 @@ Section "Uninstall"
   Delete "$INSTDIR\active.json"
   Delete "$INSTDIR\distribution.lock"
   Delete "$INSTDIR\release-manifest.json"
+  Delete "$INSTDIR\bootstrap-error.log"
+  Delete "$INSTDIR\bootstrap-launch-error.log"
+  Delete "$INSTDIR\onboarding-error.log"
+  Delete "$INSTDIR\onboarding-message.txt"
   Delete "$INSTDIR\bootstrap.ps1"
   Delete "$INSTDIR\command.ps1"
   Delete "$INSTDIR\repair.cmd"

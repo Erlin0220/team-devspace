@@ -22,6 +22,7 @@ struct TrayState: Decodable {
     let diagnosticsText: String
     let exitEnabled: Bool
     let activity: String?
+    let notice: String?
     let alert: String?
 }
 
@@ -174,10 +175,19 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         setIcon("stopped", summary: "正在启动…")
     }
 
-    private func setIcon(_ status: String, summary: String) {
-        statusItem?.button?.image = statusIcon
-        statusItem?.button?.toolTip = "Team DevSpace：\(summary)"
-        statusItem?.button?.setAccessibilityLabel("Team DevSpace：\(summary)")
+    private func setIcon(_ status: String, summary: String, showText: Bool = false) {
+        guard let item = statusItem, let button = item.button else { return }
+        button.image = statusIcon
+        button.imagePosition = .imageLeading
+        if showText {
+            item.length = NSStatusItem.variableLength
+            button.title = " \(summary)"
+        } else {
+            button.title = ""
+            item.length = NSStatusItem.squareLength
+        }
+        button.toolTip = "Team DevSpace：\(summary)"
+        button.setAccessibilityLabel("Team DevSpace：\(summary)")
     }
 
     private func receive(_ data: Data) {
@@ -220,7 +230,8 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func apply(_ state: TrayState) {
-        let summary = String((state.activity ?? state.summary).prefix(64))
+        let visibleFeedback = state.activity ?? state.notice
+        let summary = String((visibleFeedback ?? state.summary).prefix(64))
         items["status"]?.title = summary
         items["remote"]?.title = state.remoteText
         items["remote"]?.representedObject = state.remoteAction
@@ -236,7 +247,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         items["diagnostics"]?.title = state.diagnosticsText
         items["diagnostics"]?.isEnabled = state.diagnosticsEnabled
         items["exit"]?.isEnabled = state.exitEnabled
-        setIcon(state.status, summary: summary)
+        setIcon(state.status, summary: summary, showText: visibleFeedback != nil)
         if let message = state.alert {
             let alert = NSAlert()
             alert.messageText = "操作未完成"
@@ -251,11 +262,21 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func menuAction(_ sender: NSMenuItem) {
         guard let action = sender.representedObject as? String else { return }
         if action == "about" {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Team DevSpace"])
+            showAbout()
         } else if action == "project-root" {
             chooseProjectRootFromTray()
         } else if action != "status" && action != "project" { emit("menu", ["action": action]) }
+    }
+
+    private func showAbout() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let devspaceVersion = info["TeamDevSpaceDevSpaceVersion"] as? String ?? "未知"
+        let authorName = info["TeamDevSpaceAuthorName"] as? String ?? ""
+        let authorEmail = info["TeamDevSpaceAuthorEmail"] as? String ?? ""
+        let author = authorName.isEmpty ? "" : "作者：\(authorName)" + (authorEmail.isEmpty ? "" : " (\(authorEmail))")
+        let credits = NSAttributedString(string: ["DevSpace \(devspaceVersion)", author].filter { !$0.isEmpty }.joined(separator: "\n"))
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Team DevSpace", .credits: credits])
     }
 
     private func chooseProjectRootFromTray() {
