@@ -81,7 +81,10 @@ for (const target of targets) {
     assert.equal(upstream.version, release.devspaceVersion);
     if (process.platform === 'darwin') {
       const macho = process.arch === 'x64' ? 'x86_64' : 'arm64';
-      for (const path of executable) await run('/usr/bin/lipo', ['-verify_arch', macho, join(installed, path)], { capture: true });
+      for (const path of executable) {
+        const archs = (await run('/usr/bin/lipo', ['-archs', join(installed, path)], { capture: true })).stdout.trim().split(/\s+/);
+        assert.ok(archs.includes(macho), `Installed Mach-O architecture mismatch: ${path} -> ${archs.join(' ')}`);
+      }
       await access(join(installed, 'node_modules/node-pty/prebuilds', target, 'spawn-helper'), 1);
     }
     console.log(JSON.stringify({ installedPayload: true, target, filesMatched: files.length,
