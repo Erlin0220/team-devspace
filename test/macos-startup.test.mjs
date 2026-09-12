@@ -9,6 +9,7 @@ import { join } from 'node:path';
 const exec = promisify(execFile);
 const launch = await readFile('platform/macos/launch-app.sh', 'utf8');
 const bootstrap = await readFile('platform/unix/bootstrap.sh', 'utf8');
+const preinstall = await readFile('platform/macos/preinstall', 'utf8');
 const lockCode = launch.slice(launch.indexOf('acquire_launch_lock()'), launch.indexOf('trap cleanup_launch EXIT'));
 const rollbackStart = bootstrap.indexOf('rollback_candidate()');
 const rollbackCode = bootstrap.slice(rollbackStart, bootstrap.indexOf('\nif [ "$MODE" = uninstall ]', rollbackStart));
@@ -18,6 +19,36 @@ async function shell(t, code) {
   t.after(() => rm(cwd, { recursive: true, force: true }));
   return exec('bash', ['-c', `set -eu\n${code}`], { cwd, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '' } });
 }
+
+test('macOS package and payload guards allow Intel on Apple Silicon only with working Rosetta', async t => {
+  const preflight = preinstall.slice(preinstall.indexOf('if [ "$ARCH" = x86_64 ]'), preinstall.indexOf('\nMACOS_VERSION='));
+  const payload = bootstrap.slice(bootstrap.indexOf('[ "$schema" = 1 ]'), bootstrap.indexOf('\ncase "$release" in'));
+  for (const [machine, target, rosetta, accepted] of [
+    ['arm64', 'x64', 0, true], ['arm64', 'x64', 1, false],
+    ['x64', 'arm64', 0, false], ['arm64', 'arm64', 1, true], ['x64', 'x64', 1, true],
+  ]) {
+    for (const [kind, guard] of [['package', preflight], ['payload', payload]]) {
+      const run = shell(t, `
+ARCH=${machine}
+EXPECTED_ARCH=${target}
+TARGET=darwin-${machine}
+manifest_target=darwin-${target}
+MACHINE_ARCH=${machine}
+KERNEL_ARCH=${machine}
+SYSTEM_NAME=Darwin
+LOG=/dev/null
+schema=1
+trust=bootstrap-embedded-manifest
+log() { :; }
+rosetta_available() { return ${rosetta}; }
+${guard.replaceAll('/usr/bin/arch -x86_64 /usr/bin/true', 'rosetta_available')}
+printf accepted
+`);
+      if (accepted) assert.equal((await run).stdout, 'accepted', `${kind}: ${machine} -> ${target}`);
+      else await assert.rejects(run, { code: kind === 'package' ? 1 : 2 });
+    }
+  }
+});
 
 test('macOS launch lock never steals a live owner or a not-yet-published PID', async t => {
   for (const metadata of ['printf "%s\\n" "$$" > "$LAUNCH_LOCK/pid"', ':']) {

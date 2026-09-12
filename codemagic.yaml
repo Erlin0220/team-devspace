@@ -220,6 +220,16 @@ workflows:
           [[ "$cache_kb" -le 131072 ]]
           echo "Verified $checked Mach-O files for $TEAM_DEVSPACE_EXPECTED_MACHO_ARCH and macOS <= $minimum; native cache $((cache_kb / 1024)) MiB"
 
+      - name: Accept installed macOS package
+        script: |
+          set -euo pipefail
+          if [ "$TEAM_DEVSPACE_TARGET" = darwin-x64 ]; then
+            /usr/bin/arch -x86_64 "$TEAM_DEVSPACE_PACKAGE_NODE" scripts/platform-acceptance.mjs --system-macos-installer
+          else
+            node scripts/platform-acceptance.mjs --system-macos-installer
+          fi
+
     artifacts:
       - release/Team-DevSpace-*-macos-*.pkg
       - release/Team-DevSpace-*-macos-*.pkg.sha256
+      - release/offline/*/darwin-*/acceptance.json

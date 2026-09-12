@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -8,11 +9,24 @@ import { parseArgs } from 'node:util';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { execFileSync } from 'node:child_process';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const { values } = parseArgs({ options: { bundle: { type: 'string' } } });
 const bundle = resolve(values.bundle ?? `build/bundle-${process.platform}-${process.arch}`);
+// Test the SDK shipped with the runtime; a build-only root npm install must not
+// mask missing package dependencies or be required by a clean macOS builder.
+const require = createRequire(join(bundle, 'package.json'));
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+if (process.platform === 'darwin') {
+  for (const component of ['runtime', 'tunnel', 'tray']) {
+    const label = `com.teamdevspace.${component}`;
+    const plist = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    if (await access(plist).then(() => true, () => false)) throw new Error(`Refusing to replace an existing LaunchAgent: ${plist}`);
+    let loaded = false;
+    try { execFileSync('/bin/launchctl', ['print', `gui/${process.getuid()}/${label}`], { stdio: 'ignore' }); loaded = true; } catch {}
+    if (loaded) throw new Error(`Refusing to replace an existing loaded LaunchAgent: ${label}`);
+  }
+}
 const stateModule = await import(pathToFileURL(join(bundle, 'client', 'state.mjs')));
 const platform = await import(pathToFileURL(join(bundle, 'client', 'platform.mjs')));
 const home = await mkdtemp(join(tmpdir(), 'team-devspace-native-'));

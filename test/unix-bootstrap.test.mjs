@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import test from 'node:test';
+
+const exec = promisify(execFile);
+async function shell(t, code) {
+  const cwd = await mkdtemp(join(tmpdir(), 'tds-unix-lock-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  return exec('bash', ['-c', `set -eu\n${code}`], {
+    cwd, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '' },
+  });
+}
 
 const script = await readFile('platform/unix/bootstrap.sh', 'utf8');
 
@@ -17,6 +30,90 @@ test('Unix installer reclaims only a stale lock whose recorded PID is no longer 
   assert.match(script, /Reclaiming stale installer lock/);
   assert.match(script, /missing or invalid owner PID/,
     'A lock without trustworthy ownership metadata must remain fail-closed');
+});
+
+test('concurrent Unix stale-lock recovery cannot steal the newly acquired installer lock', async t => {
+  const lock = script.slice(script.indexOf('acquire_install_lock()'), script.indexOf('\nacquire_install_lock || exit 1'));
+  const { stdout } = await shell(t, `
+LOCK="$PWD/install.lock"
+mkdir "$LOCK"
+printf '2147483646\\n' > "$LOCK/pid"
+ps() {
+  if [ "\${RECLAIMER:-first}" = second ]; then
+    touch second-checked-dead-owner
+    while [ ! -f release-second ]; do sleep 0.02; done
+  fi
+  return 1
+}
+${lock}
+(
+  RECLAIMER=second
+  if acquire_install_lock; then printf stolen > result; else printf rejected > result; fi
+) &
+second=$!
+while [ ! -f second-checked-dead-owner ]; do sleep 0.02; done
+acquire_install_lock
+touch release-second
+wait "$second"
+test "$(cat result)" = rejected
+test "$(cat "$LOCK/pid")" = "$$"
+printf protected
+`);
+  assert.equal(stdout, 'protected');
+});
+
+test('Unix installer cleanup never removes a lock now owned by another installer', async t => {
+  const cleanup = script.slice(script.indexOf("components_file=''"), script.indexOf('\ntrap cleanup EXIT'));
+  const { stdout } = await shell(t, `
+LOCK="$PWD/install.lock"
+mkdir "$LOCK"
+printf '2147483646\\n' > "$LOCK/pid"
+${cleanup}
+cleanup
+test -f "$LOCK/pid"
+printf retained
+`);
+  assert.equal(stdout, 'retained');
+});
+
+test('macOS repair stops damaged installed code through the verified replacement client', async t => {
+  const stopStart = script.lastIndexOf('current=$(active_path || true)');
+  const stop = script.slice(stopStart, script.indexOf('\ncase "$SETUP" in', stopStart));
+  const { stdout } = await shell(t, `
+TARGET=darwin-arm64
+STATE_HOME="$PWD/state"
+candidate="$PWD/verified-candidate"
+mkdir -p "$STATE_HOME" "$candidate"
+printf '{}' > "$STATE_HOME/state.json"
+active_path() { printf '%s/old-broken-version' "$PWD"; }
+invoke_client() { [ "$1" = "$candidate" ] && [ "$2" = stop ]; }
+${stop}
+test -d "$candidate"
+printf repairable
+`);
+  assert.equal(stdout, 'repairable');
+});
+
+test('WSL source synchronization refuses home, unknown directories and foreign repositories without deleting them', async t => {
+  const helper = await readFile('scripts/linux-wsl.ps1', 'utf8');
+  const guard = helper.slice(helper.indexOf('# rsync --delete'), helper.indexOf('# Keep Linux-native dependencies'));
+  for (const setup of [
+    'WORK="$HOME"',
+    'WORK="$PWD/foreign"; mkdir "$WORK"',
+    'WORK="$PWD/foreign"; git init -q "$WORK"; git -C "$WORK" remote add origin "$PWD/another-source"',
+  ]) {
+    const { stdout } = await shell(t, `
+export HOME="$PWD/home"
+SOURCE="$PWD/source"
+mkdir -p "$HOME" "$SOURCE"
+${setup}
+printf retained > "$WORK/sentinel"
+if ( ${guard} ); then exit 9; fi
+test "$(cat "$WORK/sentinel")" = retained
+printf protected
+`);
+    assert.equal(stdout, 'protected');
+  }
 });
 
 test('Unix damaged-client uninstall has a native startup fallback', () => {

@@ -4,7 +4,7 @@
 
 单元/边界测试可以证明 D1 的绑定、凭据校验、流量路由和错误处理。原生启动测试可以证明本机运行和停止没有残留。**它们不能代替真实 Cloudflare Tunnel、真实 ChatGPT 工作空间以及另一台 Mac 的验证。**
 
-最终验收需要独立真实设备覆盖实际发布架构：至少一台 Windows，并分别用 Apple Silicon macOS 验收 `darwin-arm64`、Intel macOS 验收 `darwin-x64`。两个 macOS 候选 `.pkg` 共用 Codemagic workflow 构建，但 Apple Silicon 上通过 Rosetta 执行 x64 构建只能作为构建期证据，不能替代 Intel Mac 的最终安装和运行验收。用同一电脑启动多个测试进程只能作为开发测试。
+最终验收需要独立真实设备覆盖实际发布架构：至少一台 Windows，并分别用 Apple Silicon macOS 验收 `darwin-arm64`、Intel macOS 验收 `darwin-x64`。两个 macOS 候选 `.pkg` 共用 Codemagic workflow 构建。已有 Rosetta 且能够执行 x86_64 的 Apple Silicon 可以安装和运行 x64 包；安装器不会自动安装 Rosetta，ARM64 包仍不能安装到 Intel。Rosetta 上的安装运行证据不能替代 Intel Mac 的最终验收。用同一电脑启动多个测试进程只能作为开发测试。
 
 ## 无凭据的本地验证
 
@@ -25,7 +25,9 @@ npm run acceptance:linux:wsl
 
 Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，避免覆盖已安装的员工版本；它验证首次 Enrollment 503、Repair、覆盖升级、credential 恢复、损坏 payload 修复、A/B 版本回收、卸载和零测试 Task 残留。`test:native` 使用真实 Task Scheduler/runtime/MCP，并额外制造同一 `TEAM_DEVSPACE_HOME` 的未知旧 owner task 与另一 state home 的 foreign task：前者必须被迁移，后者必须保留。packaged Tray 会真实启动第二个进程，第二个进程必须在创建图标前被 OS single-instance guard 拒绝。
 
-显式运行 `acceptance:platform` 时仍会在 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。当前 Codemagic 快速打包**不会自动运行这条完整验收**，也不会调用系统级 `installer -pkg`；它只产出经过 release layout 与 Mach-O 兼容性检查的候选 `.pkg`。最终 `.pkg` 安装、Gatekeeper、LaunchAgent、菜单栏和 Enrollment 行为由同事在真实 Mac 上验证。
+显式运行 `acceptance:platform` 时仍会在 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。Codemagic workflow 在打包和 Mach-O 检查后调用 `scripts/platform-acceptance.mjs --system-macos-installer`，x64 使用 x64 Node/Rosetta 执行相同入口。该选项仅允许非 root 的 Codemagic 临时环境，且遇到既有 App、设备状态、CLI、安装收据或 LaunchAgent 会拒绝覆盖。测试通过系统 `installer -pkg` 安装真实包，再用安装后的 payload 验证原生 Runtime/MCP、LaunchAgent、菜单栏可见性、重复安装、损坏 CLI 修复、暂停与身份保留、卸载及测试文件清理；复用已有测试，不建立第二套运行时。
+
+普通 macOS `acceptance:platform` 仍只解包并测试内部 bootstrap，必须记录 `finalEntrypointTransaction: false`；发布验证拒绝这类证据，也拒绝缺少 `nativeStartup` 的 macOS 证据。配置了工作流不代表已经执行通过，应检查对应构建的 `acceptance.json`。系统安装测试跳过 postinstall 自动打开，改为显式通过 LaunchServices 打开 App；它不代替管理员授权弹窗、Gatekeeper、真实首次 Enrollment、员工登录/重启或最低支持系统版本的实机验收。保持 Codemagic Personal 免费 M2，不启用付费订阅、额外机器类型或其他 CI 服务。
 
 所有 native/installer smoke 都必须把自己的状态目录和启动项限定在测试作用域并在结束时清理。不要在真实员工设备的状态目录内改造测试夹具。
 

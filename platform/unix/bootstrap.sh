@@ -125,8 +125,20 @@ acquire_install_lock() {
     echo "Another installer is active. Lock: $LOCK (owner PID: $owner_pid)." >&2
     return 1
   fi
+  # Another stale reader may already have replaced this lock. Serialize reclaim
+  # and recheck ownership before removing anything; never recursively erase it.
+  mkdir "$LOCK/reclaim" 2>/dev/null || return 1
+  if [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null || true)" != "$owner_pid" ]; then
+    rmdir "$LOCK/reclaim" 2>/dev/null || true
+    return 1
+  fi
   echo "Reclaiming stale installer lock from exited PID $owner_pid." >&2
-  rm -rf "$LOCK"
+  retired_lock="$LOCK.reclaimed.$$"
+  if [ -e "$retired_lock" ] || ! mv "$LOCK" "$retired_lock"; then
+    rmdir "$LOCK/reclaim" 2>/dev/null || true
+    return 1
+  fi
+  rm -rf "$retired_lock"
   if mkdir "$LOCK" 2>/dev/null; then printf '%s\n' "$$" > "$LOCK/pid"; return 0; fi
   echo "Another installer acquired the lock while stale-lock recovery was in progress: $LOCK" >&2
   return 1
@@ -140,7 +152,10 @@ cleanup() {
   [ -z "$components_file" ] || rm -f "$components_file"
   [ -z "$partial" ] || rm -f "$partial"
   [ -z "$stage" ] || rm -rf "$stage"
-  rm -rf "$LOCK"
+  if [ "$(sed -n '1p' "$LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -f "$LOCK/pid"
+    rmdir "$LOCK" 2>/dev/null || true
+  fi
   [ "$remove_root_on_exit" = 1 ] || return 0
   rmdir "$ROOT" 2>/dev/null || true
 }
@@ -302,6 +317,10 @@ cloudflared_version=$(sed -n 's/^[[:space:]]*"cloudflaredVersion": "\([^"]*\)".*
 [ "$schema" = 1 ] && [ "$trust" = bootstrap-embedded-manifest ] || {
   echo "Invalid embedded release manifest contract (schema=${schema:-missing}, trust=${trust:-missing})." >&2; exit 2;
 }
+# Match the PKG preflight: keep native ARM as the default, but permit an explicit
+# Intel payload on Apple Silicon when the system can actually execute x86_64.
+if [ "$TARGET" = darwin-arm64 ] && [ "$manifest_target" = darwin-x64 ] &&
+   /usr/bin/arch -x86_64 /usr/bin/true >/dev/null 2>&1; then TARGET=darwin-x64; fi
 [ "$manifest_target" = "$TARGET" ] || {
   echo "Release manifest target ${manifest_target:-missing} does not match detected platform $TARGET (kernel=$SYSTEM_NAME-$KERNEL_ARCH, machine=$MACHINE_ARCH)." >&2; exit 2;
 }
@@ -386,8 +405,9 @@ mv "$stage" "$candidate"
 stage=''
 current=$(active_path || true)
 if [ -n "$current" ] && [ -f "$STATE_HOME/state.json" ]; then
-  case "$TARGET" in linux-*) stop_version="$candidate" ;; *) stop_version="$current" ;; esac
-  if ! invoke_client "$stop_version" stop; then
+  # Repair must not depend on executable files in the damaged installed tree.
+  # The verified candidate stops the same state-home-owned native services.
+  if ! invoke_client "$candidate" stop; then
     rm -rf "$candidate"
     if invoke_client "$current" start; then
       echo 'Current version could not be fully stopped; it was restarted and the upgrade was cancelled.' >&2

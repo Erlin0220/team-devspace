@@ -85,9 +85,11 @@ try {
   assert.equal((await readdir(join(root, 'versions'))).length, 1);
   assert.deepEqual(JSON.parse(await readFile(join(home, 'state.json'), 'utf8')), state);
   await rm(join(second, 'bin/cloudflared'));
+  await rm(join(second, 'client/cli.mjs'));
   await install();
   const repaired = await active();
   assert.ok(await exists(join(repaired, 'bin/cloudflared')));
+  assert.ok(await exists(join(repaired, 'client/cli.mjs')));
   const component = manifest.components.find(item => item.name === 'node');
   await rm(join(root, 'cache/sha256', component.sha256), { recursive: true, force: true });
   await writeFile(join(media, component.path), 'corrupt artifact');
@@ -106,7 +108,7 @@ try {
   assert.equal(await exists(join(root, '.team-devspace-distribution')), false);
   if (process.platform === 'linux') assert.equal(await exists(join(cliDir, 'team-devspace')), false);
   console.log(JSON.stringify({ passed: true, target, actualOfflinePackage: true, pathsWithSpaces: true,
-    nativeModulesFromInstalledTree: true, repair: true, failedRepairRetainsActive: true,
+    nativeModulesFromInstalledTree: true, repair: true, damagedInstalledCliRepair: true, failedRepairRetainsActive: true,
     retiredVersionsCollected: true, cacheGarbageCollected: true, staleInstallerLockRecovered: true,
     unownedRootProtected: true, damagedClientUninstallFallback: true, unknownRootFilesPreserved: true,
     stableLinuxCli: process.platform === 'linux', nativeLoginSessionTested: false }));

@@ -41,8 +41,23 @@ for command in bash curl git make python3 rsync sha256sum tar; do
   command -v "$command" >/dev/null || { echo "Missing WSL build dependency: $command" >&2; exit 2; }
 done
 
-if [ ! -d "$WORK/.git" ]; then
-  rm -rf "$WORK"
+# rsync --delete is safe only inside our source-bound disposable mirror.
+# Never remove a caller-selected directory to make room for a clone.
+[ ! -L "$WORK" ] || { echo 'The WSL build mirror must not be a symlink.' >&2; exit 2; }
+SOURCE=$(realpath -e "$SOURCE")
+WORK=$(realpath -m "$WORK")
+case "$WORK" in /|"$HOME"|"$SOURCE"|/mnt/*)
+  echo "Unsafe WSL build mirror: $WORK" >&2; exit 2 ;;
+esac
+case "$SOURCE/" in "$WORK/"*) echo 'The build mirror must not contain its source.' >&2; exit 2 ;; esac
+if [ -e "$WORK" ] && [ ! -d "$WORK/.git" ]; then
+  echo "Refusing to overwrite a directory not owned by this build mirror: $WORK" >&2
+  exit 2
+fi
+if [ -d "$WORK/.git" ]; then
+  origin=$(git -C "$WORK" remote get-url origin)
+  [ "$origin" = "$SOURCE" ] || { echo 'Refusing to synchronize a mirror belonging to another repository.' >&2; exit 2; }
+else
   git clone --quiet "$SOURCE" "$WORK"
 fi
 

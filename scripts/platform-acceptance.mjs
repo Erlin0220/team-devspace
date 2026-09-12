@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { access, writeFile } from 'node:fs/promises';
+import { access, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import release from '../release.config.json' with { type: 'json' };
@@ -7,6 +7,7 @@ import { sha256File } from './build-utils.mjs';
 
 const { values } = parseArgs({ options: {
   'direct-windows-installer': { type: 'boolean' },
+  'system-macos-installer': { type: 'boolean' },
   output: { type: 'string' },
 } });
 const target = `${process.platform}-${process.arch}`;
@@ -14,6 +15,10 @@ if (!release.distribution.targets.includes(target)) throw new Error(`Current pla
 const directWindowsInstaller = Boolean(values['direct-windows-installer']) || process.env.TEAM_DEVSPACE_FINAL_WINDOWS_INSTALLER === '1';
 if (directWindowsInstaller && process.platform !== 'win32') throw new Error('Direct final-installer acceptance is Windows-only');
 if (directWindowsInstaller && process.env.CI !== 'true') throw new Error('Direct final-installer acceptance is reserved for an isolated CI runner');
+const systemMacosInstaller = Boolean(values['system-macos-installer']);
+if (systemMacosInstaller && (process.platform !== 'darwin' || process.env.CI !== 'true' || !process.env.CM_BUILD_ID)) {
+  throw new Error('System macOS acceptance is reserved for a disposable Codemagic runner');
+}
 
 function runNode(script, args = []) {
   return new Promise((resolveRun, reject) => {
@@ -27,6 +32,9 @@ function runNode(script, args = []) {
 }
 
 const directory = resolve('release', 'offline', release.version, target);
+const output = resolve(values.output ?? join(directory, 'acceptance.json'));
+// A failed rerun must not leave a previous green report eligible for publishing.
+await rm(output, { force: true });
 await runNode('scripts/verify-release.mjs', ['--target', target]);
 
 const entrypoint = process.platform === 'win32'
@@ -48,13 +56,14 @@ if (desktopTray) {
   await runNode('scripts/tray-smoke.mjs', [packagedTray]);
 }
 
-const nativeStartup = ['win32-x64', 'linux-x64'].includes(target);
-if (nativeStartup) await runNode('scripts/native-smoke.mjs');
+const nativeStartup = ['win32-x64', 'linux-x64'].includes(target) || systemMacosInstaller;
+if (nativeStartup && !systemMacosInstaller) await runNode('scripts/native-smoke.mjs');
 
 if (process.platform === 'win32') {
   await runNode('scripts/installer-smoke.mjs', directWindowsInstaller ? ['--installer', entrypoint, '--direct'] : ['--installer', entrypoint]);
 } else {
   await runNode('scripts/unix-installer-smoke.mjs');
+  if (systemMacosInstaller) await runNode('scripts/macos-package-smoke.mjs');
 }
 
 let commit;
@@ -75,16 +84,19 @@ const evidence = {
   checks: {
     releaseLayout: true,
     installerTransaction: true,
-    finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller : true,
+    finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller
+      : process.platform === 'darwin' ? systemMacosInstaller : true,
     trayProtocol: desktopTray,
     traySingleInstance: desktopTray,
     nativeStartup,
     zeroResidue: true,
   },
   limitations: process.platform === 'darwin'
-    ? ['Automated/native test hosts do not substitute for a real employee LaunchAgent login session; final macOS installation, menu-bar behavior and Enrollment are validated on an employee Mac.']
+    ? [systemMacosInstaller
+      ? 'System PKG installation, installed runtime and LaunchAgent/menu-bar lifecycle were tested on a disposable build Mac; real employee login, Gatekeeper approval and administrator dialogs remain manual.'
+      : 'Only PKG extraction and internal bootstrap transactions were tested, not system PKG installation or a LaunchAgent login session.',
+      ...(process.arch === 'x64' ? ['An x64 process may run under Rosetta; this is not proof of Intel hardware compatibility.'] : [])]
     : [],
 };
-const output = resolve(values.output ?? join(directory, 'acceptance.json'));
 await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify({ acceptance: true, target, output, checks: evidence.checks }));

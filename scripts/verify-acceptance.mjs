@@ -36,7 +36,8 @@ for (const target of release.distribution.targets) {
   } else if (target.startsWith('darwin-')) {
     assert.equal(evidence.checks.trayProtocol, true, 'macOS native tray protocol was not accepted');
     assert.equal(evidence.checks.traySingleInstance, true, 'macOS tray single-instance invariant was not accepted');
-    assert.equal(evidence.checks.finalEntrypointTransaction, true, 'The final macOS PKG was not exercised');
+    assert.equal(evidence.checks.finalEntrypointTransaction, true, 'The final macOS PKG was not installed through the system installer');
+    assert.equal(evidence.checks.nativeStartup, true, 'macOS installed LaunchAgent/runtime lifecycle was not accepted');
   } else if (target === 'linux-x64') {
     assert.equal(evidence.checks.nativeStartup, true, 'Linux systemd user lifecycle was not accepted');
     assert.equal(evidence.checks.finalEntrypointTransaction, true, 'The final Linux archive was not exercised');
