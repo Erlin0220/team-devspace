@@ -12,7 +12,7 @@ import { approvedProjectRoot, atomicJson, loadState, normalizeGateway, randomSec
 import { changeProjectRoot, configureDevice, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
 import { trayState } from '../client/tray.mjs';
 import { createAccessKey } from '../client/admin.mjs';
-import { launchAgentXml, removeWindowsTask, systemdUserUnit, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
+import { launchAgentXml, removeWindowsTask, systemdUserUnit, waitForMacJobsUnloaded, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
 import { diagnosticReport, localPauseServiceAction, openLogs, resumeRemoteAccess, rollbackResumeFailure, stopTeamDevSpace, suspendRemoteAccess } from '../client/control.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
@@ -550,6 +550,32 @@ test('Windows task removal retries a transient delete failure before surfacing a
     throw new Error(`Unexpected command: ${args.join(' ')}`);
   } });
   assert.equal(deletes, 2);
+});
+
+test('macOS lifecycle waits for launchd to finish unregistering a stopped job before restart', async () => {
+  let prints = 0;
+  let waits = 0;
+  await waitForMacJobsUnloaded('gui/501', ['com.teamdevspace.runtime'], {
+    attempts: 4,
+    wait: async () => { waits++; },
+    runNative: async (command, args, allowMissing) => {
+      assert.equal(command, 'launchctl');
+      assert.deepEqual(args, ['print', 'gui/501/com.teamdevspace.runtime']);
+      assert.equal(allowMissing, true);
+      prints++;
+      return prints < 3 ? { stdout: 'transitional launchd job' } : null;
+    },
+  });
+  assert.equal(prints, 3);
+  assert.equal(waits, 2);
+});
+
+test('macOS lifecycle fails closed if launchd never unregisters the stopped job', async () => {
+  await assert.rejects(waitForMacJobsUnloaded('gui/501', ['com.teamdevspace.runtime'], {
+    attempts: 3,
+    wait: async () => {},
+    runNative: async () => ({ stdout: 'still loaded' }),
+  }), /launchd still owns stopped Team DevSpace jobs/);
 });
 
 test('Windows task removal never hides a persistent delete or permission failure', async () => {

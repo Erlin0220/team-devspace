@@ -205,6 +205,20 @@ export async function removeWindowsTask(label, { runNative = native, wait = slee
   throw lastError;
 }
 
+export async function waitForMacJobsUnloaded(domain, labels, { runNative = native, wait = sleep, attempts = 100 } = {}) {
+  const pending = [...new Set(labels)];
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const loaded = [];
+    for (const label of pending) {
+      if (await runNative('launchctl', ['print', `${domain}/${label}`], true)) loaded.push(label);
+    }
+    if (!loaded.length) return;
+    pending.splice(0, pending.length, ...loaded);
+    if (attempt + 1 < attempts) await wait(100);
+  }
+  throw new Error(`launchd still owns stopped Team DevSpace jobs: ${pending.join(', ')}`);
+}
+
 export async function installServices(state, home = stateHome(), root = installRoot, scope = STARTUP_COMPONENTS) {
   const pendingMacTrayOnly = process.platform === 'darwin' && scope.length === 1 && scope[0] === 'tray';
   if (!state.bindingId && !pendingMacTrayOnly) throw new Error('Enrollment is required before installing startup entries');
@@ -257,7 +271,10 @@ export async function installServices(state, home = stateHome(), root = installR
         reloaded.push(component);
       }
     }
-    if (reloaded.length) await waitForStopped(state, reloaded);
+    if (reloaded.length) {
+      await waitForMacJobsUnloaded(domain, reloaded.map(component => serviceLabel(state, component)));
+      await waitForStopped(state, reloaded);
+    }
     for (const component of components) {
       const label = serviceLabel(state, component);
       const target = join(directory, `${label}.plist`);
@@ -345,6 +362,8 @@ export async function serviceAction(action, state, home = stateHome(), component
     ? await macOwnedLegacyLabels(home, components) : [];
   const linuxOwned = process.platform === 'linux' && action !== 'start'
     ? await linuxOwnedLegacyUnits(home, components) : [];
+  const macDomain = process.platform === 'darwin' ? `gui/${process.getuid()}` : null;
+  const macBootedOut = [];
   for (const component of ordered) {
     const label = serviceLabel(state, component);
     if (process.platform === 'win32') {
@@ -366,18 +385,18 @@ export async function serviceAction(action, state, home = stateHome(), component
         }
       }
     } else if (process.platform === 'darwin') {
-      const domain = `gui/${process.getuid()}`;
       const directory = join(homedir(), 'Library', 'LaunchAgents');
       const plist = join(directory, `${label}.plist`);
       if (action === 'start') {
-        const existing = await native('launchctl', ['print', `${domain}/${label}`], true);
-        if (!existing) await native('launchctl', ['bootstrap', domain, plist]);
-        await native('launchctl', ['kickstart', `${domain}/${label}`]);
+        const existing = await native('launchctl', ['print', `${macDomain}/${label}`], true);
+        if (!existing) await native('launchctl', ['bootstrap', macDomain, plist]);
+        await native('launchctl', ['kickstart', `${macDomain}/${label}`]);
       } else {
         const labels = [...new Set([label, legacyServiceLabel(state, component),
           ...macOwned.filter(owned => owned.endsWith(`.${component}`))])];
         for (const ownedLabel of labels) {
-          await native('launchctl', ['bootout', `${domain}/${ownedLabel}`], true);
+          await native('launchctl', ['bootout', `${macDomain}/${ownedLabel}`], true);
+          macBootedOut.push(ownedLabel);
           if (action === 'remove') await rm(join(directory, `${ownedLabel}.plist`), { force: true });
         }
       }
@@ -403,6 +422,9 @@ export async function serviceAction(action, state, home = stateHome(), component
         for (const owned of ownedUnits) await native('systemctl', ['--user', 'stop', owned], true);
       }
     } else throw new Error('Unsupported runtime platform');
+  }
+  if (process.platform === 'darwin' && macBootedOut.length) {
+    await waitForMacJobsUnloaded(macDomain, macBootedOut);
   }
   if (process.platform === 'linux' && action === 'remove') await native('systemctl', ['--user', 'daemon-reload']);
   if (['stop', 'disable', 'remove'].includes(action)) await waitForStopped(state, components);
