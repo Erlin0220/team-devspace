@@ -27,7 +27,7 @@ Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新�
 
 显式运行 `acceptance:platform` 时仍会在 target 的 offline layout 写入 `acceptance.json`，记录 release、commit、source 是否 dirty、入口文件 SHA-256 和实际运行的检查。Codemagic workflow 在打包和 Mach-O 检查后调用 `scripts/platform-acceptance.mjs --system-macos-installer`，x64 使用 x64 Node/Rosetta 执行相同入口。该选项仅允许非 root 的 Codemagic 临时环境，且遇到既有 App、设备状态、CLI、安装收据或 LaunchAgent 会拒绝覆盖。测试通过系统 `installer -pkg` 安装真实包，再用安装后的 payload 验证原生 Runtime/MCP、LaunchAgent、菜单栏可见性、重复安装、损坏 CLI 修复、暂停与身份保留、卸载及测试文件清理；复用已有测试，不建立第二套运行时。
 
-普通 macOS `acceptance:platform` 仍只解包并测试内部 bootstrap，必须记录 `finalEntrypointTransaction: false`；发布验证拒绝这类证据，也拒绝缺少 `nativeStartup` 的 macOS 证据。配置了工作流不代表已经执行通过，应检查对应构建的 `acceptance.json`。系统安装测试跳过 postinstall 自动打开，改为显式通过 LaunchServices 打开 App；它不代替管理员授权弹窗、Gatekeeper、真实首次 Enrollment、员工登录/重启或最低支持系统版本的实机验收。保持 Codemagic Personal 免费 M2，不启用付费订阅、额外机器类型或其他 CI 服务。
+普通 macOS `acceptance:platform` 仍只解包并测试内部 bootstrap，必须记录 `finalEntrypointTransaction: false`；发布验证拒绝这类证据，也拒绝缺少 `nativeStartup` 的 macOS 证据。配置了工作流不代表已经执行通过，应检查对应构建的 `acceptance.json`。系统安装测试会实际经过 postinstall 自动打开并确认首个原生窗口可见；随后仅在 Codemagic 临时用户内终止这个等待人工 Access Key 的测试进程树，再继续使用隔离的暂停状态验证安装后 Runtime、LaunchAgent、菜单栏、重复安装和修复。它不代替管理员授权弹窗、Gatekeeper、真实首次 Enrollment、员工登录/重启或最低支持系统版本的实机验收。保持 Codemagic Personal 免费 M2，不启用付费订阅、额外机器类型或其他 CI 服务。
 
 所有 native/installer smoke 都必须把自己的状态目录和启动项限定在测试作用域并在结束时清理。不要在真实员工设备的状态目录内改造测试夹具。
 

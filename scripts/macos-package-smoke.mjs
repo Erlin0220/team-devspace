@@ -46,8 +46,48 @@ await mkdir(project);
 await writeFile(join(project, 'keep.txt'), 'employee project must survive');
 const environment = { NODE_OPTIONS: '', TEAM_DEVSPACE_HOME: home };
 const active = async () => (await readFile(join(distribution, 'active-path'), 'utf8')).trim();
-const install = () => run('/usr/bin/sudo', ['-n', '/usr/bin/env', 'TEAM_DEVSPACE_SKIP_OPEN=1',
-  '/usr/sbin/installer', '-pkg', pkg, '-target', '/'], { timeout: 240000 });
+const install = () => run('/usr/bin/sudo', ['-n', '/usr/sbin/installer', '-pkg', pkg, '-target', '/'], { timeout: 240000 });
+async function lockPid(path) {
+  const value = (await readFile(path, 'utf8').catch(() => '')).trim();
+  return /^[1-9][0-9]*$/.test(value) ? Number(value) : null;
+}
+function signal(pid, name) {
+  if (!pid || pid === process.pid) return;
+  try { process.kill(pid, name); }
+  catch (error) { if (error.code !== 'ESRCH') throw error; }
+}
+async function cancelPostinstallFirstRun() {
+  const ready = join(home, '.ui-ready');
+  assert.equal(await exists(ready), true, 'PKG postinstall did not auto-open a visible first-run UI');
+  const roots = [...new Set((await Promise.all([
+    lockPid(join(home, 'app-launch.lock', 'pid')),
+    lockPid(join(distribution, 'install.lock', 'pid')),
+  ])).filter(Boolean))];
+  assert.ok(roots.length, 'Visible first-run UI did not retain an owned setup process');
+  const table = (await run('/bin/ps', ['-axo', 'pid=,ppid='], { capture: true })).stdout
+    .trim().split(/\n+/).map(line => line.trim().split(/\s+/).map(Number))
+    .filter(([pid, ppid]) => Number.isInteger(pid) && Number.isInteger(ppid));
+  const owned = new Set(roots);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, ppid] of table) {
+      if (owned.has(ppid) && !owned.has(pid)) { owned.add(pid); changed = true; }
+    }
+  }
+  // End the disposable first-run transaction as one process tree. The real
+  // postinstall/visible-UI path has already been proven; later checks seed an
+  // isolated suspended device instead of submitting a fake Access Key to it.
+  for (const pid of owned) signal(pid, 'SIGTERM');
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const live = [...owned].filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
+    if (!live.length) break;
+    await sleep(100);
+  }
+  for (const pid of owned) signal(pid, 'SIGKILL');
+  await sleep(250);
+}
 async function openAndWait() {
   await rm(join(home, '.ui-ready'), { force: true });
   await run('/usr/bin/open', [app]);
@@ -72,6 +112,7 @@ try {
   await access(command);
   await run('/usr/sbin/pkgutil', ['--pkg-info', receipt]);
   await run('/usr/bin/plutil', ['-lint', join(app, 'Contents', 'Info.plist')]);
+  await cancelPostinstallFirstRun();
   await run('/bin/sh', [bootstrap, '--root', distribution, '--manifest', manifest, '--setup', 'none'],
     { env: environment, timeout: 240000 });
   const first = await active();
@@ -115,9 +156,10 @@ try {
   removed = true;
   for (const path of [app, command]) assert.equal(await exists(path), false);
   console.log(JSON.stringify({ passed: true, target, actualSystemPackage: true, installedNativeRuntime: true,
-    nativeLaunchAgent: true, visibleMenuBar: true, repeatInstall: true, damagedCliRepair: true,
-    retainedEnrollmentAndPause: true, uninstallPreservesProjects: true,
-    limitations: ['Postinstall auto-open and administrator authorization dialogs are not automated.',
+    nativeLaunchAgent: true, visibleMenuBar: true, postinstallAutoOpen: true,
+    repeatInstall: true, damagedCliRepair: true, retainedEnrollmentAndPause: true,
+    uninstallPreservesProjects: true,
+    limitations: ['Administrator authorization dialogs are not automated because Codemagic uses passwordless sudo.',
       'Unsigned package Gatekeeper approval and real employee login remain manual acceptance.'] }));
 } catch (error) {
   for (const log of [join(home, 'logs/setup.log'), join(home, 'logs/tray.error.log'), '/var/log/team-devspace-install.log']) {
