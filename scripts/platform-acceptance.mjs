@@ -1,9 +1,9 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { access, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import release from '../release.config.json' with { type: 'json' };
-import { sha256File } from './build-utils.mjs';
+import { sha256File, sourceIdentity } from './build-utils.mjs';
 
 const { values } = parseArgs({ options: {
   'direct-windows-installer': { type: 'boolean' },
@@ -69,9 +69,7 @@ if (process.platform === 'win32') {
 let commit;
 let sourceDirty = null;
 try {
-  commit = process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
-  sourceDirty = Boolean(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'],
-    { encoding: 'utf8', windowsHide: true }).trim());
+  ({ commit, sourceDirty } = sourceIdentity());
 } catch { commit = 'unknown'; }
 const evidence = {
   schema: 1,

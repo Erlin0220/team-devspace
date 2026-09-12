@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import release from '../release.config.json' with { type: 'json' };
+import { sourceIdentity } from '../scripts/build-utils.mjs';
 
 const exec = promisify(execFile);
 test('release acceptance rejects extracted-only PKGs and missing native startup evidence', async t => {
@@ -79,6 +80,40 @@ test('installed payload verification rejects a foreign manifest and altered nati
   await writeFile(join(bundle, nodePath), 'approved target binary');
   await writeFile(join(installed, nodePath), 'altered target binary');
   await assert.rejects(verify(), error => /Installed payload differs from the built target/.test(error.stderr));
+});
+
+test('source evidence detects staged, unstaged and untracked changes while accepting canonical EOLs', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tds-source-identity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = (...args) => exec('git', args, { cwd: root, timeout: 10000 });
+  await git('init', '-q');
+  await writeFile(join(root, '.gitattributes'), '*.txt text eol=lf\n');
+  await writeFile(join(root, 'source.txt'), 'original\n');
+  await git('add', '.gitattributes', 'source.txt');
+  await git('-c', 'user.name=Acceptance fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture');
+  const clean = sourceIdentity(root);
+  assert.match(clean.commit, /^[a-f0-9]{40}$/);
+  assert.equal(clean.sourceDirty, false);
+  await writeFile(join(root, 'source.txt'), 'original\r\n');
+  assert.equal(sourceIdentity(root).sourceDirty, false, 'Git-normalized unchanged content is not a source modification');
+  await writeFile(join(root, 'source.txt'), 'edited\n');
+  assert.equal(sourceIdentity(root).sourceDirty, true);
+  await git('add', 'source.txt');
+  assert.equal(sourceIdentity(root).sourceDirty, true, 'Staging edits must not hide them from provenance');
+  await git('reset', '--quiet', 'HEAD', '--', 'source.txt');
+  await writeFile(join(root, 'source.txt'), 'original\n');
+  await writeFile(join(root, 'untracked.mjs'), '// new source');
+  assert.equal(sourceIdentity(root).sourceDirty, true);
+  await rm(join(root, 'untracked.mjs'));
+  assert.equal(sourceIdentity(root).sourceDirty, false);
+  if (process.platform !== 'win32') {
+    await git('config', 'core.fileMode', 'true');
+    await chmod(join(root, 'source.txt'), 0o755);
+    assert.equal(sourceIdentity(root).sourceDirty, true, 'Changed tracked executable modes must remain dirty');
+    await chmod(join(root, 'source.txt'), 0o644);
+    assert.equal(sourceIdentity(root).sourceDirty, false);
+  }
+  assert.throws(() => sourceIdentity(join(root, 'missing')), /ENOENT/);
 });
 
 test('system macOS acceptance refuses a non-Codemagic host before touching installed paths', async () => {

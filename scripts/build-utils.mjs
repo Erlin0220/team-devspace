@@ -2,12 +2,23 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 export async function sha256File(path) {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   return hash.digest('hex');
+}
+
+export function sourceIdentity(cwd = process.cwd()) {
+  const options = { cwd, encoding: 'utf8', windowsHide: true, timeout: 30000 };
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], options).trim();
+  // Compare canonical Git content and modes, not rsync/DrvFS stat-cache hints.
+  // Include staged changes and untracked source; errors never count as clean.
+  const diff = spawnSync('git', ['diff', '--quiet', 'HEAD', '--'], options);
+  if (diff.error || ![0, 1].includes(diff.status)) throw diff.error ?? new Error('Cannot verify source changes');
+  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], options);
+  return { commit, sourceDirty: diff.status === 1 || untracked.length > 0 };
 }
 
 export async function downloadPinned(artifact, cache) {

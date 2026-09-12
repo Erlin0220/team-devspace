@@ -19,7 +19,7 @@ test('Windows legacy task migration uses one hidden elevated PowerShell helper, 
 
 test('Windows activation pointer failure restores previous startup ownership', async () => {
   const script = await readFile('platform/windows/bootstrap.ps1', 'utf8');
-  assert.ok(script.includes('try {\n      Write-AtomicJson $activeFile $next'));
+  assert.match(script, /try \{\r?\n      Write-AtomicJson \$activeFile \$next/);
   assert.ok(script.includes('if ($active) { Restore-Previous $active $candidate }'));
   assert.ok(script.includes("$recovery = 'candidate startup was removed'"));
   assert.ok(script.includes("$recovery = 'previous version was restored'"));

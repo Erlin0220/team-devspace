@@ -95,7 +95,7 @@ printf repairable
 });
 
 test('WSL source synchronization refuses home, unknown directories and foreign repositories without deleting them', async t => {
-  const helper = await readFile('scripts/linux-wsl.ps1', 'utf8');
+  const helper = (await readFile('scripts/linux-wsl.ps1', 'utf8')).replaceAll('\r\n', '\n');
   const guard = helper.slice(helper.indexOf('# rsync --delete'), helper.indexOf('# Keep Linux-native dependencies'));
   for (const setup of [
     'WORK="$HOME"',
@@ -117,7 +117,7 @@ printf protected
 });
 
 test('WSL mirror restores Git modes and EOLs without hiding edited source', { skip: process.platform === 'win32' }, async t => {
-  const helper = await readFile('scripts/linux-wsl.ps1', 'utf8');
+  const helper = (await readFile('scripts/linux-wsl.ps1', 'utf8')).replaceAll('\r\n', '\n');
   const normalization = helper.slice(helper.indexOf('# DrvFS synthesizes'), helper.indexOf('\nexpected_node='));
   const { stdout } = await shell(t, `
 git init -q

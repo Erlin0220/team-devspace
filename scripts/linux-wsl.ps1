@@ -133,7 +133,7 @@ cp -f "release/$artifact" "release/$artifact.sha256" "$SOURCE/release/"
 sha256sum "$SOURCE/release/$artifact"
 printf 'Linux x64 acceptance passed.\nArtifact: %s\n' "$SOURCE/release/$artifact"
 '@
-$script = $script.Replace('__SOURCE_BASE64__', $sourceBase64).Replace('__WORKSPACE_BASE64__', $workspaceBase64)
+$script = $script.Replace("`r`n", "`n").Replace('__SOURCE_BASE64__', $sourceBase64).Replace('__WORKSPACE_BASE64__', $workspaceBase64)
 
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($script))
 & $wsl -d $Distribution -- bash -lc "echo '$encoded' | base64 -d | bash"
