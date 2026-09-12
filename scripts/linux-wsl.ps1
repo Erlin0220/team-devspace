@@ -87,6 +87,13 @@ while IFS= read -r -d '' tracked; do
   mode=${tracked%% *}
   path=${tracked#*$'\t'}
   [ -f "$path" ] && [ ! -L "$path" ] || continue
+  # Re-checkout only canonically unchanged files so Git applies .gitattributes
+  # EOLs as well. Edited source has a different blob and is never replaced.
+  blob=${tracked#* }; blob=${blob%% *}
+  if [ "$(git hash-object --path="$path" -- "$path")" = "$blob" ]; then
+    checkout=$(git checkout-index --temp -- "$path")
+    mv -- "${checkout%%$'\t'*}" "$path"
+  fi
   case "$mode" in
     100644) chmod 644 -- "$path" ;;
     100755) chmod 755 -- "$path" ;;
