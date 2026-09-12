@@ -21,7 +21,7 @@ Windows 主机需要构建 Linux x64 时，使用已经启用 systemd 的 Ubuntu
 npm run acceptance:linux:wsl
 ```
 
-该命令把当前 Windows 工作区（包括未提交源码）同步到 WSL ext4 下的 `~/team-devspace-linux`，保留 Linux 原生 `node_modules` 与构建缓存，然后在 WSL 内执行完整 `acceptance:local`。通过后会再次校验 Linux 离线包 SHA-256，并把 `.tar.gz` 与 `.sha256` 复制回 Windows 仓库的 `release/`。默认要求 WSL 使用普通用户、`systemd --user` 可用、Node/npm 与发行固定版本一致；不会用 root daemon 或 GitHub Actions 代替本地 Linux 生命周期验证。未提交源码产生的 `acceptance.json` 会保留 `sourceDirty: true`，只能作为开发验收证据；正式发布前需从干净提交重新运行。WSL 能验证当前 Linux 包和 user-service 生命周期，但不能代替真实 Linux 机器的注销/登录或重启验收。
+该命令把当前 Windows 工作区（包括未提交源码）同步到 WSL ext4 下的 `~/team-devspace-linux`，保留 Linux 原生 `node_modules` 与构建缓存，依据 Git index 恢复已跟踪文件的 Unix 执行权限（避免 DrvFS 将普通文件投影为可执行文件），然后在 WSL 内执行完整 `acceptance:local`。通过后会再次校验 Linux 离线包 SHA-256，并把 `.tar.gz` 与 `.sha256` 复制回 Windows 仓库的 `release/`。默认要求 WSL 使用普通用户、`systemd --user` 可用、Node/npm 与发行固定版本一致；不会用 root daemon 或 GitHub Actions 代替本地 Linux 生命周期验证。未提交源码产生的 `acceptance.json` 会保留 `sourceDirty: true`，只能作为开发验收证据；正式发布前需从干净提交重新运行。WSL 能验证当前 Linux 包和 user-service 生命周期，但不能代替真实 Linux 机器的注销/登录或重启验收。
 
 Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新编译一个只更换随机注册表和开始菜单键的隔离自包含 NSIS，避免覆盖已安装的员工版本；它验证首次 Enrollment 503、Repair、覆盖升级、credential 恢复、损坏 payload 修复、A/B 版本回收、卸载和零测试 Task 残留。`test:native` 使用真实 Task Scheduler/runtime/MCP，并额外制造同一 `TEAM_DEVSPACE_HOME` 的未知旧 owner task 与另一 state home 的 foreign task：前者必须被迁移，后者必须保留。packaged Tray 会真实启动第二个进程，第二个进程必须在创建图标前被 OS single-instance guard 拒绝。
 

@@ -116,6 +116,32 @@ printf protected
   }
 });
 
+test('WSL mirror restores Git executable modes without hiding edited source', { skip: process.platform === 'win32' }, async t => {
+  const helper = await readFile('scripts/linux-wsl.ps1', 'utf8');
+  const normalization = helper.slice(helper.indexOf('# DrvFS synthesizes'), helper.indexOf('\nexpected_node='));
+  const { stdout } = await shell(t, `
+git init -q
+git config core.fileMode true
+printf original > readme.txt
+printf '#!/bin/sh\\nexit 0\\n' > run.sh
+chmod 644 readme.txt
+chmod 755 run.sh
+git add readme.txt run.sh
+chmod 755 readme.txt
+chmod 644 run.sh
+${normalization}
+test ! -x readme.txt
+test -x run.sh
+git diff --quiet
+printf edited > readme.txt
+${normalization}
+if git diff --quiet; then exit 9; fi
+test "$(cat readme.txt)" = edited
+printf protected
+`);
+  assert.equal(stdout, 'protected');
+});
+
 test('Unix damaged-client uninstall has a native startup fallback', () => {
   assert.match(script, /remove_native_startup_fallback/);
   assert.match(script, /invoke_client "\$current" uninstall/);

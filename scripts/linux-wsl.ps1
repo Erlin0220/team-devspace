@@ -81,6 +81,18 @@ git -C "$WORK" fetch --quiet "$SOURCE" HEAD
 git -C "$WORK" reset --mixed --quiet FETCH_HEAD
 cd "$WORK"
 
+# DrvFS synthesizes executable bits from Windows ACLs. Restore the tracked Unix
+# modes in the ext4 mirror instead of hiding real changes with core.fileMode=false.
+while IFS= read -r -d '' tracked; do
+  mode=${tracked%% *}
+  path=${tracked#*$'\t'}
+  [ -f "$path" ] && [ ! -L "$path" ] || continue
+  case "$mode" in
+    100644) chmod 644 -- "$path" ;;
+    100755) chmod 755 -- "$path" ;;
+  esac
+done < <(git ls-files --stage -z)
+
 expected_node="$(python3 -c 'import json; print(json.load(open("release.config.json"))["nodeVersion"])')"
 expected_npm="$(python3 -c 'import json; print(json.load(open("package.json"))["packageManager"].split("@", 1)[1])')"
 pinned_node="/opt/node-v${expected_node}-linux-x64/bin"
