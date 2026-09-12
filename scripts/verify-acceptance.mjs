@@ -21,6 +21,7 @@ for (const target of release.distribution.targets) {
   }
   assert.equal(evidence.checks?.releaseLayout, true, `${target}: release layout was not accepted`);
   assert.equal(evidence.checks?.installerTransaction, true, `${target}: installer transaction was not accepted`);
+  assert.equal(evidence.checks?.installedPayload, true, `${target}: extracted/installed payload contents were not accepted`);
   assert.equal(evidence.checks?.zeroResidue, true, `${target}: acceptance did not prove cleanup of its own lifecycle/install residue`);
   assert.ok(evidence.entrypoint?.name && /^[a-f0-9]{64}$/.test(evidence.entrypoint.sha256 ?? ''), `${target}: invalid accepted entrypoint identity`);
   const entrypoint = join(root, target, evidence.entrypoint.name);

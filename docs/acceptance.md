@@ -29,6 +29,8 @@ Windows 的本地 installer transaction 从生产 manifest/bootstrap 源重新�
 
 普通 macOS `acceptance:platform` 仍只解包并测试内部 bootstrap，必须记录 `finalEntrypointTransaction: false`；发布验证拒绝这类证据，也拒绝缺少 `nativeStartup` 的 macOS 证据。配置了工作流不代表已经执行通过，应检查对应构建的 `acceptance.json`。系统安装测试会实际经过 postinstall 自动打开并确认首个原生窗口可见；随后仅在 Codemagic 临时用户内终止这个等待人工 Access Key 的测试进程树，再继续使用隔离的暂停状态验证安装后 Runtime、LaunchAgent、菜单栏、重复安装和修复。它不代替管理员授权弹窗、Gatekeeper、真实首次 Enrollment、员工登录/重启或最低支持系统版本的实机验收。保持 Codemagic Personal 免费 M2，不启用付费订阅、额外机器类型或其他 CI 服务。
 
+三个平台的安装 smoke 都在实际解包后的目录调用现有 `verify-release.mjs --target <target> --installed <path>`：逐字节比对内嵌 manifest，核对关键文件与构建输出的 SHA-256，执行已安装 Node 验证平台/架构/版本，检查 cloudflared 版本和来源哈希、上游 DevSpace 版本及 Unix 可执行权限；macOS 另用系统 lipo 校验安装后的原生二进制架构。只有这些检查执行通过，报告才记录 `installedPayload: true`，缺少该证据的旧报告不再通过发布检查。任何验收重跑先清除上次成功 evidence，失败不留下旧的假绿。
+
 所有 native/installer smoke 都必须把自己的状态目录和启动项限定在测试作用域并在结束时清理。不要在真实员工设备的状态目录内改造测试夹具。
 
 ## 无 systemd Linux 补充验收

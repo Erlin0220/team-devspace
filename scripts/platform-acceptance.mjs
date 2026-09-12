@@ -84,6 +84,7 @@ const evidence = {
   checks: {
     releaseLayout: true,
     installerTransaction: true,
+    installedPayload: true,
     finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller
       : process.platform === 'darwin' ? systemMacosInstaller : true,
     trayProtocol: desktopTray,
@@ -93,10 +94,12 @@ const evidence = {
   },
   limitations: process.platform === 'darwin'
     ? [systemMacosInstaller
-      ? 'System PKG installation, installed runtime and LaunchAgent/menu-bar lifecycle were tested on a disposable build Mac; real employee login, Gatekeeper approval and administrator dialogs remain manual.'
+      ? 'System PKG installation, first-run UI visibility, interrupted-setup recovery, installed runtime and LaunchAgent/menu-bar lifecycle were tested; Enrollment was seeded, not submitted through the first-run form. Real employee login, Gatekeeper approval and administrator dialogs remain manual.'
       : 'Only PKG extraction and internal bootstrap transactions were tested, not system PKG installation or a LaunchAgent login session.',
       ...(process.arch === 'x64' ? ['An x64 process may run under Rosetta; this is not proof of Intel hardware compatibility.'] : [])]
-    : [],
+    : process.platform === 'win32' && !directWindowsInstaller
+      ? ['Local NSIS acceptance uses the final payload with isolated registry/Start Menu identities; the unmodified final EXE is not installed over an existing employee installation.']
+      : [],
 };
 await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify({ acceptance: true, target, output, checks: evidence.checks }));

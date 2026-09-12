@@ -117,6 +117,7 @@ try {
     { env: environment, timeout: 240000 });
   const first = await active();
   assert.ok(first.startsWith(`${distribution}/versions/`));
+  await run(process.execPath, ['scripts/verify-release.mjs', '--target', target, '--installed', first]);
   // Reuse the existing runtime/MCP lifecycle test, now against the installed
   // payload instead of the build tree. It starts no real Cloudflare tunnel.
   await run(process.execPath, ['scripts/native-smoke.mjs', '--bundle', first], { timeout: 240000 });
@@ -156,10 +157,12 @@ try {
   removed = true;
   for (const path of [app, command]) assert.equal(await exists(path), false);
   console.log(JSON.stringify({ passed: true, target, actualSystemPackage: true, installedNativeRuntime: true,
+    installedPayloadVerified: true, firstRunInterruptedAndRecovered: true, liveEnrollment: false,
     nativeLaunchAgent: true, visibleMenuBar: true, postinstallAutoOpen: true,
     repeatInstall: true, damagedCliRepair: true, retainedEnrollmentAndPause: true,
     uninstallPreservesProjects: true,
-    limitations: ['Administrator authorization dialogs are not automated because Codemagic uses passwordless sudo.',
+    limitations: ['First-run UI visibility and interrupted-setup recovery are tested; Enrollment uses seeded isolated state, not a live employee Access Key.',
+      'Administrator authorization dialogs are not automated because Codemagic uses passwordless sudo.',
       'Unsigned package Gatekeeper approval and real employee login remain manual acceptance.'] }));
 } catch (error) {
   for (const log of [join(home, 'logs/setup.log'), join(home, 'logs/tray.error.log'), '/var/log/team-devspace-install.log']) {

@@ -63,6 +63,7 @@ try {
   await install();
   assert.equal((await readFile(join(root, '.team-devspace-distribution'), 'utf8')).trim(), 'team-devspace-distribution-v1');
   const first = await active();
+  await run(process.execPath, ['scripts/verify-release.mjs', '--target', target, '--installed', first]);
   if (process.platform === 'linux') {
     const stableCli = join(root, 'bin', 'team-devspace');
     await access(stableCli);

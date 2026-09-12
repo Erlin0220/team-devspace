@@ -266,6 +266,7 @@ try {
   assert.equal(enrolled.bindingId, bindingId);
   assert.equal(enrollmentCalls, 2);
   const firstActive = await readJson(join(install, 'active.json'));
+  await run(process.execPath, ['scripts/verify-release.mjs', '--target', 'win32-x64', '--installed', firstActive.path]);
   assert.equal(firstActive.path, pendingActive.path, 'Enrollment recovery must not reinstall or switch the local application payload');
   const upstream = await readJson(join(firstActive.path, 'node_modules', '@waishnav', 'devspace', 'package.json'));
   assert.equal(upstream.version, release.devspaceVersion);
