@@ -56,6 +56,7 @@
 
 只读复核确认 `62c7732`、`d586902`、`74c977a` 均真实存在，已完成的分层不重复重构。本次继续保留 Gateway / 原生生命周期 / Bridge / 桌面 controller 的现有边界，没有新增运行时依赖、守护进程或持久化状态。
 
+- WSL 实测暴露了固定 systemd unit 名导致诊断读取其他状态目录/旧运行实例日志的问题。平台适配器复用已有 unit 格式确认 `TEAM_DEVSPACE_HOME` 归属，再通过 systemd `InvocationID` 限定 journal；不清空宿主历史、不新增日志数据库。原有失败回归在保留旧 journal 的真实 WSL 中转为通过，并新增不同目录及缺失/无效实例信息的保护测试。
 - 将忽略目录中的临时 Windows 实装探针收敛为 `scripts/windows-installed-smoke.mjs`。修正将 Unix `versions/` 当作 Windows 安装目录的无效残留断言，真实检查 `v/`、已知任务、运行进程、产品注册表和快捷方式；显式 `--live` 才会升级、卸载并恢复当前员工安装。身份、项目和原暂停策略必须保持，失败时仍尝试恢复。`platform-acceptance --employee-windows-installer` 在隔离首次安装验收之后执行此流程，不伪造 CI 环境，也不降低原有严格最终 EXE 门禁。
 - `tray-live-smoke --live --output build/live-result.json` 复用原连接操作增加 Linux 支持：安装最终离线包后验证真实 Gateway/Tunnel、MCP 读写与 shell、暂停/恢复/重启/Repair 和连续换 Key。Linux 发现现有员工 systemd 服务会拒绝覆盖；测试 Key 在结束时撤销，清理失败保留测试目录供恢复。
 - 公网结果文件只在业务检查、授权回收及本地清理之后确定通过，携带平台及安装 manifest 指纹；新尝试先作废旧结果，工具响应丢失不能被当作成功。Windows 员工实装、Linux 公网、原生桌面 smoke 和 macOS CI 的证据仍分别记录，互不冒充。

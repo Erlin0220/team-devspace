@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
-import { COMPONENTS, installServices, serviceAction, serviceLabel } from './platform.mjs';
+import { COMPONENTS, installServices, linuxJournalInvocation, serviceAction, serviceLabel } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
 import { atomicJson, installRoot, loadState, privateDirectory, readJson, stateHome } from './state.mjs';
 import { openWindowsDirectory } from './windows-desktop.mjs';
@@ -216,17 +216,20 @@ async function manifestIdentity() {
   } catch { return null; }
 }
 
-async function recentErrors(home, state = null) {
+async function recentErrors(home) {
   const summaries = [];
   const journal = process.platform === 'linux' && await linuxServiceManager().catch(() => 'unavailable') === 'systemd-user';
   for (const component of ['runtime', 'tunnel', 'tray']) {
     let lines = [];
     if (journal && COMPONENTS.includes(component)) {
       try {
-        const unit = `${serviceLabel(state ?? { deviceId: '' }, component)}.service`;
-        const { stdout } = await exec('journalctl', ['--user', '--no-pager', '--output=cat', '-p', 'warning', '-n', '40', '-u', unit],
-          { timeout: 5000, maxBuffer: 256 * 1024 });
-        lines = redactDiagnostic(stdout).split(/\r?\n/).filter(Boolean).map(line => line.slice(0, 500)).slice(-8);
+        const invocation = await linuxJournalInvocation(home, component);
+        if (invocation) {
+          const { stdout } = await exec('journalctl', ['--user', '--no-pager', '--output=cat', '-p', 'warning', '-n', '40',
+            `_SYSTEMD_INVOCATION_ID=${invocation}`, '+', `USER_INVOCATION_ID=${invocation}`],
+            { timeout: 5000, maxBuffer: 256 * 1024 });
+          lines = redactDiagnostic(stdout).split(/\r?\n/).filter(Boolean).map(line => line.slice(0, 500)).slice(-8);
+        }
       } catch {}
     }
     if (!lines.length) {
@@ -255,7 +258,7 @@ export async function diagnosticReport(home = stateHome()) {
       remoteAccess: unavailable, desiredRemoteAccess: state?.remoteAccess ?? unavailable,
       stateHealth: missing ? 'not-configured' : state ? 'readable' : 'unreadable',
       ...(!missing ? { error: redactDiagnostic(error.message) } : {}), devspaceHealth: false,
-      bridgeHealth: false, tunnelHealth: false, gatewayHealth: unavailable, recentErrors: await recentErrors(home, state) };
+      bridgeHealth: false, tunnelHealth: false, gatewayHealth: unavailable, recentErrors: await recentErrors(home) };
   }
   return {
     release: state.releaseVersion,
@@ -271,7 +274,7 @@ export async function diagnosticReport(home = stateHome()) {
     tunnelHealth: status.tunnel,
     gatewayHealth: status.gateway,
     projectRootAvailable: status.currentProjectRootAvailable,
-    recentErrors: await recentErrors(home, state),
+    recentErrors: await recentErrors(home),
   };
 }
 

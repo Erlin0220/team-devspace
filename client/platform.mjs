@@ -141,6 +141,20 @@ export function windowsTaskXml(state, component, home, sid, root = installRoot) 
 </Task>\n`;
 }
 
+// Fixed user-unit names are reused after reinstall and across test homes. A
+// journal read must identify the current owner and invocation, not just its name.
+export async function linuxJournalInvocation(home, component, { run = exec, read = readFile } = {}) {
+  if (!COMPONENTS.includes(component)) return null;
+  const unit = `${serviceLabel(null, component, 'linux')}.service`;
+  const { stdout } = await run('systemctl', ['--user', 'show', unit, '--property=FragmentPath,InvocationID'],
+    { timeout: 5000, maxBuffer: 64 * 1024 });
+  const fragment = /^FragmentPath=(.+)$/m.exec(stdout)?.[1];
+  const invocation = /^InvocationID=([a-f0-9]{32})$/m.exec(stdout)?.[1];
+  if (!fragment || !invocation || /^0+$/.test(invocation)) return null;
+  const unitText = await read(fragment, 'utf8');
+  return unitText.includes(`Environment=${systemdQuoted(`TEAM_DEVSPACE_HOME=${home}`)}\n`) ? invocation : null;
+}
+
 export function systemdUserUnit(state, component, home, paths, root = installRoot) {
   const distributionRoot = resolve(process.env.TEAM_DEVSPACE_DISTRIBUTION_ROOT ?? join(root, '..', '..'));
   const activePath = join(distributionRoot, 'active-path');
