@@ -1,6 +1,6 @@
 {
   "name": "team-devspace",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "Pinned DevSpace distribution with per-device Cloudflare connectivity for a shared ChatGPT app",

@@ -47,6 +47,18 @@ await writeFile(join(project, 'keep.txt'), 'employee project must survive');
 const environment = { NODE_OPTIONS: '', TEAM_DEVSPACE_HOME: home };
 const active = async () => (await readFile(join(distribution, 'active-path'), 'utf8')).trim();
 const install = () => run('/usr/bin/sudo', ['-n', '/usr/sbin/installer', '-pkg', pkg, '-target', '/'], { timeout: 240000 });
+const screenshots = [];
+async function captureVisibleUI(name) {
+  // Capture the real installed app, not a recreated design. Screen-recording
+  // permission can be unavailable in CI; report that separately from app failure.
+  const directory = resolve('build/macos-review');
+  await mkdir(directory, { recursive: true });
+  const file = join(directory, `${process.arch}-${name}.png`);
+  try {
+    await run('/usr/sbin/screencapture', ['-x', file], { capture: true, timeout: 10000 });
+    await access(file); screenshots.push(file);
+  } catch { console.warn(`Native UI screenshot unavailable: ${name}; visual approval remains manual.`); }
+}
 async function lockPid(path) {
   const value = (await readFile(path, 'utf8').catch(() => '')).trim();
   return /^[1-9][0-9]*$/.test(value) ? Number(value) : null;
@@ -112,6 +124,7 @@ try {
   await access(command);
   await run('/usr/sbin/pkgutil', ['--pkg-info', receipt]);
   await run('/usr/bin/plutil', ['-lint', join(app, 'Contents', 'Info.plist')]);
+  await captureVisibleUI('first-run');
   await cancelPostinstallFirstRun();
   await run('/bin/sh', [bootstrap, '--root', distribution, '--manifest', manifest, '--setup', 'none'],
     { env: environment, timeout: 240000 });
@@ -132,6 +145,7 @@ try {
   await stateModule.atomicText(join(home, 'tunnel.token'), 'not-a-live-tunnel-credential');
   await stateModule.writeUpstreamConfig(state, home);
   await openAndWait();
+  await captureVisibleUI('paused-menu-bar');
   await run(command, ['project-root', 'show'], { env: environment });
   await install();
   await openAndWait();
@@ -153,6 +167,20 @@ try {
   assert.equal(await exists(join(distribution, 'versions')), false);
   assert.equal((JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))).bindingId, state.bindingId);
   assert.equal(await readFile(join(project, 'keep.txt'), 'utf8'), 'employee project must survive');
+  // Reinstall from the final PKG after uninstall, then exercise the native
+  // fallback without a working CLI. Normal uninstall above remains covered.
+  await install();
+  await openAndWait();
+  const reinstalled = await active();
+  await rm(join(reinstalled, 'client/cli.mjs'));
+  await run('/bin/sh', [bootstrap, '--mode', 'uninstall', '--root', distribution], { env: environment });
+  for (const label of labels) {
+    assert.equal(await loaded(label), false, `Damaged-client uninstall left ${label} running`);
+    assert.equal(await exists(join(homedir(), 'Library/LaunchAgents', `${label}.plist`)), false);
+  }
+  assert.equal(await exists(join(distribution, 'versions')), false);
+  assert.equal((JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))).bindingId, state.bindingId);
+  assert.equal(await readFile(join(project, 'keep.txt'), 'utf8'), 'employee project must survive damaged-client uninstall');
   await removePackageFiles();
   removed = true;
   for (const path of [app, command]) assert.equal(await exists(path), false);
@@ -160,7 +188,7 @@ try {
     installedPayloadVerified: true, firstRunInterruptedAndRecovered: true, liveEnrollment: false,
     nativeLaunchAgent: true, visibleMenuBar: true, postinstallAutoOpen: true,
     repeatInstall: true, damagedCliRepair: true, retainedEnrollmentAndPause: true,
-    uninstallPreservesProjects: true,
+    uninstallPreservesProjects: true, reinstallAfterUninstall: true, damagedClientUninstall: true, screenshots,
     limitations: ['First-run UI visibility and interrupted-setup recovery are tested; Enrollment uses seeded isolated state, not a live employee Access Key.',
       'Administrator authorization dialogs are not automated because Codemagic uses passwordless sudo.',
       'Unsigned package Gatekeeper approval and real employee login remain manual acceptance.'] }));

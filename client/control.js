@@ -12,7 +12,11 @@ const feedback = (message, error = false) => {
   $('feedback').dataset.error = String(error);
 };
 async function request(path, body) {
-  const signal = AbortSignal.timeout(body ? 180000 : 10000);
+  // Safari 15 (included with supported macOS 12) lacks AbortSignal.timeout.
+  // One standard controller also lets successful requests release their timer.
+  const controller = new AbortController();
+  const { signal } = controller;
+  const timer = setTimeout(() => controller.abort(), body ? 180000 : 10000);
   try {
     const response = await fetch(path, { method: body ? 'POST' : 'GET', cache: 'no-store', signal,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -28,7 +32,7 @@ async function request(path, body) {
       : '读取状态超时，请检查本地控制器。');
     if (body && error.name === 'TypeError') throw new Error('本地连接中断，操作结果尚未确认。请查看当前状态与日志。');
     throw error;
-  }
+  } finally { clearTimeout(timer); }
 }
 function render(state) {
   current = state;

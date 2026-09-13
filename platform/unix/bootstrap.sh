@@ -218,7 +218,17 @@ remove_native_startup_fallback() {
         plist="$directory/$label.plist"
         [ -f "$plist" ] && /usr/bin/grep -F "$fallback_home" "$plist" >/dev/null 2>&1 || continue
         /bin/launchctl bootout "$domain/$label" >/dev/null 2>&1 || true
-        /bin/launchctl print "$domain/$label" >/dev/null 2>&1 && return 1
+        # bootout may return while launchd is still unloading the owned job.
+        # Match the normal CLI stop path: wait, but retain recovery files on timeout.
+        attempt=0
+        while /bin/launchctl print "$domain/$label" >/dev/null 2>&1; do
+          [ "$attempt" -lt 100 ] || {
+            echo "launchd still owns $label; startup files were retained. Retry uninstall after it stops." >&2
+            return 1
+          }
+          /bin/sleep 0.1
+          attempt=$((attempt + 1))
+        done
         rm -f "$plist"
       done
       ;;

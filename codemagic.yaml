@@ -233,3 +233,4 @@ workflows:
       - release/Team-DevSpace-*-macos-*.pkg
       - release/Team-DevSpace-*-macos-*.pkg.sha256
       - release/offline/*/darwin-*/acceptance.json
+      - build/macos-review/*.png

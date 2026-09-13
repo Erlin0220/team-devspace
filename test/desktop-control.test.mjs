@@ -45,7 +45,9 @@ test('Control Center bounds stalled requests without retrying an uncertain mutat
     let calls = 0, deadline;
     const request = runInNewContext(`${requestSource}\nrequest`, {
       token: 'test-only-capability',
-      AbortSignal: { timeout: milliseconds => { deadline = milliseconds; return AbortSignal.timeout(20); } },
+      AbortController,
+      setTimeout: (callback, milliseconds) => { deadline = milliseconds; return setTimeout(callback, 20); },
+      clearTimeout,
       fetch: async (_path, options) => {
         calls++;
         assert.ok(options.signal, 'A local HTTP request must have a finite deadline');
@@ -58,6 +60,25 @@ test('Control Center bounds stalled requests without retrying an uncertain mutat
     assert.equal(calls, 1, 'Never retry a mutation automatically after an uncertain response');
     assert.equal(deadline, body ? 180000 : 10000);
   }
+});
+
+test('Control Center works without AbortSignal.timeout and releases completed request timers', async () => {
+  const source = await readFile(new URL('../client/control.js', import.meta.url), 'utf8');
+  const requestSource = source.slice(source.indexOf('async function request('), source.indexOf('\nfunction render('));
+  const timers = new Set(); let calls = 0;
+  const request = runInNewContext(`${requestSource}\nrequest`, {
+    token: 'test-only-capability', AbortController, AbortSignal: {},
+    setTimeout: (_callback, milliseconds) => { const timer = { milliseconds }; timers.add(timer); return timer; },
+    clearTimeout: timer => timers.delete(timer),
+    fetch: async (_path, options) => {
+      calls++; assert.equal(options.signal.aborted, false);
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+  });
+  assert.equal((await request('/api/state')).ok, true);
+  assert.equal((await request('/api/action', { action: 'check' })).ok, true);
+  assert.equal(calls, 2);
+  assert.equal(timers.size, 0, 'Completed requests must not retain their timeout callbacks');
 });
 
 test('local settings become available without waiting for a slow gateway probe', async t => {

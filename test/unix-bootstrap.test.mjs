@@ -169,6 +169,34 @@ printf synchronized
   assert.ok(stdout.endsWith('synchronized'));
 });
 
+test('macOS damaged-client uninstall waits for launchd and retains startup files on timeout', async t => {
+  const cleanup = script.slice(script.indexOf('remove_native_startup_fallback()'), script.indexOf('\nremove_distribution_payload()'))
+    .replaceAll('/bin/launchctl', 'launchctl').replaceAll('/bin/sleep', 'sleep');
+  for (const neverStops of [false, true]) {
+    const { stdout } = await shell(t, `
+TARGET=darwin-arm64
+HOME="$PWD/home"
+TEAM_DEVSPACE_HOME="$HOME/Library/Application Support/TeamDevSpace"
+runtime_plist="$HOME/Library/LaunchAgents/com.teamdevspace.runtime.plist"
+mkdir -p "$(dirname "$runtime_plist")"
+printf '%s' "$TEAM_DEVSPACE_HOME" > "$runtime_plist"
+printf 0 > probes
+launchctl() {
+  [ "$1" != bootout ] || return 0
+  count=$(cat probes)
+  count=$((count + 1))
+  printf '%s' "$count" > probes
+  ${neverStops ? 'return 0' : '[ "$count" -lt 3 ]'}
+}
+sleep() { :; }
+${cleanup}
+${neverStops ? 'if remove_native_startup_fallback; then exit 9; fi; test -f "$runtime_plist"; test "$(cat probes)" -ge 100; test "$(cat probes)" -le 102' : 'remove_native_startup_fallback; test ! -f "$runtime_plist"; test "$(cat probes)" -eq 3'}
+printf protected
+`);
+    assert.equal(stdout, 'protected');
+  }
+});
+
 test('Unix damaged-client uninstall has a native startup fallback', () => {
   assert.match(script, /remove_native_startup_fallback/);
   assert.match(script, /invoke_client "\$current" uninstall/);
