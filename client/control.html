@@ -2,30 +2,36 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Team DevSpace · 本地控制中心</title>
+  <title>Team DevSpace · 本机设置</title>
   <link rel="stylesheet" href="/control.css"><script src="/control.js" defer></script>
 </head>
 <body>
 <main>
-  <header><div><p class="eyebrow">本机 · 私有控制中心</p><h1>Team DevSpace</h1></div><span id="connection" class="badge">正在读取状态</span></header>
+  <header><div><p class="eyebrow">本机设置</p><h1>Team DevSpace</h1></div><span id="connection" class="badge">正在读取状态</span></header>
   <p id="identity" class="muted"></p>
   <div id="feedback" role="status" aria-live="polite" hidden></div>
   <section aria-labelledby="connection-title">
     <h2 id="connection-title">连接</h2>
-    <p id="summary">正在连接本地控制器…</p>
-    <dl id="health"></dl>
-    <div class="actions"><button id="remote" disabled>暂停远程访问</button><button id="restart" class="secondary" disabled>重启连接服务</button><button id="check" class="secondary">检查连接</button></div>
-    <p class="hint">暂停会关闭远程访问，但保留本地控制中心。退出请使用系统托盘的“停止服务并退出”。</p>
+    <p id="summary">正在读取连接状态…</p>
+    <div class="actions"><button id="remote" disabled>暂停远程访问</button></div>
+    <details><summary>连接详情</summary><dl id="health"></dl></details>
+    <p class="hint">暂停会关闭远程访问，设置仍可使用。托盘中“退出 Team DevSpace”会停止本次连接并关闭托盘，不更改原有登录启动设置。</p>
   </section>
   <section aria-labelledby="settings-title">
     <h2 id="settings-title">本机设置</h2>
-    <form id="project-form">
-      <label for="project-root">项目目录</label>
-      <p id="current-root" class="hint"></p>
-      <div class="input-row"><input id="project-root" name="projectRoot" placeholder="输入本机项目的完整路径" maxlength="4096" autocomplete="off"><button id="choose-folder" class="secondary" type="button">选择目录…</button></div>
-      <p class="hint">文件工具使用此目录。Shell 仍以你的用户权限执行，这不是系统级沙箱。切换后需要在 ChatGPT 中重新连接。</p>
-      <button id="save-project" class="secondary" type="submit" disabled>更改项目目录</button>
-    </form>
+    <div class="project-setting">
+      <h3>项目目录</h3>
+      <p id="current-root" class="project-path"></p>
+      <button id="choose-folder" class="secondary" type="button" disabled>更换项目目录…</button>
+      <p class="hint" id="project-hint">在目录窗口确认后直接应用，取消则不更改。切换后需要在 ChatGPT 中重新连接；已暂停的访问不会自动恢复。</p>
+      <details id="manual-project"><summary>手动输入路径</summary>
+        <form id="project-form">
+          <label for="project-root">本机项目完整路径</label>
+          <div class="input-row"><input id="project-root" name="projectRoot" placeholder="输入本机项目的完整路径" maxlength="4096" autocomplete="off"><button id="save-project" class="secondary" type="submit" disabled>应用目录</button></div>
+        </form>
+      </details>
+      <p class="hint">文件工具使用此目录。Shell 仍以你的用户权限执行，这不是系统级沙箱。</p>
+    </div>
     <form id="key-form">
       <label for="access-key">Access Key</label>
       <input id="access-key" name="accessKey" type="password" placeholder="输入管理员发放的 Access Key" autocomplete="new-password" maxlength="128" required>
@@ -33,13 +39,13 @@
       <button id="save-key" type="submit">完成设置</button>
     </form>
   </section>
-  <section aria-labelledby="diagnostics-title">
-    <h2 id="diagnostics-title">诊断与修复</h2>
-    <div class="actions"><button id="repair" class="secondary" disabled>修复连接</button><button id="logs" class="secondary">打开日志</button><button id="diagnostics" class="secondary">查看诊断</button><button id="copy" class="secondary" hidden>复制诊断</button></div>
+  <section aria-labelledby="diagnostics-title" id="diagnostics-section">
+    <h2 id="diagnostics-title" tabindex="-1">诊断与修复</h2>
+    <div class="actions"><button id="check" class="secondary">检查连接</button><button id="restart" class="secondary" disabled>重启连接</button><button id="repair" class="secondary" disabled>修复连接</button><button id="logs" class="secondary">打开日志</button><button id="diagnostics" class="secondary">查看诊断</button><button id="copy" class="secondary" hidden>复制诊断</button></div>
     <p class="hint">修复沿用当前设备身份和项目目录；已暂停的访问不会被自动恢复。诊断信息已隐藏凭据。</p>
     <pre id="report" tabindex="0" hidden></pre>
   </section>
-  <footer><p id="version"></p><p id="author"></p><p>此页面仅监听本机回环地址，不通过 Team DevSpace 公网连接提供。</p></footer>
+  <footer aria-label="关于 Team DevSpace"><p id="version"></p><p id="author"></p><p>此页面仅在本机提供，不通过 Team DevSpace 公网连接提供。</p></footer>
 </main>
 </body>
 </html>

@@ -22,7 +22,7 @@ test('tray ownership is stable per state directory and independent of key change
 
 test('shared presentation distinguishes intent, observed health and partial pause failures', () => {
   for (const [status, visual, summary, action] of [
-    [healthy, 'ready', '正常', 'suspend'],
+    [healthy, 'ready', '已连接', 'suspend'],
     [{ ...healthy, ready: false, bridge: false }, 'partial', '本机服务异常', 'suspend'],
     [stopped, 'stopped', '本机服务已停止', 'suspend'],
     [{ ...stopped, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' }, 'suspended', '远程访问已暂停', 'resume'],
@@ -44,7 +44,7 @@ test('shared presentation distinguishes intent, observed health and partial paus
   assert.equal(disabled.remoteEnabled, false); assert.equal(disabled.switchKeyEnabled, true);
   assert.equal(trayState({ ...stopped, enrollmentPending: true, remoteAccess: 'not-enrolled' }).repairEnabled, true);
   const busy = trayState(healthy, { busy: true, activity: '处理中' });
-  assert.equal(busy.summary, 'Team DevSpace 正常'); assert.equal(busy.remoteEnabled, false);
+  assert.equal(busy.summary, 'Team DevSpace 已连接'); assert.equal(busy.remoteEnabled, false);
   assert.equal(busy.checkEnabled, false); assert.equal(busy.switchKeyEnabled, false); assert.equal(busy.exitEnabled, true);
   assert.equal(busy.menu.find(item => item.id === 'settings').enabled, true);
   assert.equal(trayState(null, { accessKeyMode: 'replace-key' }).switchKeyText, '更换 Access Key…');
@@ -53,15 +53,18 @@ test('shared presentation distinguishes intent, observed health and partial paus
   assert.equal(recovery.remoteEnabled, false);
   assert.equal(recovery.repairEnabled, true);
   const notice = trayState(healthy, { notice: '旧操作已完成' });
-  assert.equal(notice.menu[0].text, 'Team DevSpace 正常');
+  assert.equal(notice.menu[0].text, 'Team DevSpace 已连接');
   assert.equal(notice.iconStatus, 'ready');
 });
 
 test('the shared native menu contains only status, common actions and Control Center entry', () => {
   const view = trayState(healthy);
-  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['settings', 'suspend', 'restart', 'logs', 'exit']);
+  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['suspend', 'settings', 'troubleshoot', 'exit']);
   assert.equal(view.menu.find(item => item.id === 'project').text, '项目：project-a');
-  assert.equal(view.menu.find(item => item.id === 'exit').text, '停止服务并退出 Team DevSpace');
+  assert.equal(view.menu.find(item => item.id === 'exit').text, '退出 Team DevSpace');
+  assert.match(view.tooltip, /已连接.*project-a/);
+  assert.ok(!view.menu.some(item => ['restart', 'logs'].includes(item.action)));
+  assert.ok(view.menu.find(item => item.id === 'device').text.startsWith('此设备：'));
   assert.ok(!view.menu.some(item => ['switch-key', 'project-root', 'repair'].includes(item.action)));
 });
 
@@ -72,18 +75,19 @@ test('native adapter coalesces opening settings, ignores removed actions and sto
     let first=true;
     process.stdin.on('data',()=>{if(!first)return;first=false;
       for(const action of ['settings','settings','switch-key','logs'])console.log(JSON.stringify({event:'menu',action}));
-      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'exit'})),100);
+      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'troubleshoot'})),60);
+      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'exit'})),130);
     });
     process.stdin.on('end',()=>process.exit(0));
   `;
   await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
     operations: { status: async () => healthy, localState: async () => ({ accessKeyMode: 'replace-key' }),
       logs: async () => { calls.push('logs'); }, exit: async () => { calls.push('exit'); } },
-    startLocalControl: async () => ({ open: async () => { calls.push('settings'); await new Promise(r => setTimeout(r, 30)); },
+    startLocalControl: async () => ({ open: async section => { calls.push(section ?? 'settings'); await new Promise(r => setTimeout(r, 30)); },
       close: async () => { calls.push('close'); } }),
   });
   assert.equal(calls.filter(value => value === 'settings').length, 1);
-  assert.deepEqual(calls.filter(value => value !== 'settings'), ['logs', 'exit', 'close']);
+  assert.deepEqual(calls.filter(value => value !== 'settings'), ['diagnostics', 'exit', 'close']);
 });
 
 test('native startup keeps tray separate from runtime and never embeds credentials', { skip: !['win32', 'darwin'].includes(process.platform) }, () => {

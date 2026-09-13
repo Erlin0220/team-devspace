@@ -18,7 +18,7 @@ function summaryOf(status) {
       : !stopped ? '暂停未完成' : gateway === 'active' ? '本机已暂停，服务端待确认' : '本机已暂停，服务端状态未知';
   } else if (gateway === 'suspended') { visual = 'suspended'; text = '服务端仍处于暂停状态'; }
   else if (status.currentProjectRootAvailable === false) text = '项目目录不可用';
-  else if (status.ready) { visual = 'ready'; text = '正常'; }
+  else if (status.ready) { visual = 'ready'; text = '已连接'; }
   else if (gateway === 'unreachable') { visual = stopped ? 'stopped' : 'partial'; text = '无法连接服务'; }
   else if (stopped) { visual = 'stopped'; text = '本机服务已停止'; }
   else if (!status.tunnel) text = '连接通道异常';
@@ -61,15 +61,15 @@ export function desktopState(status, { busy = false, exiting = false, activity, 
   const item = (id, text, enabled, action = id) => ({ id, text, enabled, action });
   const separator = id => ({ id, text: '', enabled: false, separator: true });
   view.iconStatus = alert ? 'partial' : activity ? 'busy' : view.status;
-  view.tooltip = alert ?? activity ?? view.summary;
+  view.tooltip = `Team DevSpace · ${alert ? '需要处理，点击查看设置' : activity ?? view.summary.replace(/^Team DevSpace /, '')}${root ? ` · ${basename(root)}` : ''}`;
   view.menu = [
-    item('status', alert ? '操作未完成，请打开控制中心' : activity ?? view.summary, false, ''),
+    item('status', alert ? '操作未完成，请打开设置查看' : activity ?? view.summary, false, ''),
+    item('device', `此设备：${view.computer}`, false, ''),
     item('project', view.projectText, false, ''), separator('main-separator'),
-    item('settings', '打开控制中心…', !exiting),
     item('remote', view.remoteText, view.remoteEnabled, view.remoteAction),
-    item('restart', '重启连接服务', view.restartEnabled),
-    item('logs', '打开日志', !exiting), separator('exit-separator'),
-    item('exit', '停止服务并退出 Team DevSpace', !exiting),
+    item('settings', '设置…', !exiting),
+    item('troubleshoot', '诊断与修复…', !exiting), separator('exit-separator'),
+    item('exit', '退出 Team DevSpace', !exiting),
   ];
   return view;
 }

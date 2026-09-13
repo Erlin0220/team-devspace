@@ -42,8 +42,9 @@ export function createDesktopController(home = stateHome(), options = {}) {
   const listeners = new Set();
   const utilities = new Map();
   let prompts = new AbortController();
-  const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || closing,
-    exiting: closing, activity, notice, alert: failure ?? probeFailure }), checkedAt });
+  const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || utilities.has('choose-folder') || closing,
+    exiting: closing, activity: !closing && utilities.has('choose-folder') ? '正在选择项目目录…' : activity,
+    notice, alert: failure ?? probeFailure }), checkedAt });
   const publish = () => { if (!disposed) for (const listener of listeners) listener(snapshot()); };
   const readLocal = async () => {
     const generation = revision;
@@ -85,18 +86,32 @@ export function createDesktopController(home = stateHome(), options = {}) {
     if (['logs', 'diagnostics', 'choose-folder'].includes(action)) {
       if (!operations[action]) throw new Error('不支持的操作');
       if (utilities.has(action)) return utilities.get(action);
+      if (action === 'choose-folder') { failure = undefined; notice = undefined; }
       if (prompts.signal.aborted) prompts = new AbortController();
       const task = Promise.resolve().then(() => operations[action]({ ...input, signal: prompts.signal }))
         .catch(error => { failure = desktopErrorText(error); publish(); throw error; })
-        .finally(() => utilities.delete(action));
-      utilities.set(action, task);
+        .finally(() => { utilities.delete(action); publish(); });
+      utilities.set(action, task); publish();
       return task;
     }
     if (!Object.hasOwn(ACTIVITY, action) || !operations[action]) throw Object.assign(new Error('未知控制操作'), { status: 400 });
-    if (pending) throw Object.assign(new Error('已有操作正在进行，请等待完成'), { status: 409 });
+    if (pending || utilities.has('choose-folder')) throw Object.assign(new Error('已有操作正在进行，请等待完成'), { status: 409 });
     revision++; failure = undefined; notice = undefined; activity = ACTIVITY[action];
     pending = Promise.resolve().then(async () => {
-      const result = await operations[action]({ ...input, signal: prompts.signal,
+      let parameters = input;
+      // Selecting a replacement is one controller operation. Cancellation never
+      // commits a path, and exit can cancel the prompt before a transaction starts.
+      if (action === 'project-root' && input.projectRoot === undefined) {
+        activity = '正在选择项目目录…'; publish();
+        const projectRoot = await dispatch('choose-folder', { projectRoot: status?.currentProjectRoot ?? local.currentProjectRoot });
+        if (!projectRoot || closing || prompts.signal.aborted) {
+          if (!closing) notice = '已取消更换项目目录';
+          return { cancelled: true };
+        }
+        parameters = { ...input, projectRoot };
+        activity = ACTIVITY[action]; publish();
+      }
+      const result = await operations[action]({ ...parameters, signal: prompts.signal,
         onProgress: message => { if (!closing) { activity = macProgress(message); publish(); } } });
       await readLocal();
       if (!closing) {
@@ -106,7 +121,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
             ? result : await operations.status();
           probeFailure = undefined;
         } catch (error) { status = null; probeFailure = desktopErrorText(error); }
-        if (!result?.cancelled) notice = SUCCESS[action];
+        if (!result?.cancelled) notice = action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action];
         checkedAt = new Date().toISOString();
       }
       return result;

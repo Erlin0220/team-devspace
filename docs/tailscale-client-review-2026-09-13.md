@@ -62,3 +62,13 @@
 - 公网结果文件只在业务检查、授权回收及本地清理之后确定通过，携带平台及安装 manifest 指纹；新尝试先作废旧结果，工具响应丢失不能被当作成功。Windows 员工实装、Linux 公网、原生桌面 smoke 和 macOS CI 的证据仍分别记录，互不冒充。
 
 当前员工 Windows 实装入口仅支持默认 `LOCALAPPDATA/TDS` 且已有有效 Enrollment 的安装；它不是面向任意路径的通用管理工具。Mac 的公网登录、实体 Intel、Gatekeeper/管理员授权及瞬时桌面窗口行为仍须按实际环境与记录单独判断。
+
+## 人工桌面反馈后的收敛
+
+Tailscale 官方 [client preferences](https://tailscale.com/docs/features/client/manage-preferences) 与 [debug menu](https://tailscale.com/docs/reference/debug-menu) 支持把常用意图与低频排障分开；这不要求复制它的子菜单结构。Team DevSpace 保留标准原生菜单，一级操作收敛为暂停/恢复、设置、诊断入口和退出，设备与项目只展示。诊断入口仍打开同一设置页的对应区域，不给两个 native adapter 增加递归菜单或另一份维护动作。
+
+已配置设备的目录选择与应用由 controller 组合成一个操作；首次配置保留目录草稿并与 Key 一起提交。手动路径是折叠备用输入，仍调用同一项目切换事务。取消不触发配置写入或网络探测；退出可取消尚未提交的选择，已开始的事务仍等待收尾。进度来自原控制器，网页反馈在滚动时保持可见。
+
+Windows 遮挡根因是未指定窗口 owner。保留现有系统 FolderBrowserDialog 和短生命周期适配器，通过一个不显示任务栏的临时 Form 关联调用窗口，再将其作为对话框 owner；不直接禁用外部浏览器。真实桌面测试验证层级、焦点、确认/取消及中止。试验中的全局 TopMost 方案已删除，不用模拟按键、AttachThreadInput 或全局前台策略修改。微软 [Form.Show owner](https://learn.microsoft.com/en-us/dotnet/api/system.windows.forms.form.show) 与 [SetForegroundWindow restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow) 是边界依据；更换框架本身不会自动取得前台权限。
+
+本轮不更换 Rust/Swift 构建链，不新增依赖、守护进程或持久化状态。Windows/macOS 的业务与生命周期仍由既有 controller/control/platform 层统一处理；原生适配只处理展示、窗口与选择结果。

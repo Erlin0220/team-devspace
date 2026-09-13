@@ -7,6 +7,7 @@ import { runWindowsDesktop } from './windows-desktop.mjs';
 import { desktopErrorText } from './desktop.mjs';
 
 const ASSETS = { '/': ['control.html', 'text/html; charset=utf-8'],
+  '/diagnostics': ['control.html', 'text/html; charset=utf-8'],
   '/control.js': ['control.js', 'text/javascript; charset=utf-8'],
   '/control.css': ['control.css', 'text/css; charset=utf-8'] };
 const ACTIONS = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'setup', 'switch-key',
@@ -110,7 +111,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
       if (body.projectRoot !== undefined && (typeof body.projectRoot !== 'string' || body.projectRoot.length > 4096 || body.projectRoot.includes('\0'))) {
         throw badRequest('项目目录无效');
       }
-      if (['setup', 'project-root'].includes(body.action) && !body.projectRoot?.trim()) throw badRequest('请输入项目目录');
+      if ((body.action === 'setup' || (body.action === 'project-root' && body.projectRoot !== undefined)) && !body.projectRoot?.trim()) throw badRequest('请输入项目目录');
       const result = await controller.dispatch(body.action, { accessKey: body.accessKey, projectRoot: body.projectRoot });
       // Only a folder picker returns data. Never serialize arbitrary operation/state objects.
       send(200, { ok: true, ...(body.action === 'choose-folder' ? { projectRoot: result ?? null } : {}) });
@@ -123,7 +124,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   origin = `http://127.0.0.1:${server.address().port}`;
   return {
     url: `${origin}/#${token}`,
-    open: () => openBrowser(`${origin}/#${token}`),
+    open: section => openBrowser(`${origin}/${section === 'diagnostics' ? 'diagnostics' : ''}#${token}`),
     close: () => new Promise((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());
       // The owner settles controller transactions before closing this surface.

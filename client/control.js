@@ -5,6 +5,7 @@ if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) sessionStorage.setItem('tds-control-to
 history.replaceState(null, '', location.pathname);
 const token = sessionStorage.getItem('tds-control-token') ?? '';
 let current, clientError, submitting = false, polling = false, rootEdited = false, loadingReport = false;
+let activeAction;
 const feedback = (message, error = false) => {
   $('feedback').hidden = !message;
   $('feedback').textContent = message ?? '';
@@ -31,6 +32,8 @@ async function request(path, body) {
 }
 function render(state) {
   current = state;
+  const setup = state.accessKeyMode === 'setup';
+  const nativePicker = ['win32', 'darwin'].includes(state.platform);
   $('identity').textContent = `${state.computer} · ${state.platform} ${state.architecture}`;
   $('version').textContent = `Team DevSpace ${state.version} · DevSpace ${state.devspaceVersion}`;
   $('author').textContent = `作者：${state.author.name} · ${state.author.email}`;
@@ -52,9 +55,17 @@ function render(state) {
     ['save-key', state.switchKeyEnabled], ['choose-folder', !state.busy]]) $(id).disabled = submitting || !enabled || state.exiting;
   $('access-key').disabled = submitting || state.busy || state.exiting;
   $('project-root').disabled = submitting || state.busy || state.exiting;
-  $('current-root').textContent = state.projectRoot ? `当前：${state.projectRoot}` : '尚未选择。首次连接时将使用下面的目录。';
   if (!rootEdited && document.activeElement !== $('project-root')) $('project-root').value = state.projectRoot ?? '';
-  $('save-key').textContent = state.accessKeyMode === 'setup' ? '完成设置并连接' : '更换 Access Key';
+  $('current-root').textContent = setup ? ($('project-root').value ? `待使用：${$('project-root').value}` : '尚未选择项目目录') : state.projectRoot ?? '项目目录不可用';
+  $('choose-folder').hidden = !nativePicker;
+  $('choose-folder').textContent = submitting && ['choose-folder', 'project-root'].includes(activeAction)
+    ? '正在处理目录…' : setup ? '选择项目目录…' : '更换项目目录…';
+  if (!nativePicker) $('manual-project').open = true;
+  $('save-project').hidden = setup;
+  $('save-project').disabled ||= !rootEdited || !$('project-root').value.trim() || $('project-root').value.trim() === state.projectRoot;
+  $('project-hint').textContent = setup ? '先选择项目目录，再输入 Access Key 完成设置。'
+    : '在目录窗口确认后直接应用，取消则不更改。切换后需要在 ChatGPT 中重新连接；已暂停的访问不会自动恢复。';
+  $('save-key').textContent = setup ? '完成设置并连接' : '更换 Access Key';
   $('logs').disabled = state.exiting || submitting;
   $('diagnostics').disabled = state.exiting || loadingReport;
   $('copy').disabled = state.exiting;
@@ -76,23 +87,26 @@ async function refresh() {
 }
 async function action(name, input = {}) {
   if (submitting) return;
-  submitting = true; clientError = undefined;
+  submitting = true; activeAction = name; clientError = undefined;
   if (current) render(current);
-  feedback(name === 'choose-folder' ? '请在本机目录选择窗口中确认；也可以取消后直接输入路径。' : '正在处理，请稍候…');
+  feedback(name === 'choose-folder' || (name === 'project-root' && input.projectRoot === undefined)
+    ? '正在打开目录选择窗口…' : '正在处理，请稍候…');
   try {
     const result = await request('/api/action', { action: name, ...input });
     if (name === 'choose-folder' && result.projectRoot) { $('project-root').value = result.projectRoot; rootEdited = true; }
     if (['setup', 'switch-key'].includes(name)) $('access-key').value = '';
     if (['project-root', 'setup'].includes(name)) rootEdited = false;
   } catch (error) { clientError = error.message; feedback(clientError, true); }
-  finally { submitting = false; await refresh(); }
+  finally { submitting = false; activeAction = undefined; await refresh(); }
 }
-$('project-root').addEventListener('input', () => { rootEdited = true; });
+$('project-root').addEventListener('input', () => { rootEdited = true; if (current) render(current); });
 $('remote').addEventListener('click', () => action(current.remoteAction));
 for (const name of ['restart', 'check', 'repair', 'logs']) $(name).addEventListener('click', () => action(name));
-$('choose-folder').addEventListener('click', () => action('choose-folder', { projectRoot: $('project-root').value }));
+$('choose-folder').addEventListener('click', () => current?.accessKeyMode === 'setup'
+  ? action('choose-folder', { projectRoot: $('project-root').value }) : action('project-root'));
 $('project-form').addEventListener('submit', event => {
   event.preventDefault();
+  if (current?.accessKeyMode === 'setup') return;
   if (confirm('切换项目目录将重启当前项目连接。继续吗？')) action('project-root', { projectRoot: $('project-root').value.trim() });
 });
 $('key-form').addEventListener('submit', event => {
@@ -113,6 +127,6 @@ $('copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('report').textContent); feedback('诊断信息已复制'); }
   catch { feedback('浏览器未允许复制，请从下方诊断文本中手动复制。', true); }
 });
-void refresh();
+void refresh().then(() => { if (location.pathname === '/diagnostics') $('diagnostics-title').focus(); });
 setInterval(() => { if (!document.hidden) void refresh(); }, 1500);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });

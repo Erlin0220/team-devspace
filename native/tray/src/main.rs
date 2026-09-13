@@ -139,7 +139,7 @@ impl Application {
         if let Some(state) = &self.state {
             if let Some(entry) = state.menu.iter().find(|entry| entry.enabled && !entry.action.is_empty()
                 && self.items.get(&entry.id).is_some_and(|item| item.id() == id)) {
-                if entry.action == "settings" || entry.action == "logs" {
+                if entry.action == "settings" || entry.action == "troubleshoot" {
                     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
                 }
                 emit("menu", serde_json::json!({"action": entry.action}));

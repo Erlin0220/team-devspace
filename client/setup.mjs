@@ -10,7 +10,7 @@ import { approvedProjectRoot, atomicJson, atomicText, DEVSPACE_VERSION, installR
 import { control, loopbackRequest } from './http.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
-import { runWindowsDesktop } from './windows-desktop.mjs';
+import { chooseWindowsProject } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 import { runMacForm } from './macos-ui.mjs';
 import { trayExecutable, trayInstanceId } from './desktop.mjs';
@@ -161,22 +161,7 @@ export async function promptProjectRoot(currentProjectRoot, { signal, home = sta
     }
   }
   if (process.platform !== 'win32') throw new Error('Use an absolute project directory on this platform');
-  const script = `
-Add-Type -AssemblyName System.Windows.Forms
-$picker = New-Object System.Windows.Forms.FolderBrowserDialog
-$picker.Description = '选择 Team DevSpace 当前项目目录'
-$picker.ShowNewFolderButton = $false
-if ($env:TEAM_DEVSPACE_CURRENT_PROJECT -and (Test-Path -LiteralPath $env:TEAM_DEVSPACE_CURRENT_PROJECT -PathType Container)) {
-  $picker.SelectedPath = $env:TEAM_DEVSPACE_CURRENT_PROJECT
-}
-try {
-  if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($picker.SelectedPath) }
-} finally { $picker.Dispose() }
-`;
-  try {
-    return (await runWindowsDesktop(script, { signal, timeout: 300000,
-      env: { TEAM_DEVSPACE_CURRENT_PROJECT: currentProjectRoot ?? '' } })).trim() || null;
-  } catch (error) { if (error.name === 'AbortError') return null; throw error; }
+  return chooseWindowsProject(currentProjectRoot, { signal });
 }
 
 async function waitForRuntimeReady(state, home, { request = loopbackRequest, timeout = 15000 } = {}) {

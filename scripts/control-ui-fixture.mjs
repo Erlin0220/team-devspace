@@ -33,7 +33,8 @@ if (command === 'start') {
   if (!response.ok || (await response.json()).fixtureNonce !== info.nonce) throw new Error('Refused to stop an unrelated process');
   process.kill(info.pid); await rm(marker, { force: true }); console.log(JSON.stringify({ stopped: true }));
 } else if (command === 'serve') {
-  let configured = false, root, desired = 'active';
+  let configured = process.env.TEAM_DEVSPACE_UI_FIXTURE_CONFIGURED === '1';
+  let root = configured ? 'C:\\fixture\\project-a' : undefined, desired = 'active';
   const nonce = randomUUID(), calls = {};
   const health = () => configured ? { ready: desired === 'active', devspace: desired === 'active',
     bridge: desired === 'active', tunnel: desired === 'active', gateway: desired,
@@ -53,7 +54,10 @@ if (command === 'start') {
   const controller = createDesktopController('unused', { refreshInterval: 500, operations: {
     status: async () => health(), localState: async () => ({ configured, accessKeyMode: configured ? 'replace-key' : 'setup', currentProjectRoot: root }),
     ...Object.fromEntries(['setup', 'switch-key', 'project-root', 'suspend', 'resume', 'restart', 'repair', 'logs'].map(name => [name, operation(name)])),
-    'choose-folder': async () => 'C:\\fixture\\project-selected',
+    'choose-folder': async () => {
+      calls.picker = (calls.picker ?? 0) + 1;
+      return calls.picker === 1 ? 'C:\\fixture\\project-selected' : calls.picker === 2 ? 'C:\\fixture\\project-picked' : null;
+    },
     diagnostics: async () => ({ fixtureNonce: nonce, liveDevice: false, calls }),
   } });
   controller.start();

@@ -93,9 +93,9 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 安装成功后，员工在 ChatGPT 连接共享 App，输入同一个 Access Key 即可。状态检查只报告可观测到的本地/网关健康状态，不会伪造“ChatGPT 已连接”。
 
-Windows/macOS 登录后显示统一的系统托盘/菜单栏入口：真实状态、当前项目、**打开控制中心**、暂停/恢复远程访问、重启连接服务、打开日志、**停止服务并退出 Team DevSpace**。两端从同一份 `desktop-state.mjs` 投影渲染菜单和图标；`desktop-controller.mjs` 只协调操作与反馈，实际生命周期仍复用现有 controller/操作锁/系统启动管理器。点击明确的“停止服务并退出”会停止 runtime/tunnel；托盘崩溃或输入管道异常关闭则不会改变远程访问意图。
+Windows/macOS 登录后显示统一的系统托盘/菜单栏入口：真实状态、当前设备与项目、暂停/恢复远程访问、**设置…**、**诊断与修复…**、**退出 Team DevSpace**。诊断入口定位到同一个本机设置页，不再在托盘复制维护按钮或创建第二套诊断界面。两端从同一份 `desktop-state.mjs` 投影渲染菜单和图标；`desktop-controller.mjs` 只协调操作与反馈，实际生命周期仍复用现有 controller/操作锁/系统启动管理器。“退出 Team DevSpace”停止本次连接并关闭托盘，但保留原有登录启动设置；关闭设置网页或托盘崩溃不会改变远程访问意图。
 
-Access Key、项目目录、检查连接、修复、脱敏诊断和作者/版本信息集中到一个本地控制中心，不再维护两套托盘设置弹窗。控制中心首次使用时才在现有桌面进程中监听随机的 `127.0.0.1` 端口；不增加公网路由、独立服务、持久状态或 npm 依赖。每次启动生成独立访问凭据，通过 URL fragment 交给页面，再移至当前标签页 `sessionStorage`；API 校验 Bearer、Host 和同源请求，密钥不会回显。暂停远程访问不关闭本地设置。目录选择复用 Windows 系统对话框与已打包的 macOS AppKit helper，也支持直接输入路径，不做跨平台路径猜测或映射。首次安装继续使用现有原生设置窗口。
+Access Key、项目目录、检查连接、修复、脱敏诊断和作者/版本信息集中到一个本地控制中心，不再维护两套托盘设置弹窗。控制中心首次使用时才在现有桌面进程中监听随机的 `127.0.0.1` 端口；不增加公网路由、独立服务、持久状态或 npm 依赖。每次启动生成独立访问凭据，通过 URL fragment 交给页面，再移至当前标签页 `sessionStorage`；API 校验 Bearer、Host 和同源请求，密钥不会回显。暂停远程访问不关闭本地设置。已配置设备使用“更换项目目录…”一次选择并应用，取消不改配置；首次设置的目录仍与 Access Key 一起提交。手动路径输入折叠为备用方式，并复用同一更改动作。目录选择复用 Windows 系统对话框与已打包的 macOS AppKit helper；Windows 使用调用窗口关联的临时 owner，不全局置顶、不禁用浏览器、不修改前台策略。首次安装继续使用现有原生设置窗口。
 
 Linux 使用稳定 CLI 和原有 systemd/无 systemd 生命周期，不引入桌面控制面或托盘。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
 
@@ -147,7 +147,7 @@ npm run test:native
 
 `package` 必须在目标系统下以目标 CPU 架构的 Node 进程构建，不能跨平台复制 SQLite/PTY 模块；macOS Intel 构建允许在 Apple Silicon 主机上通过 Rosetta 运行完整 x86_64 Node/npm 构建链。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建器优先复用启动它且版本完全匹配 `packageManager` 的 npm，避免 hosted macOS 为取得 npm CLI 再完整安装一次仓库依赖；本地全局 npm 版本不匹配时仍可回退到仓库锁定的 npm devDependency。构建后自动清理解压/组装中间文件；所有平台的员工 runtime archive 都排除 source map 与 TypeScript 声明文件，并且不携带构建用 npm 和 lock/.npmrc。
 
-本地控制中心浏览器验收先运行 `node scripts/control-ui-fixture.mjs start`，再用已安装的 Playwright 浏览器打开输出 URL，执行 `scripts/control-browser-smoke.js` 中的函数代码；完成后执行 `node scripts/control-ui-fixture.mjs stop`。夹具使用生产页面、HTTP 服务和共享控制器，但连接操作全部隔离，不写真实员工设备或云端 Key。
+本地控制中心浏览器验收先运行 `node scripts/control-ui-fixture.mjs start`，再用已安装的 Playwright 浏览器打开输出 URL，执行 `scripts/control-browser-smoke.js` 中的函数代码；完成后执行 `node scripts/control-ui-fixture.mjs stop`。夹具使用生产页面、HTTP 服务和共享控制器，但连接操作全部隔离，不写真实员工设备或云端 Key。Windows 原生目录窗口单独运行 `node scripts/windows-picker-smoke.mjs --desktop [--runtime-root <installed-path>]`，实际确认/取消、检查前后台层级与调用窗口可用性；锁屏会失败而不是假装完成 GUI 验收。
 
 `test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过生产共享投影生成 JSON-lines 菜单，检查真实菜单事件、畸形输入拒绝、同实例互斥、隔离实例共存并正常退出；macOS 额外验证真实 AppKit 目录选择器的显示和取消。Windows Rust helper 使用 `cargo build --locked`，构建还检查 PE 必须是原生 x64 GUI 子系统；macOS helper 使用系统 `xcrun swiftc`，额外验收菜单事件、错误输入拒绝、表单单实例、错误后原地重试与正常关闭。macOS 构建中的 `--self-test` 不要求 GUI，但不替代桌面验收。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；Windows/Linux 深度验收在本机执行；Codemagic 另对最终 `.pkg` 执行真实系统安装、LaunchAgent 与已安装载荷验收。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
 

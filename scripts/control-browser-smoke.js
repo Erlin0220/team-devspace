@@ -25,7 +25,7 @@ async (page) => {
     await p.waitForFunction(() => document.querySelector('#feedback').textContent.includes('正在处理本机设置'), null, { timeout: 2300 });
     check(await p.locator('#save-key').isDisabled(), 'controller progress stays visible while a real submission is pending');
     await settled();
-    await p.waitForFunction(() => document.querySelector('#summary').textContent.includes('正常'));
+    await p.waitForFunction(() => document.querySelector('#summary').textContent.includes('已连接'));
     check(await p.locator('#access-key').inputValue() === '', 'successful enrollment clears the key input');
     await p.locator('#diagnostics').click();
     await p.waitForFunction(() => !document.querySelector('#report').hidden);
@@ -34,6 +34,13 @@ async (page) => {
     check((await p.locator('#remote').textContent()).includes('恢复'), 'pause is rendered from the controller observed/desired state');
     check(await p.locator('#restart').isDisabled(), 'restart cannot silently undo pause');
     check(await p.locator('#save-key').isEnabled(), 'settings remain usable while remote access is paused');
+    check(await p.locator('#manual-project').getAttribute('open') === null, 'normal directory changes do not require a draft input or separate Save button');
+    await p.locator('#choose-folder').click(); await settled();
+    check((await p.locator('#current-root').textContent()).includes('project-picked'), 'one folder-selection action immediately applies the chosen project');
+    await p.locator('#choose-folder').click(); await settled();
+    check((await p.locator('#current-root').textContent()).includes('project-picked'), 'cancelled selection preserves the committed project');
+    check((await p.locator('#feedback').textContent()).includes('已取消'), 'cancel is a normal outcome, not a connection error');
+    await p.locator('#manual-project summary').click();
     await p.locator('#project-root').fill('C:\\fixture\\project-b'); confirm(); await p.locator('#save-project').click(); await settled();
     check((await p.locator('#current-root').textContent()).includes('project-b'), 'project change is reflected in the shared snapshot');
     check((await p.locator('#remote').textContent()).includes('恢复'), 'changing project does not resume remote access');
@@ -45,6 +52,8 @@ async (page) => {
     check(!(await p.locator('#feedback').textContent()).includes(`tds_${'b'.repeat(43)}`), 'operation errors never echo Access Keys');
     await p.locator('#access-key').fill(`tds_${'a'.repeat(43)}`); confirm(); await p.locator('#save-key').click(); await settled();
     check(await p.locator('#access-key').inputValue() === '', 'key replacement can be retried without reopening a modal');
+    await p.goto(`${url.split('/').slice(0, 3).join('/')}/diagnostics#${capability}`); await settled();
+    check(await p.locator('#diagnostics-title').evaluate(el => document.activeElement === el), 'tray diagnostics navigates to the same page section, not another implementation');
     await p.reload(); await settled();
     check((await p.locator('#current-root').textContent()).includes('project-b'), 'reload restores controller state without losing the local capability');
     check(await p.evaluate(() => !Object.values(localStorage).some(value => value.includes('tds_'))), 'Access Keys are never persisted in browser localStorage');

@@ -133,11 +133,44 @@ test('exit cancels only a folder prompt and waits for an already-started binding
     exit: async () => { order.push('stop'); },
   } });
   t.after(() => controller.dispose());
-  const prompt = controller.dispatch('choose-folder'); const work = controller.dispatch('switch-key'); await delay(5);
+  const work = controller.dispatch('switch-key'); const prompt = controller.dispatch('choose-folder'); await delay(5);
   const exiting = controller.dispatch('exit'); await delay(5);
   assert.equal(promptAborted, true); assert.deepEqual(order, ['binding-start']);
   mutation.resolve(); await Promise.all([prompt, work, exiting]);
   assert.deepEqual(order, ['binding-start', 'binding-commit', 'stop']);
+});
+
+test('one project action selects and commits once; cancelled or exit-cancelled selection never mutates', async t => {
+  let selection = '/new-project', commits = 0, probes = 0;
+  const prompt = deferred(); let waiting = false;
+  const controller = createDesktopController('unused', { operations: {
+    localState: async () => ({ currentProjectRoot: '/old-project', accessKeyMode: 'replace-key' }),
+    status: async () => { probes++; return healthy; },
+    'choose-folder': async ({ signal }) => {
+      if (!waiting) return selection;
+      signal.addEventListener('abort', () => prompt.resolve(null), { once: true });
+      return prompt.promise;
+    },
+    'project-root': async ({ projectRoot }) => { assert.equal(projectRoot, '/new-project'); commits++; return healthy; },
+    exit: async () => {},
+  } });
+  t.after(() => controller.dispose());
+  await controller.dispatch('project-root');
+  assert.equal(commits, 1);
+  selection = null;
+  const probesBeforeCancel = probes;
+  assert.equal((await controller.dispatch('project-root')).cancelled, true);
+  assert.equal(commits, 1);
+  assert.equal(probes, probesBeforeCancel, 'Cancelling a native picker must not wait for a network health probe');
+  assert.match(controller.snapshot().notice, /已取消/);
+  waiting = true;
+  const pending = controller.dispatch('project-root');
+  await delay(5);
+  assert.equal(controller.snapshot().busy, true);
+  await assert.rejects(controller.dispatch('project-root'), { status: 409 });
+  await controller.dispatch('exit');
+  assert.equal((await pending).cancelled, true);
+  assert.equal(commits, 1, 'Exiting while the picker is open must not commit a returned path');
 });
 
 test('failure retains actionable feedback and re-reads the persisted pause', async t => {
@@ -172,7 +205,9 @@ test('unconfigured desktop can exit but corrupt state is not silently accepted',
 test('loopback Control Center protects reads and writes against cross-origin, rebinding and missing capability', async t => {
   const calls = [];
   const controller = createDesktopController('unused', { operations: { status: async () => healthy,
-    diagnostics: async () => ({ remoteAccess: 'active' }), logs: async () => calls.push('logs') } });
+    diagnostics: async () => ({ remoteAccess: 'active' }), logs: async () => calls.push('logs'),
+    'choose-folder': async () => '/selected-project',
+    'project-root': async ({ projectRoot }) => { calls.push(projectRoot); return healthy; } } });
   const ui = await startLocalControl(controller, { openBrowser: async () => {} });
   t.after(async () => { await ui.close(); await controller.dispose(); });
   const url = new URL(ui.url), base = url.origin, authorization = `Bearer ${url.hash.slice(1)}`;
@@ -201,4 +236,8 @@ test('loopback Control Center protects reads and writes against cross-origin, re
   assert.equal((await post({ action: 'logs' })).status, 200);
   assert.deepEqual(calls, ['logs']);
   assert.equal((await api('/api/diagnostics')).status, 200);
+  assert.equal((await fetch(base + '/diagnostics')).status, 200);
+  assert.equal((await post({ action: 'project-root', projectRoot: '' })).status, 400);
+  assert.equal((await post({ action: 'project-root' })).status, 200);
+  assert.deepEqual(calls, ['logs', '/selected-project'], 'A pathless authorized request performs selection and one actual change');
 });

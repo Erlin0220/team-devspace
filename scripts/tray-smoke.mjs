@@ -114,11 +114,11 @@ for (const state of [
 // Exercise the real native menu handlers on both platforms without invoking
 // connection operations. Both adapters consume the production controller schema.
 child.stdin.write(`${JSON.stringify(desktopState(healthy))}\n`);
-for (const action of ['settings', 'remote', 'restart', 'logs', 'exit']) {
+for (const action of ['settings', 'remote', 'troubleshoot', 'exit']) {
   child.stdin.write(`${JSON.stringify({ exerciseMenu: action })}\n`);
 }
 child.stdin.write('not-json\n{}\n');
-await waitFor(() => applied.length === 6 && menuActions.length === 5 && protocolErrors === 2,
+await waitFor(() => applied.length === 6 && menuActions.length === 4 && protocolErrors === 2,
   'process coalesced commands and malformed input');
 if (process.platform === 'darwin') {
   await smokeMacForm(binary, env);
@@ -136,7 +136,7 @@ const code = await new Promise((resolveExit, reject) => {
 assert.equal(code, 0, stderr);
 assert.equal(protocolErrors, 2, 'Native tray must accept valid state and explicitly reject malformed input');
 assert.deepEqual(applied, ['ready', 'partial', 'suspended', 'stopped', 'ready', 'ready']);
-assert.deepEqual(menuActions, ['settings', 'suspend', 'restart', 'logs', 'exit']);
+assert.deepEqual(menuActions, ['settings', 'suspend', 'troubleshoot', 'exit']);
 console.log(JSON.stringify({ passed: true, platform: process.platform, nativeTray: true,
   protocol: 'json-lines', packagedArtifact: binary.includes(`bundle-${target}`), lifecycleIndependent: true,
   singleInstance: true, isolatedInstance: true, sharedMenu: true, nativeMenuActions: true,

@@ -22,6 +22,38 @@ export function runWindowsDesktop(script, { signal, timeout = 15000, env = {} } 
   });
 }
 
+export async function chooseWindowsProject(currentProjectRoot, { signal } = {}) {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition 'using System;using System.Runtime.InteropServices;using System.Windows.Forms;public sealed class DialogCaller : IWin32Window { [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow(); private readonly IntPtr handle = GetForegroundWindow(); public IntPtr Handle { get { return handle; } } }'
+$caller = New-Object DialogCaller
+$owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'Team DevSpace'
+$owner.ShowInTaskbar = $false
+$owner.StartPosition = 'CenterScreen'
+$owner.FormBorderStyle = 'None'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Opacity = 0
+# A nonmodal, caller-owned window anchors the picker above its caller without
+# globally pinning it over other apps or disabling a foreign browser window.
+$picker = New-Object System.Windows.Forms.FolderBrowserDialog
+$picker.Description = '选择 Team DevSpace 项目目录'
+$picker.ShowNewFolderButton = $false
+if ($env:TEAM_DEVSPACE_CURRENT_PROJECT -and (Test-Path -LiteralPath $env:TEAM_DEVSPACE_CURRENT_PROJECT -PathType Container)) {
+  $picker.SelectedPath = $env:TEAM_DEVSPACE_CURRENT_PROJECT
+}
+try {
+  if ($caller.Handle -eq [IntPtr]::Zero) { $owner.Show() } else { $owner.Show($caller) }
+  $owner.Activate()
+  if ($picker.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($picker.SelectedPath) }
+} finally { $picker.Dispose(); $owner.Dispose() }
+`;
+  try {
+    return (await runWindowsDesktop(script, { signal, timeout: 300000,
+      env: { TEAM_DEVSPACE_CURRENT_PROJECT: currentProjectRoot ?? '' } })).trim() || null;
+  } catch (error) { if (error.name === 'AbortError') return null; throw error; }
+}
+
 export async function openWindowsDirectory(directory) {
   await runWindowsDesktop(`
 Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class DesktopWindow { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
