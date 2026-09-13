@@ -133,7 +133,7 @@ cp -f "release/$artifact" "release/$artifact.sha256" "$SOURCE/release/"
 # Keep the source-bound acceptance beside the copied artifact; an old report
 # from a previous WSL run must not be mistaken for evidence of these bytes.
 mkdir -p "$SOURCE/release/offline/$version/linux-x64"
-cp -f "release/offline/$version/linux-x64/acceptance.json" "$SOURCE/release/offline/$version/linux-x64/acceptance.json"
+cp -f "release/$artifact" "release/$artifact.sha256" "release/offline/$version/linux-x64/acceptance.json" "$SOURCE/release/offline/$version/linux-x64/"
 sha256sum "$SOURCE/release/$artifact"
 printf 'Linux x64 acceptance passed.\nArtifact: %s\n' "$SOURCE/release/$artifact"
 '@

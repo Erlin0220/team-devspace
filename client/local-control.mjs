@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -41,6 +41,26 @@ export async function openControlBrowser(url) {
   } else {
     await promisify(execFile)(process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open', [url],
       { timeout: 10000, maxBuffer: 16384 });
+  }
+}
+
+// Use the dynamic/private range, outside Fetch's restricted ports. Some hosts
+// configure a wider ephemeral range, so listen(0) can return a browser-blocked
+// port. Bind directly and retry contention; do not probe then release a socket.
+export async function listenOnBrowserPort(server, choosePort = () => randomInt(49152, 65536)) {
+  for (let attempt = 0; attempt < 16; attempt++) {
+    try {
+      await new Promise((resolve, reject) => {
+        const cleanup = () => { server.removeListener('error', failed); server.removeListener('listening', ready); };
+        const failed = error => { cleanup(); reject(error); };
+        const ready = () => { cleanup(); resolve(); };
+        server.once('error', failed).once('listening', ready);
+        server.listen(choosePort(), '127.0.0.1');
+      });
+      return;
+    } catch (error) {
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code) || attempt === 15) throw error;
+    }
   }
 }
 
@@ -99,10 +119,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   server.on('clientError', (_error, socket) => socket.destroy());
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
-  });
+  await listenOnBrowserPort(server);
   origin = `http://127.0.0.1:${server.address().port}`;
   return {
     url: `${origin}/#${token}`,

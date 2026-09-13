@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, createServer } from 'node:http';
 import { createDesktopController } from '../client/desktop-controller.mjs';
-import { startLocalControl } from '../client/local-control.mjs';
+import { startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
 import { diagnosticReport, stopTeamDevSpace } from '../client/control.mjs';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
@@ -14,6 +14,27 @@ const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gatew
 const paused = { ready: false, devspace: false, bridge: false, tunnel: false, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
+
+test('Control Center binds browser-safe ports and retries occupied ports without leaking listeners', async t => {
+  const blocker = createServer(), server = createServer((_request, response) => response.end('reachable'));
+  const listeningHandlers = server.listenerCount('listening'); // Node HTTP owns a connection-tracking listener.
+  t.after(() => { blocker.close(); blocker.closeAllConnections(); server.close(); server.closeAllConnections(); });
+  await listenOnBrowserPort(blocker);
+  const occupied = blocker.address().port;
+  assert.ok(occupied >= 49152 && occupied <= 65535, 'Do not inherit a host ephemeral range containing Fetch-blocked ports');
+  let attempts = 0;
+  await listenOnBrowserPort(server, () => 49152 + ((occupied - 49152 + attempts++) % 16384));
+  assert.ok(attempts >= 2, 'The first candidate was actually occupied');
+  assert.equal(server.address().address, '127.0.0.1');
+  assert.equal(await (await fetch(`http://127.0.0.1:${server.address().port}`)).text(), 'reachable');
+  assert.equal(server.listenerCount('error'), 0);
+  assert.equal(server.listenerCount('listening'), listeningHandlers);
+  const exhausted = createServer(); let rejected = 0;
+  const originalHandlers = exhausted.listenerCount('error') + exhausted.listenerCount('listening');
+  await assert.rejects(listenOnBrowserPort(exhausted, () => { rejected++; return occupied; }), { code: 'EADDRINUSE' });
+  assert.equal(rejected, 16, 'Contention is bounded, never an infinite startup wait');
+  assert.equal(exhausted.listenerCount('error') + exhausted.listenerCount('listening'), originalHandlers);
+});
 
 test('Control Center bounds stalled requests without retrying an uncertain mutation', async t => {
   const source = await readFile(new URL('../client/control.js', import.meta.url), 'utf8');

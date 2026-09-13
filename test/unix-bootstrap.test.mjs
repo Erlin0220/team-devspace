@@ -145,6 +145,30 @@ printf protected
   assert.equal(stdout, 'protected');
 });
 
+test('WSL copy-back keeps the canonical release artifact and its acceptance evidence together', async t => {
+  const helper = (await readFile('scripts/linux-wsl.ps1', 'utf8')).replaceAll('\r\n', '\n');
+  const start = helper.indexOf('mkdir -p "$SOURCE/release"');
+  const copyBack = helper.slice(start, helper.indexOf("\n'@", start));
+  assert.ok(start >= 0 && copyBack.includes('acceptance.json'));
+  const { stdout } = await shell(t, `
+SOURCE="$PWD/source with spaces"
+version=0.2.1
+artifact="Team-DevSpace-$version-linux-x64-offline.tar.gz"
+mkdir -p "release/offline/$version/linux-x64" "$SOURCE/release/offline/$version/linux-x64"
+printf new-artifact > "release/$artifact"
+printf new-checksum > "release/$artifact.sha256"
+printf '{"passed":true}' > "release/offline/$version/linux-x64/acceptance.json"
+printf stale-artifact > "$SOURCE/release/offline/$version/linux-x64/$artifact"
+${copyBack}
+cmp "release/$artifact" "$SOURCE/release/$artifact"
+cmp "release/$artifact" "$SOURCE/release/offline/$version/linux-x64/$artifact"
+cmp "release/$artifact.sha256" "$SOURCE/release/offline/$version/linux-x64/$artifact.sha256"
+cmp "release/offline/$version/linux-x64/acceptance.json" "$SOURCE/release/offline/$version/linux-x64/acceptance.json"
+printf synchronized
+`);
+  assert.ok(stdout.endsWith('synchronized'));
+});
+
 test('Unix damaged-client uninstall has a native startup fallback', () => {
   assert.match(script, /remove_native_startup_fallback/);
   assert.match(script, /invoke_client "\$current" uninstall/);
