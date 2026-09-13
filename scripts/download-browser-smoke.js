@@ -9,7 +9,8 @@ async (page) => {
   await page.emulateMedia({ reducedMotion: 'reduce', forcedColors: 'none' });
   check(await page.locator('h1').count() === 1, 'One semantic page heading');
   check(await page.locator('.platform-card').count() === 4, 'All four download targets visible');
-  check(await page.locator('script').count() === 0, 'The homepage must not need client JavaScript');
+  check(await page.locator('script[src$="/download-site.js"]').count() === 1, 'Only the tiny copy helper script is allowed');
+  check(await page.locator('img.brand-mark[src$="/devspace-logo-light.png"]').count() === 2, 'Header and footer must use the product logo');
   const anchors = await page.locator('a[href^="#"]').evaluateAll(links => links.map(a => ({ href: a.getAttribute('href'), exists: Boolean(document.querySelector(a.getAttribute('href'))) })));
   check(anchors.every(a => a.exists), 'Every internal link must have a target');
   for (const width of [320, 375, 390, 600, 768, 1024, 1280, 1440, 1920]) {
@@ -26,30 +27,31 @@ async (page) => {
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  const pause = page.locator('#pause-motion');
-  await pause.focus();
-  if (await pause.isChecked()) await page.keyboard.press('Space');
-  await page.keyboard.press('Space');
-  check(await pause.isChecked(), 'Keyboard must toggle motion pause');
-  check(await page.locator('.light-ribbon').first().evaluate(el => getComputedStyle(el).animationPlayState) === 'paused', 'Motion must actually pause');
-  await page.keyboard.press('Space');
-  check(await page.locator('.light-ribbon').first().evaluate(el => getComputedStyle(el).animationPlayState) === 'running', 'Motion must resume');
+  check(await page.locator('#pause-motion,.motion-toggle').count() === 0, 'No manual motion controls');
+  check(await page.locator('.light-ribbon').first().evaluate(el => getComputedStyle(el).animationPlayState) === 'running', 'Hero motion runs by default');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   check(await page.locator('.light-ribbon').first().evaluate(el => getComputedStyle(el).animationName) === 'none', 'Reduced motion must disable animation');
-  results.checks.push('keyboard motion pause/resume', 'reduced motion');
+  results.checks.push('default hero motion', 'reduced motion');
   for (const detail of await page.locator('.faq-list details').all()) {
     const before = await detail.evaluate(el => el.open);
     await detail.locator('summary').click();
     check(await detail.evaluate(el => el.open) === !before, 'Native FAQ must toggle');
     await detail.locator('summary').click();
   }
-  await page.locator('.nav-cta').click();
+  const navCta = page.locator('.nav-cta');
+  await navCta.hover();
+  check(await navCta.evaluate(el => getComputedStyle(el).color === 'rgb(21, 20, 23)'), 'Header CTA text remains readable on hover');
+  await navCta.click();
   check(await page.evaluate(() => location.hash) === '#download', 'Primary navigation must reach downloads');
   const security = page.locator('details').filter({ has: page.locator('#security') });
   if (await security.evaluate(el => el.open)) await security.locator('summary').click();
   await page.getByRole('link', { name: '了解安装与安全边界' }).click();
   check(await security.evaluate(el => el.open), 'Linking to security must reveal even a previously closed disclosure');
-  results.checks.push('native FAQ open/close', 'download navigation', 'visible security disclosure');
+  results.checks.push('header CTA hover', 'native FAQ open/close', 'download navigation', 'visible security disclosure');
+  const firstCopy = page.locator('.copy-button').first();
+  await firstCopy.click();
+  check(await firstCopy.locator('.copy-label').textContent() === '已复制', 'Copy command button must confirm success');
+  results.checks.push('copy command');
   await page.emulateMedia({ forcedColors: 'active' });
   const textColors = await page.locator('.headline-top,.hero-word').evaluateAll(nodes => nodes.map(el => getComputedStyle(el).color));
   check(textColors.every(color => color !== 'rgba(0, 0, 0, 0)'), 'Heading must remain readable in forced colors');
@@ -75,7 +77,7 @@ async (page) => {
     check(hash.status() === 200 && (await hash.text()).trim() === asset.sha256, `${target} checksum sidecar`);
     results.packages.push({ target, size: asset.size, head: 200, range: 206, checksum: true });
   }
-  const metadataLinks = await page.locator('.release-links a,.command-label a').evaluateAll(links => [...new Set(links.map(a => a.href).filter(url => !new URL(url).hash))]);
+  const metadataLinks = await page.locator('.release-links a').evaluateAll(links => [...new Set(links.map(a => a.href).filter(url => !new URL(url).hash))]);
   for (const url of metadataLinks) {
     const response = await page.request.head(url, { timeout: 20000 });
     check(response.status() === 200, `Broken metadata link: ${url}`);

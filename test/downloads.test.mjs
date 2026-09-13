@@ -55,6 +55,8 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   const home = join(f.root, 'home');
   await prepareHomepage(home, f.catalog, origin);
   const homepage = await readFile(join(home, 'index.html'), 'utf8');
+  assert.deepEqual(await readFile(join(home, 'devspace-logo-light.png')), await readFile(resolve('platform/macos/devspace-logo-light.png')));
+  assert.equal(await readFile(join(home, 'download-site.js'), 'utf8'), await readFile(resolve('assets/download-site.js'), 'utf8'));
   for (const script of [ps, sh]) {
     assert.ok(script.includes(`${origin}/releases/1.0.0/`));
     assert.ok(!script.includes('?ticket='));
@@ -89,8 +91,13 @@ test('homepage preserves fixed and pinned download identities within the publica
     assert.ok(Buffer.byteLength(page) < 65536);
     assert.ok(page.includes('prefers-reduced-motion:reduce'));
     assert.ok(page.includes('forced-colors:active'));
-    assert.ok(page.includes('animation-play-state:paused'));
+    assert.ok(!page.includes('pause-motion') && !page.includes('暂停动效') && !page.includes('继续动效'));
     assert.ok(page.includes('aria-labelledby="hero-title"'));
+    assert.ok(page.includes(`${origin}/devspace-logo-light.png`));
+    assert.ok(page.includes(`${origin}/download-site.js`));
+    assert.equal((page.match(/data-copy-command/g) ?? []).length, 2);
+    assert.ok(page.includes('复制脚本') && !page.includes('查看脚本'));
+    assert.ok(page.includes('.nav .nav-cta:hover{background:#fff;border-color:#fff;color:#151417}'));
     assert.ok(page.includes('不代表当前设备的实时状态'));
     const base = stable ? origin : `${origin}/releases/${catalog.version}`;
     assert.ok(page.includes(`<code>irm ${base}/install.ps1 | iex</code>`));
@@ -144,10 +151,16 @@ test('server publication is immutable, all-or-nothing, CAS guarded and genuinely
   const run = (action, version = '', stage = '') => execFileSync('bash', [script, server, action, version, stage], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   run('prepare');
   const siteId = 'a'.repeat(32);
+  const homepage = join(first.root, 'homepage');
+  await prepareHomepage(homepage, first.catalog, origin);
   run('site-stage', siteId);
-  await cp(join(first.site, 'index.html'), join(server, '.incoming', `site-${siteId}`, 'index.html'));
+  for (const file of ['index.html', 'download-site.js', 'devspace-logo-light.png']) {
+    await cp(join(homepage, file), join(server, '.incoming', `site-${siteId}`, file));
+  }
   run('site-publish', siteId);
-  assert.equal(await readFile(join(server, 'public', 'index.html'), 'utf8'), await readFile(join(first.site, 'index.html'), 'utf8'));
+  assert.equal(await readFile(join(server, 'public', 'index.html'), 'utf8'), await readFile(join(homepage, 'index.html'), 'utf8'));
+  assert.equal(await readFile(join(server, 'public', 'download-site.js'), 'utf8'), await readFile(join(homepage, 'download-site.js'), 'utf8'));
+  assert.deepEqual(await readFile(join(server, 'public', 'devspace-logo-light.png')), await readFile(join(homepage, 'devspace-logo-light.png')));
   const upload = async (f, id) => { run('stage', f.version, id); await cp(f.site, join(server, '.incoming', id), { recursive: true }); };
   await upload(first, '1'.repeat(32));
   run('publish', first.version, '1'.repeat(32));

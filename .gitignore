@@ -5,6 +5,7 @@ coverage/
 assets/
 !assets/
 assets/*
+!assets/download-site.js
 !assets/admin/
 !assets/admin/**
 release/

@@ -52,7 +52,7 @@ $ARG {
         Referrer-Policy no-referrer
         X-Frame-Options DENY
         Strict-Transport-Security "max-age=31536000"
-        Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; script-src-attr 'none'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'"
         -Server
     }
     @home path /
@@ -101,17 +101,31 @@ if [[ "$ACTION" = site-stage || "$ACTION" = site-discard || "$ACTION" = site-pub
     rm -rf -- "$incoming"
     exit 0
   fi
-  [[ -d "$incoming" && -f "$incoming/index.html" && ! -L "$incoming/index.html" ]] || { echo 'Invalid homepage staging directory' >&2; exit 2; }
-  [[ -z "$(find "$incoming" -mindepth 1 -maxdepth 1 ! -name index.html -print -quit)" ]] || { echo 'Unexpected homepage staging content' >&2; exit 2; }
+  [[ -d "$incoming" ]] || { echo 'Invalid homepage staging directory' >&2; exit 2; }
+  for file in index.html download-site.js devspace-logo-light.png; do
+    [[ -f "$incoming/$file" && ! -L "$incoming/$file" ]] || { echo "Missing homepage asset: $file" >&2; exit 2; }
+  done
+  [[ -z "$(find "$incoming" -mindepth 1 -maxdepth 1 ! -name index.html ! -name download-site.js ! -name devspace-logo-light.png -print -quit)" ]] || { echo 'Unexpected homepage staging content' >&2; exit 2; }
   bytes=$(wc -c < "$incoming/index.html")
+  script_bytes=$(wc -c < "$incoming/download-site.js")
+  logo_bytes=$(wc -c < "$incoming/devspace-logo-light.png")
   [[ "$bytes" -ge 1024 && "$bytes" -le 131072 ]] || { echo 'Homepage size is outside the allowed range' >&2; exit 2; }
+  [[ "$script_bytes" -ge 128 && "$script_bytes" -le 16384 ]] || { echo 'Homepage script size is outside the allowed range' >&2; exit 2; }
+  [[ "$logo_bytes" -ge 1024 && "$logo_bytes" -le 1048576 ]] || { echo 'Homepage logo size is outside the allowed range' >&2; exit 2; }
   grep -Fq '<html lang="zh-CN">' "$incoming/index.html" || { echo 'Homepage marker missing' >&2; exit 2; }
-  temporary="$PUBLIC/.index-$$"
-  trap 'rm -f "$temporary"' EXIT
-  install -m 0444 "$incoming/index.html" "$temporary"
-  mv -Tf "$temporary" "$PUBLIC/index.html"
+  grep -Fq 'data-copy-command' "$incoming/download-site.js" || { echo 'Homepage script marker missing' >&2; exit 2; }
+  temporary_index="$PUBLIC/.index-$$"
+  temporary_script="$PUBLIC/.download-site-$$"
+  temporary_logo="$PUBLIC/.devspace-logo-$$"
+  trap 'rm -f "$temporary_index" "$temporary_script" "$temporary_logo"' EXIT
+  install -m 0444 "$incoming/index.html" "$temporary_index"
+  install -m 0444 "$incoming/download-site.js" "$temporary_script"
+  install -m 0444 "$incoming/devspace-logo-light.png" "$temporary_logo"
+  mv -Tf "$temporary_script" "$PUBLIC/download-site.js"
+  mv -Tf "$temporary_logo" "$PUBLIC/devspace-logo-light.png"
+  mv -Tf "$temporary_index" "$PUBLIC/index.html"
   rm -rf -- "$incoming"
-  echo 'Published public homepage'
+  echo 'Published public homepage assets'
   exit 0
 fi
 version_ok "$ARG" || { echo 'Invalid release version' >&2; exit 2; }

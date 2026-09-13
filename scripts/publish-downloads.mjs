@@ -61,6 +61,8 @@ export async function prepareHomepage(output, catalog, origin) {
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   await writeFile(join(output, 'index.html'), page);
+  await cp(resolve('assets', 'download-site.js'), join(output, 'download-site.js'));
+  await cp(resolve('platform', 'macos', 'devspace-logo-light.png'), join(output, 'devspace-logo-light.png'));
   return page;
 }
 
@@ -120,8 +122,11 @@ async function publishHomepage({ origin, catalog, server, command }) {
   const uploadId = randomUUID().replaceAll('-', '');
   try {
     await command('site-stage', uploadId);
-    await run('scp', ['-q', relative(process.cwd(), join(output, 'index.html')).replaceAll('\\', '/'),
-      `${server.sshHost}:${server.serverRoot}/.incoming/site-${uploadId}/index.html`], { timeout: 120000 });
+    await run('scp', ['-q',
+      relative(process.cwd(), join(output, 'index.html')).replaceAll('\\', '/'),
+      relative(process.cwd(), join(output, 'download-site.js')).replaceAll('\\', '/'),
+      relative(process.cwd(), join(output, 'devspace-logo-light.png')).replaceAll('\\', '/'),
+      `${server.sshHost}:${server.serverRoot}/.incoming/site-${uploadId}/`], { timeout: 120000 });
     await command('site-publish', uploadId);
   } catch (error) {
     await command('site-discard', uploadId).catch(() => {});
@@ -130,6 +135,16 @@ async function publishHomepage({ origin, catalog, server, command }) {
   const response = await request(`${origin}/`);
   if (!/no-store/.test(response.headers.get('Cache-Control') ?? '')) throw new Error('Homepage must not be cached');
   if (await smallBody(response) !== page) throw new Error('Published homepage differs from generated homepage');
+  const localScript = await readFile(join(output, 'download-site.js'), 'utf8');
+  const remoteScript = await request(`${origin}/download-site.js`);
+  if (!/no-store/.test(remoteScript.headers.get('Cache-Control') ?? '') || await smallBody(remoteScript) !== localScript) throw new Error('Published homepage script differs from staging');
+  const localLogo = join(output, 'devspace-logo-light.png');
+  const remoteLogo = await request(`${origin}/devspace-logo-light.png`);
+  const logoBytes = Buffer.from(await remoteLogo.arrayBuffer());
+  if (!remoteLogo.ok || !/no-store/.test(remoteLogo.headers.get('Cache-Control') ?? '') ||
+      logoBytes.length !== (await stat(localLogo)).size || digest(logoBytes) !== await sha256File(localLogo)) {
+    throw new Error('Published homepage logo differs from staging');
+  }
 }
 
 export async function main(argv = process.argv.slice(2)) {
