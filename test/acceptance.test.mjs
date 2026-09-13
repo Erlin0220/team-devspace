@@ -116,6 +116,38 @@ test('source evidence detects staged, unstaged and untracked changes while accep
   assert.throws(() => sourceIdentity(join(root, 'missing')), /ENOENT/);
 });
 
+test('employee Windows acceptance requires explicit opt-in and rejects conflicting installer ownership', async () => {
+  await assert.rejects(exec(process.execPath, [resolve('scripts/windows-installed-smoke.mjs')], {
+    timeout: 10000, env: { ...process.env, NODE_OPTIONS: '' },
+  }), error => /Explicit --live|Windows-only/.test(error.stderr));
+  await assert.rejects(exec(process.execPath, [resolve('scripts/platform-acceptance.mjs'), '--employee-windows-installer', '--direct-windows-installer'], {
+    timeout: 10000, env: { ...process.env, NODE_OPTIONS: '' },
+  }), error => /cannot be combined/.test(error.stderr));
+});
+
+test('strict Windows acceptance rejects isolated-only installer evidence', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tds-final-windows-evidence-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'scripts'));
+  for (const file of ['verify-acceptance.mjs', 'build-utils.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['win32-x64'] } }));
+  const directory = join(root, 'release/offline/1.2.3/win32-x64');
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, 'fixture.exe'), 'test-only bytes');
+  const evidence = { schema: 1, passed: true, release: '1.2.3', target: 'win32-x64',
+    entrypoint: { name: 'fixture.exe', sha256: createHash('sha256').update('test-only bytes').digest('hex') },
+    checks: { releaseLayout: true, installerTransaction: true, installedPayload: true, zeroResidue: true,
+      trayProtocol: true, traySingleInstance: true, nativeStartup: true, finalEntrypointTransaction: false } };
+  const verify = () => exec(process.execPath, ['scripts/verify-acceptance.mjs'], {
+    cwd: root, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '', GITHUB_SHA: '', TEAM_DEVSPACE_REQUIRE_FINAL_WINDOWS: '1' },
+  });
+  await writeFile(join(directory, 'acceptance.json'), JSON.stringify(evidence));
+  await assert.rejects(verify(), error => /final Windows installer bytes/.test(error.stderr));
+  evidence.checks.finalEntrypointTransaction = true;
+  await writeFile(join(directory, 'acceptance.json'), JSON.stringify(evidence));
+  assert.match((await verify()).stdout, /"accepted":true/);
+});
+
 test('system macOS acceptance refuses a non-Codemagic host before touching installed paths', async () => {
   await assert.rejects(exec(process.execPath, [resolve('scripts/macos-package-smoke.mjs')], {
     timeout: 10000, env: { ...process.env, NODE_OPTIONS: '', CI: '', CM_BUILD_ID: '' },

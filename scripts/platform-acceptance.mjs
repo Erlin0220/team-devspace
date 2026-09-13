@@ -7,12 +7,17 @@ import { sha256File, sourceIdentity } from './build-utils.mjs';
 
 const { values } = parseArgs({ options: {
   'direct-windows-installer': { type: 'boolean' },
+  'employee-windows-installer': { type: 'boolean' },
   'system-macos-installer': { type: 'boolean' },
   output: { type: 'string' },
 } });
 const target = `${process.platform}-${process.arch}`;
 if (!release.distribution.targets.includes(target)) throw new Error(`Current platform is not an enabled release target: ${target}`);
 const directWindowsInstaller = Boolean(values['direct-windows-installer']) || process.env.TEAM_DEVSPACE_FINAL_WINDOWS_INSTALLER === '1';
+const employeeWindowsInstaller = Boolean(values['employee-windows-installer']);
+if (employeeWindowsInstaller && (process.platform !== 'win32' || directWindowsInstaller)) {
+  throw new Error('Employee installation acceptance requires Windows and cannot be combined with disposable-runner acceptance');
+}
 if (directWindowsInstaller && process.platform !== 'win32') throw new Error('Direct final-installer acceptance is Windows-only');
 if (directWindowsInstaller && process.env.CI !== 'true') throw new Error('Direct final-installer acceptance is reserved for an isolated CI runner');
 const systemMacosInstaller = Boolean(values['system-macos-installer']);
@@ -61,6 +66,7 @@ if (nativeStartup && !systemMacosInstaller) await runNode('scripts/native-smoke.
 
 if (process.platform === 'win32') {
   await runNode('scripts/installer-smoke.mjs', directWindowsInstaller ? ['--installer', entrypoint, '--direct'] : ['--installer', entrypoint]);
+  if (employeeWindowsInstaller) await runNode('scripts/windows-installed-smoke.mjs', ['--live', '--installer', entrypoint]);
 } else {
   await runNode('scripts/unix-installer-smoke.mjs');
   if (systemMacosInstaller) await runNode('scripts/macos-package-smoke.mjs');
@@ -83,7 +89,7 @@ const evidence = {
     releaseLayout: true,
     installerTransaction: true,
     installedPayload: true,
-    finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller
+    finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller || employeeWindowsInstaller
       : process.platform === 'darwin' ? systemMacosInstaller : true,
     trayProtocol: desktopTray,
     traySingleInstance: desktopTray,
@@ -95,9 +101,11 @@ const evidence = {
       ? 'System PKG installation, first-run UI visibility, interrupted-setup recovery, installed runtime and LaunchAgent/menu-bar lifecycle were tested; Enrollment was seeded, not submitted through the first-run form. Real employee login, Gatekeeper approval and administrator dialogs remain manual.'
       : 'Only PKG extraction and internal bootstrap transactions were tested, not system PKG installation or a LaunchAgent login session.',
       ...(process.arch === 'x64' ? ['An x64 process may run under Rosetta; this is not proof of Intel hardware compatibility.'] : [])]
-    : process.platform === 'win32' && !directWindowsInstaller
-      ? ['Local NSIS acceptance uses the final payload with isolated registry/Start Menu identities; the unmodified final EXE is not installed over an existing employee installation.']
-      : [],
+    : process.platform === 'win32' && employeeWindowsInstaller
+      ? ['The unmodified final EXE upgraded, uninstalled and restored the existing employee installation. Native menu tests are separate; transient GUI/console behavior was not exhaustively observed.']
+      : process.platform === 'win32' && !directWindowsInstaller
+        ? ['Local NSIS acceptance uses the final payload with isolated registry/Start Menu identities; the unmodified final EXE is not installed over an existing employee installation.']
+        : [],
 };
 await writeFile(output, `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify({ acceptance: true, target, output, checks: evidence.checks }));

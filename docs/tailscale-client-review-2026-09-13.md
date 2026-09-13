@@ -51,3 +51,13 @@
 5. Codemagic arm64/x64：真实 macOS 构建、`.pkg` 系统安装、LaunchAgent 和 native UI smoke；x64 在 Apple Silicon/Rosetta 上不等于 Intel 实机，CI GUI 自动验收不等于同事电脑上 Gatekeeper/手工授权/所有交互都已验证。
 
 具体结果以本轮命令输出、`acceptance.json`、最终文件 SHA-256 与 Codemagic 构建记录为准；构建产物、日志和任何密钥均不提交到 Git。
+
+## 中断后的验收收尾
+
+只读复核确认 `62c7732`、`d586902`、`74c977a` 均真实存在，已完成的分层不重复重构。本次继续保留 Gateway / 原生生命周期 / Bridge / 桌面 controller 的现有边界，没有新增运行时依赖、守护进程或持久化状态。
+
+- 将忽略目录中的临时 Windows 实装探针收敛为 `scripts/windows-installed-smoke.mjs`。修正将 Unix `versions/` 当作 Windows 安装目录的无效残留断言，真实检查 `v/`、已知任务、运行进程、产品注册表和快捷方式；显式 `--live` 才会升级、卸载并恢复当前员工安装。身份、项目和原暂停策略必须保持，失败时仍尝试恢复。`platform-acceptance --employee-windows-installer` 在隔离首次安装验收之后执行此流程，不伪造 CI 环境，也不降低原有严格最终 EXE 门禁。
+- `tray-live-smoke --live --output build/live-result.json` 复用原连接操作增加 Linux 支持：安装最终离线包后验证真实 Gateway/Tunnel、MCP 读写与 shell、暂停/恢复/重启/Repair 和连续换 Key。Linux 发现现有员工 systemd 服务会拒绝覆盖；测试 Key 在结束时撤销，清理失败保留测试目录供恢复。
+- 公网结果文件只在业务检查、授权回收及本地清理之后确定通过，携带平台及安装 manifest 指纹；新尝试先作废旧结果，工具响应丢失不能被当作成功。Windows 员工实装、Linux 公网、原生桌面 smoke 和 macOS CI 的证据仍分别记录，互不冒充。
+
+当前员工 Windows 实装入口仅支持默认 `LOCALAPPDATA/TDS` 且已有有效 Enrollment 的安装；它不是面向任意路径的通用管理工具。Mac 的公网登录、实体 Intel、Gatekeeper/管理员授权及瞬时桌面窗口行为仍须按实际环境与记录单独判断。
