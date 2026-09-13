@@ -107,6 +107,8 @@ npm run downloads:publish -- --activate <previous-version>
 
 This changes future downloads, not already-running clients. Client downgrade requires an explicitly compatible historical installer; there is no generic promise that future state-schema migrations are backward-compatible. The current release adds no state-schema migration. A corrupt old release cannot be activated. Keep both current and a known-good previous version; do not automatically delete releases needed for rollback. Private GitHub release assets may serve as off-server backups, without being part of employee installation.
 
+The deployed 0.2.2 packages were accepted at source commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. A later documentation-only verification commit is not a new binary build. To re-publish these exact existing artifacts from such a checkout, supply `--commit 4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`; do not relabel their receipts as coming from the documentation commit. The retained 0.2.1 release keeps its older onboarding behavior and is a recovery reference. Employees should use the current stable entrypoint, not assume that a historical package includes the new credential-free installation flow.
+
 ## Trust and actual evidence
 
 SHA-256 pins here inherit HTTPS-site trust; they detect corruption and mixed versions, not a compromised publisher/server. They are not an independent software signature. Existing `internal-free` limits remain: no public Windows signing reputation is promised, and macOS is unsigned/unnotarized unless the existing signing path is explicitly enabled. The installer never disables Gatekeeper, imports root certificates or hides normal security confirmation. See [internal-distribution.md](internal-distribution.md).

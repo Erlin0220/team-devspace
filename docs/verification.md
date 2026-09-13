@@ -2,14 +2,40 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
-## Fixed HTTPS distribution 0.2.2: 2026-09-13 (verification in progress)
+## Fixed HTTPS distribution 0.2.2: 2026-09-13 (deployed and verified)
 
-- [x] Windows full unit suite passed after updating isolated verification fixtures to include the shared catalog module and canonical package filenames.
-- [x] WSL ran the real shell publisher integration: complete four-target fixture publication, corrupt upload rejection, immutable-version protection, stale activation rejection and forward/backward atomic stable switching. These fixtures are not native installer evidence.
-- [x] Existing Aliyun SSH and Caddy were inspected. Region metadata reports `us-east-1`. A dedicated `downloads.568920429.xyz` DNS-only A record and owned Caddy site were added without editing the main Caddyfile or other sites. Direct company-network HTTPS connected successfully; the empty site correctly returned 404 before a release was activated.
-- [x] Existing server baselines remained unchanged after Caddy reload: Memory/MCP unauthenticated 401, key service 200, Caddy active.
-- [x] Historical 0.2.1 GitHub acceptance archive contains clean, same-commit receipts for all four final installers (`7d5ea5321977ca28d3e70b38a5d0d9817783a8fa`); their package bytes still require download/hash verification before publication.
-- [ ] Final 0.2.2 native package construction, clean-source acceptance, production artifact upload, installed-client download validation and production stable rollback are not yet claimed. Final evidence will be added after those operations.
+All four final installers were built and accepted from clean commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. This documentation completion does not change those accepted package bytes. The employee entrypoint is **https://downloads.568920429.xyz/**; stable currently points to **0.2.2**.
+
+- [x] Final Windows full unit suite: **165 tests, 160 passed, 5 platform skips, 0 failures**. WSL full suite: **165 tests, 153 passed, 12 platform skips, 0 failures**; its distribution suite also passed all 14 tests. Source/pin policy, whitespace and Gateway dry-run checks passed. Linux ran the real shell publisher integration for incomplete/corrupt upload rejection, immutable versions, compare-and-swap activation and rollback; its synthetic package fixtures are not native installation evidence.
+- [x] Windows x64: built the unmodified final self-contained EXE, verified archive layout/native modules, native tray protocol/single instance/menu actions and runtime/Bridge lifecycle. The actual employee installation then passed final EXE upgrade, Desktop/Start Menu presence, repeated installation, Repair, credential-redacted diagnostics, real uninstall/owned-residue checks and reinstall. Device identity, binding, project and explicit pause policy were retained. The same entire employee transaction passed again using the EXE actually downloaded from the fixed HTTPS installation script on company WLAN with proxies disabled. This is not a claim that every GUI action was manually clicked or that Windows was rebooted.
+- [x] Linux x64: WSL built and accepted the actual offline archive, real systemd runtime/Bridge startup, authenticated fixture MCP, stop/restart and ownership transfer. A disposable mount/PID namespace with no systemctl or systemd additionally passed install/Enrollment, real runtime/Bridge, MCP read/write/shell, concurrent start, worker/keeper crash and orphan recovery, backoff, stale PID/lock handling, fail-closed pause/resume, scoped project changes, upgrade and failed-activation rollback with zero owned residue. The Tunnel was a deterministic fixture, not a live external Cloudflare path.
+- [x] Linux fixed-script download and installation: the public `install.sh --download-only` ran on WSL through the company connection; the downloaded archive matched the final receipt and was then used for actual isolated installation, hidden-input PTY setup/cancel, repeated install, Repair, damaged-client recovery, corruption rejection and uninstall. No real employee login-session restart is claimed.
+- [x] macOS arm64: Codemagic build **6aa67c31540a6fe040027688** (build 33) finished successfully. Native architecture/minimum-OS checks, AppKit visibility, final system PKG installation, interrupted first-run recovery, installed runtime, LaunchAgent/menu-bar lifecycle and cleanup passed.
+- [x] macOS x64: Codemagic build **6aa67c552dede1408a9fccd2** (build 34) passed the same final PKG gates under **Rosetta on Apple Silicon**. This does not prove physical Intel hardware behavior. Both Mac receipts explicitly state that Enrollment was seeded; employee Access Key submission, Gatekeeper approval and administrator dialogs remain manual. Neither package claims Apple Developer ID signing/notarization.
+- [x] Strict four-platform acceptance passed against the exact commit and final bytes with final Windows installation evidence required. Windows remains unsigned in this release; no certificate trust or Gatekeeper setting was changed.
+
+| Final package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Windows x64 EXE | 144437590 | `79ebdfb3b5b57fa25692a431ffa2f5d6402b43d7ff6f73db67fe8d37dc9d64a3` |
+| macOS arm64 PKG | 94370674 | `c300130ebf86f362148098dc2a6390940dac70318f4cde6bab383234436bca1a` |
+| macOS x64 PKG | 96749765 | `e799c72dcfe8cc3cbab67b9ac275cda0f5ef76524d9cfbf36905efde01d18c0c` |
+| Linux x64 offline archive | 99955622 | `df09c2ceef09c73d328f06195100095d753be92e7dfa13a8ff15e01c1db49dc7` |
+
+### Production distribution and recovery
+
+- [x] Reused the existing Aliyun server (region metadata: `us-east-1`) and Caddy 2.11.4. The owned DNS-only A record `downloads.568920429.xyz` points to that server; the dedicated site is `/etc/caddy/conf.d/team-devspace-downloads.caddy`. The main Caddyfile and other site configurations were not edited. HTTPS obtained a valid certificate through existing Caddy automation; no new daemon, R2 bucket or paid plan was enabled.
+- [x] Server ownership, private staging, SHA-256 checks and atomic version-directory promotion passed for both 0.2.1 and 0.2.2. Retained 0.2.1 packages were fetched from the prior private GitHub archive and matched all four clean final-byte receipts from `7d5ea5321977ca28d3e70b38a5d0d9817783a8fa`.
+- [x] The publisher streamed all four packages back through public HTTPS before activation, verifying exact sizes/hashes, HEAD/ETag and byte ranges. Production rollback and restoration repeated the same full four-file readback checks with proxy environment variables disabled. Fixed scripts/catalog/aliases use no-store; immutable version URLs remain separately addressable. Direct Windows network routing was WLAN, not a configured application proxy.
+- [x] The actual activation audit is **empty -> 0.2.1 -> 0.2.2 -> 0.2.1 -> 0.2.2**, at 10:57:58, 11:02:17, 11:05:58 and 11:06:58 UTC on 2026-09-13. The final public catalog reports source commit `4c0e4cd` and version 0.2.2. Rollback changes future downloads only; existing clients were not silently downgraded. Historical 0.2.1 retains its older onboarding behavior and is a recovery reference, not the employee installation recommendation.
+- [x] The actual public page showed all four platform cards and correct commands at 1280px and 390px, with no horizontal overflow. All 15 distinct page links returned HTTP 200. Windows and Linux public-script downloads were subsequently installed as described above.
+- [x] After publication, the two retained releases used about **831 MiB**, server disk still had about **11 GiB available**, incoming staging was empty, and Caddy remained active. Existing Memory/MCP still returned unauthenticated 401 and the key service 200, matching their pre-deployment baselines.
+- [x] Private GitHub `v0.2.2` backup contains **19 assets**, including all package bytes, scripts/page/catalog/checksums, sanitized receipts and a four-target acceptance ZIP. GitHub-reported package digests match the production catalog. It is retained as a draft backup, not the employee download entrypoint; the source repository remains private.
+
+### Gateway and cleanup
+
+- [x] GitHub deployment run **34753585441** could not start because GitHub reported failed account payments or a spending-limit restriction; it did not execute deployment steps. No billing setting was changed. Instead, the existing authenticated local official Wrangler deployed the current Gateway and changed Admin asset, preserving existing variables/secrets, D1 and domain. No database migration changed in this release.
+- [x] Current Worker version: **365572b3-cddb-456f-b6e3-00ba851f2816**; retained pre-deployment version: `cacfaa88-3807-4d0b-b172-7b3ec322babb`. Live post-deployment readiness verified 0.2.2 health, existing administrator authentication, D1 reads and exact static-asset content/CORS. Anonymous administrator API returned 401 and Admin UI retained its 302 Access challenge. The Worker has no R2 download binding.
+- [x] Both temporary, non-recurring local validation tasks were removed after completion. Test fixtures performed their scoped cleanup; the actual employee installation was restored. Logs and final accepted artifacts remain in ignored local build/release directories for diagnosis, not in Git.
 
 ## Superseded private-download candidate: 2026-09-13 (historical local evidence only)
 
