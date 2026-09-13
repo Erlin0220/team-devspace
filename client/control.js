@@ -11,12 +11,23 @@ const feedback = (message, error = false) => {
   $('feedback').dataset.error = String(error);
 };
 async function request(path, body) {
-  const response = await fetch(path, { method: body ? 'POST' : 'GET', cache: 'no-store',
-    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? '本地控制请求失败');
-  return result;
+  const signal = AbortSignal.timeout(body ? 180000 : 10000);
+  try {
+    const response = await fetch(path, { method: body ? 'POST' : 'GET', cache: 'no-store', signal,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? '本地控制请求失败');
+    return result;
+  } catch (error) {
+    // Losing the HTTP response does not cancel the controller transaction.
+    // Keep polling its facts; never automatically repeat a binding mutation.
+    if (signal.aborted) throw new Error(body
+      ? '请求超时，操作结果尚未确认。请查看当前状态与日志，确认后再重试。'
+      : '读取状态超时，请检查本地控制器。');
+    if (body && error.name === 'TypeError') throw new Error('本地连接中断，操作结果尚未确认。请查看当前状态与日志。');
+    throw error;
+  }
 }
 function render(state) {
   current = state;

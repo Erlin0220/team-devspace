@@ -5,7 +5,8 @@ import { request as httpRequest } from 'node:http';
 import { createDesktopController } from '../client/desktop-controller.mjs';
 import { startLocalControl } from '../client/local-control.mjs';
 import { diagnosticReport, stopTeamDevSpace } from '../client/control.mjs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +14,30 @@ const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gatew
 const paused = { ready: false, devspace: false, bridge: false, tunnel: false, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
+
+test('Control Center bounds stalled requests without retrying an uncertain mutation', async t => {
+  const source = await readFile(new URL('../client/control.js', import.meta.url), 'utf8');
+  const requestSource = source.slice(source.indexOf('async function request('), source.indexOf('\nfunction render('));
+  const keepAlive = setTimeout(() => {}, 2000);
+  t.after(() => clearTimeout(keepAlive));
+  for (const body of [undefined, { action: 'restart' }]) {
+    let calls = 0, deadline;
+    const request = runInNewContext(`${requestSource}\nrequest`, {
+      token: 'test-only-capability',
+      AbortSignal: { timeout: milliseconds => { deadline = milliseconds; return AbortSignal.timeout(20); } },
+      fetch: async (_path, options) => {
+        calls++;
+        assert.ok(options.signal, 'A local HTTP request must have a finite deadline');
+        return new Promise((_resolve, reject) => options.signal.addEventListener('abort',
+          () => reject(options.signal.reason), { once: true }));
+      },
+    });
+    await assert.rejects(request(body ? '/api/action' : '/api/state', body),
+      body ? /操作结果尚未确认/ : /读取状态超时/);
+    assert.equal(calls, 1, 'Never retry a mutation automatically after an uncertain response');
+    assert.equal(deadline, body ? 180000 : 10000);
+  }
+});
 
 test('local settings become available without waiting for a slow gateway probe', async t => {
   const controller = createDesktopController('unused', { operations: {
