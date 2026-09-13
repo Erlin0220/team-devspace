@@ -56,7 +56,7 @@ $ARG {
         -Server
     }
     @home path /
-    rewrite @home /stable/index.html
+    rewrite @home /index.html
     @entry path /install.sh /install.ps1 /catalog.json
     rewrite @entry /stable{path}
     @immutable path /releases/*
@@ -70,6 +70,11 @@ $ARG {
     }
 }
 EOF
+  # During the one-time migration from release-bound homepages, keep / available
+  # before Caddy starts serving the independently managed public index.
+  if [[ ! -e "$PUBLIC/index.html" && -f "$PUBLIC/stable/index.html" && ! -L "$PUBLIC/stable/index.html" ]]; then
+    install -m 0444 "$PUBLIC/stable/index.html" "$PUBLIC/index.html"
+  fi
   sudo -n install -m 0644 "$candidate" "$config"
   if ! sudo -n caddy validate --config /etc/caddy/Caddyfile || ! sudo -n systemctl reload caddy; then
     if [[ -n "$previous" ]]; then sudo -n cp -p "$previous" "$config"; else sudo -n rm -f "$config"; fi
@@ -84,6 +89,31 @@ fi
 exec 9>"$ROOT/.publish.lock"
 flock -w 60 9
 if [[ "$ACTION" = current ]]; then readlink "$PUBLIC/stable" || printf '%s\n' '-'; exit 0; fi
+if [[ "$ACTION" = site-stage || "$ACTION" = site-discard || "$ACTION" = site-publish ]]; then
+  [[ "$ARG" =~ ^[a-f0-9]{32}$ ]] || { echo 'Invalid site staging identity' >&2; exit 2; }
+  incoming="$ROOT/.incoming/site-$ARG"
+  [[ ! -L "$incoming" ]] || { echo 'Invalid site staging directory' >&2; exit 2; }
+  if [[ "$ACTION" = site-stage ]]; then
+    mkdir -m 0700 "$incoming"
+    exit 0
+  fi
+  if [[ "$ACTION" = site-discard ]]; then
+    rm -rf -- "$incoming"
+    exit 0
+  fi
+  [[ -d "$incoming" && -f "$incoming/index.html" && ! -L "$incoming/index.html" ]] || { echo 'Invalid homepage staging directory' >&2; exit 2; }
+  [[ -z "$(find "$incoming" -mindepth 1 -maxdepth 1 ! -name index.html -print -quit)" ]] || { echo 'Unexpected homepage staging content' >&2; exit 2; }
+  bytes=$(wc -c < "$incoming/index.html")
+  [[ "$bytes" -ge 1024 && "$bytes" -le 131072 ]] || { echo 'Homepage size is outside the allowed range' >&2; exit 2; }
+  grep -Fq '<html lang="zh-CN">' "$incoming/index.html" || { echo 'Homepage marker missing' >&2; exit 2; }
+  temporary="$PUBLIC/.index-$$"
+  trap 'rm -f "$temporary"' EXIT
+  install -m 0444 "$incoming/index.html" "$temporary"
+  mv -Tf "$temporary" "$PUBLIC/index.html"
+  rm -rf -- "$incoming"
+  echo 'Published public homepage'
+  exit 0
+fi
 version_ok "$ARG" || { echo 'Invalid release version' >&2; exit 2; }
 DEST="$PUBLIC/releases/$ARG"
 verify() {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { DOWNLOAD_TARGETS, packageName, httpsOrigin, validateCatalog } from '../scripts/download-catalog.mjs';
-import { buildDownloadCatalog, prepareSite } from '../scripts/publish-downloads.mjs';
+import { buildDownloadCatalog, prepareSite, prepareHomepage } from '../scripts/publish-downloads.mjs';
 import { verifyAcceptance } from '../scripts/verify-acceptance.mjs';
 import { renderAdmin } from '../gateway/admin-web.mjs';
 
@@ -52,6 +52,9 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   const ps = await readFile(join(f.site, 'install.ps1'), 'utf8');
   const sh = await readFile(join(f.site, 'install.sh'), 'utf8');
   const page = await readFile(join(f.site, 'index.html'), 'utf8');
+  const home = join(f.root, 'home');
+  await prepareHomepage(home, f.catalog, origin);
+  const homepage = await readFile(join(home, 'index.html'), 'utf8');
   for (const script of [ps, sh]) {
     assert.ok(script.includes(`${origin}/releases/1.0.0/`));
     assert.ok(!script.includes('?ticket='));
@@ -62,8 +65,12 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   assert.ok(sh.includes('hw.optional.arm64'));
   assert.ok(sh.includes('--setup none'));
   assert.ok(!sh.includes('xattr -d') && !sh.includes('spctl --master-disable'));
-  assert.ok(page.includes(`${origin}/install.ps1`));
+  assert.ok(page.includes(`${origin}/releases/1.0.0/install.ps1`));
   assert.ok(page.includes(`${origin}/releases/`));
+  assert.ok(homepage.includes(`${origin}/install.ps1`));
+  assert.ok(homepage.includes(`${origin}/stable/windows-x64.exe`));
+  assert.ok(homepage.includes('把开发机，安全带到 ChatGPT 里。'));
+  assert.ok(homepage.includes('Team DevSpace') && !homepage.includes('tailscale.com'));
   assert.ok(!renderAdmin([]).includes('issue-downloads'));
   assert.equal(spawnSync('bash', ['-n', join(f.site, 'install.sh').replaceAll('\\', '/')]).status, 0);
   assert.equal(spawnSync('bash', ['-n', resolve('scripts/download-server.sh').replaceAll('\\', '/')]).status, 0);
@@ -98,6 +105,11 @@ test('server publication is immutable, all-or-nothing, CAS guarded and genuinely
   const script = resolve('scripts/download-server.sh');
   const run = (action, version = '', stage = '') => execFileSync('bash', [script, server, action, version, stage], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   run('prepare');
+  const siteId = 'a'.repeat(32);
+  run('site-stage', siteId);
+  await cp(join(first.site, 'index.html'), join(server, '.incoming', `site-${siteId}`, 'index.html'));
+  run('site-publish', siteId);
+  assert.equal(await readFile(join(server, 'public', 'index.html'), 'utf8'), await readFile(join(first.site, 'index.html'), 'utf8'));
   const upload = async (f, id) => { run('stage', f.version, id); await cp(f.site, join(server, '.incoming', id), { recursive: true }); };
   await upload(first, '1'.repeat(32));
   run('publish', first.version, '1'.repeat(32));

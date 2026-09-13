@@ -58,6 +58,7 @@ Access Key replacement uses the existing application/CLI transaction. Device ide
   backups/                       # only this Caddy site's previous configuration
   activations.log                # previous/new stable pointers, private
   public/
+    index.html                      # independently published product/download homepage
     releases/<version>/
       Team-DevSpace-<version>-<platform-package>
       *.sha256
@@ -74,7 +75,7 @@ Access Key replacement uses the existing application/CLI transaction. Device ide
 
 The dedicated site is `/etc/caddy/conf.d/team-devspace-downloads.caddy`; it uses the existing import in the main Caddyfile. Before reload it validates the whole Caddy configuration, backing up/restoring only its own site if validation or reload fails. Public file serving is rooted at `public/`, not the server root. No employee state, SSH files, private keys or build environment variables enter that directory.
 
-Version URLs use immutable caching; `/`, scripts, stable metadata/aliases and version-history listing use `no-store`. One shell `flock` serializes publication operations. Stable activation additionally compares the previous pointer recorded by the publisher so a concurrent publisher cannot silently replace a newer activation.
+Version URLs use immutable caching; `/`, scripts, stable metadata/aliases and version-history listing use `no-store`. The public homepage is intentionally separate from immutable release directories so product/download copy and layout can evolve without rebuilding four native installers; `npm run downloads:site` regenerates it from the currently active catalog and replaces one static file atomically. Release-specific `index.html` files remain immutable historical pages. One shell `flock` serializes publication operations. Stable activation additionally compares the previous pointer recorded by the publisher so a concurrent publisher cannot silently replace a newer activation.
 
 ## Release, verification and rollback
 
@@ -88,7 +89,8 @@ Build and accept the four platform packages from one clean committed source tree
 
 ```sh
 npm run downloads:publish                 # local preparation only
-npm run downloads:publish -- --publish    # SSH upload, verify, activate
+npm run downloads:publish -- --publish    # SSH upload, verify, activate, refresh homepage
+npm run downloads:site                    # homepage-only refresh; no installer rebuild
 ```
 
 Publication first copies all four files to a private random staging directory. Server-side SHA-256 verification must pass before the directory becomes visible. Existing versions cannot change. The publisher then streams all four packages back through public HTTPS and checks exact size/hash, HEAD/ETag and byte-range support. Only then is the stable symlink replaced by an atomic rename. Partial upload, corrupted files or failed HTTPS checks do not change stable.
