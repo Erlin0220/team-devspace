@@ -461,7 +461,11 @@ try {
 
     if ($active) {
       Write-Step 'Stopping the active local version before the atomic switch...'
-      if ((Invoke-Client ([string]$active.path) @('stop') -AllowFailure) -ne 0) {
+      if (-not (Test-Path -LiteralPath $stateFile)) {
+        # Before first setup, the desktop may run without any Enrollment state.
+        # Stop only processes rooted in this owned installation, not other clients.
+        Stop-InstallProcesses
+      } elseif ((Invoke-Client ([string]$active.path) @('stop') -AllowFailure) -ne 0) {
         $restartCode = Invoke-Client ([string]$active.path) @('start') -AllowFailure
         Remove-Item -LiteralPath $candidate -Recurse -Force
         if ($restartCode -eq 0) {
@@ -507,9 +511,11 @@ try {
     }
     Write-Step "Team DevSpace $($manifest.release) local application is installed."
 
-    if (-not $hasEnrollment) {
+    # Legacy explicit automation requests remain supported; ordinary installs
+    # never require a credential or attempt Enrollment. The application owns setup.
+    if (-not $hasEnrollment -and $RequestFile) {
       try {
-        Write-Step 'Completing first-run Enrollment after the local installation commit...'
+        Write-Step 'Completing explicitly requested Enrollment after the local installation commit...'
         [void](Invoke-Client $candidate $setup)
         Remove-Item -LiteralPath (Join-Path $InstallPath 'onboarding-error.log') -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath (Join-Path $InstallPath 'onboarding-message.txt') -Force -ErrorAction SilentlyContinue

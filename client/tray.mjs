@@ -68,6 +68,9 @@ export async function runTray(home = stateHome(), options = {}) {
         ready = true;
         unsubscribe = controller.subscribe(send);
         controller.start();
+        if (options.openSettings) void openSettings().catch(error => {
+          process.stderr.write(`[Team DevSpace desktop] Open setup: ${desktopErrorText(error)}\n`);
+        });
       } else if (event.event === 'tray-visible') { visible = true; clearTimeout(startupTimer); }
       else if (event.event === 'duplicate') { duplicate = true; clearTimeout(startupTimer); }
       else if (event.event === 'protocol-error') process.stderr.write('[Team DevSpace desktop] Native protocol error\n');

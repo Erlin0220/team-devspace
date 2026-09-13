@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Small SSH-driven static publisher. No HTTP write API, daemon or package service.
+set -euo pipefail
+ROOT=${1:?server root required}
+ACTION=${2:?action required}
+ARG=${3:-}
+STAGE=${4:-}
+[[ "$ROOT" =~ ^/[a-zA-Z0-9_./-]+$ && "$ROOT" != / && "$ROOT" != /srv && "$ROOT" != /tmp && "$ROOT" != /home && "$ROOT" != *'/../'* && "$ROOT" != */.. ]] || { echo 'Unsafe server root' >&2; exit 2; }
+[[ ! -L "$ROOT" && "$(realpath -m "$ROOT")" = "$ROOT" ]] || { echo 'Server root must not be a symlink' >&2; exit 2; }
+PUBLIC="$ROOT/public"
+OWNER='team-devspace-static-distribution-v1'
+version_ok() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; }
+owned() { [[ -f "$ROOT/.owner" && "$(cat "$ROOT/.owner")" = "$OWNER" && -O "$ROOT/.owner" ]] || { echo 'Unowned distribution root' >&2; exit 2; }; }
+
+if [[ "$ACTION" = prepare ]]; then
+  if [[ ! -e "$ROOT" ]]; then
+    if [[ -w "$(dirname "$ROOT")" ]]; then mkdir "$ROOT"; else sudo -n install -d -m 0755 -o "$(id -un)" "$ROOT"; fi
+  fi
+  if [[ ! -e "$ROOT/.owner" ]]; then
+    [[ -z "$(find "$ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]] || { echo 'Refusing to adopt a nonempty directory' >&2; exit 2; }
+    printf '%s\n' "$OWNER" > "$ROOT/.owner"
+    chmod 600 "$ROOT/.owner"
+  fi
+  owned
+  mkdir -p "$PUBLIC/releases" "$ROOT/.incoming" "$ROOT/backups"
+  chmod 755 "$ROOT" "$PUBLIC" "$PUBLIC/releases"
+  chmod 700 "$ROOT/.incoming" "$ROOT/backups"
+  echo 'Distribution directories ready'
+  exit 0
+fi
+owned
+
+if [[ "$ACTION" = configure ]]; then
+  [[ "$ARG" =~ ^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$ && "$ARG" != *'..'* ]] || { echo 'Invalid hostname' >&2; exit 2; }
+  sudo -n grep -Fxq 'import /etc/caddy/conf.d/*.caddy' /etc/caddy/Caddyfile || { echo 'Existing Caddy conf.d import required; main configuration was not changed' >&2; exit 2; }
+  config=/etc/caddy/conf.d/team-devspace-downloads.caddy
+  previous=''
+  if sudo -n test -e "$config"; then
+    sudo -n grep -Fxq "# $OWNER" "$config" || { echo 'Refusing to replace an unowned Caddy site' >&2; exit 2; }
+    previous="$ROOT/backups/caddy-$(date -u +%Y%m%dT%H%M%SZ)-$$.caddy"
+    sudo -n cp -p "$config" "$previous"
+  fi
+  candidate="$ROOT/.caddy-candidate-$$"
+  trap 'rm -f "$candidate"' EXIT
+  cat > "$candidate" <<EOF
+# $OWNER
+$ARG {
+    root * $PUBLIC
+    encode zstd gzip
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        Strict-Transport-Security "max-age=31536000"
+        Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+        -Server
+    }
+    @home path /
+    rewrite @home /stable/index.html
+    @entry path /install.sh /install.ps1 /catalog.json
+    rewrite @entry /stable{path}
+    @immutable path /releases/*
+    header @immutable Cache-Control "public, max-age=31536000, immutable"
+    @mutable not path /releases/*
+    header @mutable Cache-Control no-store
+    @history path /releases /releases/
+    header @history Cache-Control no-store
+    file_server browse {
+        hide .*
+    }
+}
+EOF
+  sudo -n install -m 0644 "$candidate" "$config"
+  if ! sudo -n caddy validate --config /etc/caddy/Caddyfile || ! sudo -n systemctl reload caddy; then
+    if [[ -n "$previous" ]]; then sudo -n cp -p "$previous" "$config"; else sudo -n rm -f "$config"; fi
+    sudo -n systemctl reload caddy || true
+    echo 'Caddy configuration failed; the owned site configuration was restored' >&2
+    exit 1
+  fi
+  echo "HTTPS site configured: https://$ARG"
+  exit 0
+fi
+
+exec 9>"$ROOT/.publish.lock"
+flock -w 60 9
+if [[ "$ACTION" = current ]]; then readlink "$PUBLIC/stable" || printf '%s\n' '-'; exit 0; fi
+version_ok "$ARG" || { echo 'Invalid release version' >&2; exit 2; }
+DEST="$PUBLIC/releases/$ARG"
+verify() {
+  local directory=$1 suffix
+  [[ -d "$directory" && ! -L "$directory" && -s "$directory/SHA256SUMS" ]] || return 1
+  for suffix in windows-x64-setup.exe macos-arm64.pkg macos-x64.pkg linux-x64-offline.tar.gz; do
+    [[ -s "$directory/Team-DevSpace-$ARG-$suffix" && ! -L "$directory/Team-DevSpace-$ARG-$suffix" ]] || return 1
+  done
+  for suffix in catalog.json install.sh install.ps1 index.html release-notes.txt; do
+    [[ -s "$directory/$suffix" && ! -L "$directory/$suffix" ]] || return 1
+  done
+  (cd "$directory" && sha256sum --check --strict SHA256SUMS)
+}
+
+if [[ "$ACTION" = stage || "$ACTION" = discard ]]; then
+  [[ "$STAGE" =~ ^[a-f0-9]{32}$ ]] || { echo 'Invalid staging identity' >&2; exit 2; }
+  incoming="$ROOT/.incoming/$STAGE"
+  [[ ! -L "$incoming" ]] || { echo 'Invalid staging directory' >&2; exit 2; }
+  if [[ "$ACTION" = stage ]]; then mkdir -m 0700 "$incoming"; else rm -rf -- "$incoming"; fi
+  exit 0
+fi
+
+if [[ "$ACTION" = publish ]]; then
+  [[ "$STAGE" =~ ^[a-f0-9]{32}$ ]] || { echo 'Invalid staging identity' >&2; exit 2; }
+  incoming="$ROOT/.incoming/$STAGE"
+  [[ -d "$incoming" && ! -L "$incoming" && -z "$(find "$incoming" -type l -print -quit)" ]] || { echo 'Invalid staging directory' >&2; exit 2; }
+  verify "$incoming"
+  if [[ -e "$DEST" ]]; then
+    [[ ! -L "$DEST" ]] && cmp -s "$incoming/SHA256SUMS" "$DEST/SHA256SUMS" && verify "$DEST" || { echo 'Immutable release already exists with different content' >&2; exit 1; }
+    rm -rf -- "$incoming"
+    echo "Release already present: $ARG"
+    exit 0
+  fi
+  for pair in 'windows-x64.exe:windows-x64-setup.exe' 'macos-arm64.pkg:macos-arm64.pkg' 'macos-x64.pkg:macos-x64.pkg' 'linux-x64.tar.gz:linux-x64-offline.tar.gz'; do
+    alias=${pair%%:*}; suffix=${pair#*:}
+    ln -s "Team-DevSpace-$ARG-$suffix" "$incoming/$alias"
+    ln -s "Team-DevSpace-$ARG-$suffix.sha256" "$incoming/$alias.sha256"
+  done
+  find "$incoming" -type f -exec chmod 0444 {} +
+  # Moving a directory between parents needs write permission on its inode.
+  # Restrict directories only AFTER rename; files are already read-only.
+  find "$incoming" -type d -exec chmod 0755 {} +
+  mv -T "$incoming" "$DEST"
+  find "$DEST" -type d -exec chmod 0555 {} +
+  echo "Published immutable release: $ARG (stable unchanged)"
+  exit 0
+fi
+
+if [[ "$ACTION" = activate ]]; then
+  verify "$DEST"
+  previous=$(readlink "$PUBLIC/stable" || true)
+  if [[ -n "$STAGE" && "$STAGE" != "${previous:--}" ]]; then
+    echo 'Stable changed during publication; refusing to overwrite another activation' >&2; exit 1
+  fi
+  [[ ! -e "$PUBLIC/stable" || -L "$PUBLIC/stable" ]] || { echo 'Stable is not an owned symlink' >&2; exit 2; }
+  temporary="$PUBLIC/.stable-$$"
+  trap 'rm -f "$temporary"' EXIT
+  ln -s "releases/$ARG" "$temporary"
+  mv -Tf "$temporary" "$PUBLIC/stable"
+  printf '%s\t%s\treleases/%s\n' "$(date -u +%FT%TZ)" "$previous" "$ARG" >> "$ROOT/activations.log"
+  chmod 600 "$ROOT/activations.log"
+  echo "Activated stable: $ARG"
+  exit 0
+fi
+echo 'Unknown action' >&2
+exit 2

@@ -4,7 +4,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpath } from 'node:fs/promises';
 import { atomicJson, DEVSPACE_VERSION, loadState, readJson, RELEASE_VERSION, stateHome } from './state.mjs';
-import { changeProjectRoot, configureDevice, deviceStatus, macSetupDialog, repairDevice, requestFromFile } from './setup.mjs';
+import { changeProjectRoot, configureDevice, deviceStatus, macSetupDialog, repairDevice, replaceAccessKey, requestFromFile } from './setup.mjs';
+import { interactiveInput } from './interactive-setup.mjs';
 import { enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 import { runComponent } from './runtime.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace,
@@ -14,6 +15,8 @@ import { desktopErrorText } from './desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 
 const HELP = `Team DevSpace
+  setup                             Enter Access Key privately and choose a project
+  access-key change                 Change Access Key without reinstalling
   setup --credential-file <file.json> --root <project-directory>
   setup --request-file <private-installer-request.json>
   setup-gui                         Native macOS first-run setup
@@ -47,6 +50,21 @@ export async function main(argv = process.argv.slice(2)) {
   const home = stateHome();
   const [command, action, argument] = positionals;
   if (values.help || !command) { console.log(HELP); return; }
+  if (command === 'start' && process.platform === 'win32' && !(await readJson(join(home, 'state.json'), null))?.bindingId) {
+    // An installed, unconfigured app still opens. No device identity or remote
+    // service is created until the user submits setup in the existing control UI.
+    return runTray(home, { openSettings: true });
+  }
+  const changingKey = command === 'access-key' && action === 'change';
+  if (command === 'access-key' && !changingKey) throw new Error('Use team-devspace access-key change');
+  if ((command === 'setup' || changingKey) && !values['credential-file'] && !values['request-file'] && !values['installer-progress']) {
+    const previous = await readJson(join(home, 'state.json'), null);
+    // Enrolled unattended upgrades retain their existing setup behavior. A new
+    // interactive setup/change prompts before acquiring the device transaction lock.
+    if (changingKey || !previous?.accessKey || process.stdin.isTTY) {
+      values.interactiveInput = await interactiveInput(previous, { root: values.root, changeKey: changingKey });
+    }
+  }
   if (command === 'run') {
     if (action === 'tray') await runTray(home);
     else await runComponent(action, home);
@@ -62,11 +80,15 @@ async function executeCommand(command, action, argument, values, home) {
   let result;
   if (command === 'setup') {
     const input = values['request-file'] ? await requestFromFile(values['request-file'], true)
-      : values['credential-file'] ? await requestFromFile(values['credential-file']) : {};
+      : values['credential-file'] ? await requestFromFile(values['credential-file']) : values.interactiveInput ?? {};
     if (values.root) input.currentProjectRoot = values.root;
     if (values.gateway) input.gateway = values.gateway;
     result = await configureDevice(input, { home, startup: !values['no-startup'],
       onProgress: values['installer-progress'] ? message => console.log(`[Team DevSpace] ${message}`) : undefined });
+  } else if (command === 'access-key') {
+    const input = values['credential-file'] ? await requestFromFile(values['credential-file'])
+      : values['request-file'] ? await requestFromFile(values['request-file'], true) : values.interactiveInput;
+    result = await replaceAccessKey(input?.accessKey, home, { startup: !values['no-startup'], onProgress: message => console.log(message) });
   } else if (command === 'setup-gui') result = await macSetupDialog(home);
   else if (command === 'status') result = await deviceStatus(home);
   else if (command === 'repair') result = await repairDevice(home);

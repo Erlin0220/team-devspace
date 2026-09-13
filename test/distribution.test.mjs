@@ -61,13 +61,13 @@ const baseRelease = {
   version: '1.2.3', gateway: 'https://team.example.test', devspaceVersion: '1.0.8',
   nodeVersion: '22.23.0', cloudflaredVersion: '2026.8.3', cloudflaredSourceCommit: 'f'.repeat(40),
   cloudflaredGoVersion: '1.26.8', gitFallbackVersion: '2.55.0.windows.5',
-  distribution: { mode: 'private-github-release', trustProfile: 'internal-free', macosMinimumVersion: '12.0',
+  distribution: { mode: 'static-https', origin: 'https://downloads.example.com', trustProfile: 'internal-free', macosMinimumVersion: '12.0',
     targets: ['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64'] },
 };
 
-test('distribution config requires private GitHub Releases, internal-free trust and explicit immutable targets', () => {
+test('distribution config requires static HTTPS, internal-free trust and explicit immutable targets', () => {
   const distribution = validateDistributionConfig(baseRelease);
-  assert.equal(distribution.mode, 'private-github-release');
+  assert.equal(distribution.mode, 'static-https');
   assert.equal(distribution.trustProfile, 'internal-free');
   assert.throws(() => validateDistributionConfig({ ...baseRelease,
     distribution: { ...baseRelease.distribution, mode: 'public-object-storage' } }));

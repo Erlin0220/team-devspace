@@ -7,7 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { atomicJson, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
 import { serviceLabel, windowsTaskNames } from '../client/platform.mjs';
-import { run } from './build-utils.mjs';
+import { run, sha256File } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
 if (process.platform !== 'win32') throw new Error('This smoke test exercises the actual Windows NSIS bootstrapper');
@@ -245,6 +245,7 @@ async function repair() {
 }
 
 await acquireSmokeGuard();
+await rm(resolve('build/windows-installer-smoke.json'), { force: true });
 await atomicJson(smokeMarker, { schema: 1, suffix });
 await recoverStaleSmokeScopes();
 
@@ -252,6 +253,21 @@ let canUninstall = false;
 let primaryFailure = null;
 let successReport;
 try {
+  // Exercise the shipping NSIS path without a key, request file or network
+  // enrollment. Repeating this while still unconfigured must also succeed.
+  const softwareEnv = { ...env };
+  delete softwareEnv.TEAM_DEVSPACE_SETUP_REQUEST_FILE;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const code = await execute(installer, ['/S', `/D=${install}`], 240000, softwareEnv);
+    canUninstall = true;
+    assert.equal(code, 0, 'Credential-free software installation must succeed');
+    assert.equal(enrollmentCalls, 0, 'Software installation must not enroll a device');
+    assert.equal(await exists(join(home, 'state.json')), false, 'Software installation must not invent a device identity');
+    assert.equal(await exists(join(install, 'onboarding-error.log')), false);
+    const active = await readJson(join(install, 'active.json'));
+    assert.equal(await exists(join(active.path, 'client', 'cli.mjs')), true);
+    assert.equal(await exists(join(active.path, 'runtime', 'node.exe')), true);
+  }
   const pending = await installAttempt();
   canUninstall = true;
   assert.equal(enrollmentCalls, 1, 'First-run connection setup must make one Enrollment attempt');
@@ -319,7 +335,8 @@ try {
   assert.equal((await readJson(join(home, 'state.json'))).bindingId, bindingId);
   assert.equal(await exists(project), true);
   successReport = { passed: true, actualInstaller: true, selfContainedInstaller: true,
-    directFinalInstaller: Boolean(values.direct), installSurvivesEnrollmentFailure: true,
+    directFinalInstaller: Boolean(values.direct), credentialFreeInstallAndReinstall: true,
+    installSurvivesEnrollmentFailure: true,
     pendingEnrollmentRepairReusesIdentity: true, upgradeSkipsEnrollment: true,
     healthyRepairIsLocalOnly: true, missingTunnelCredentialIsRecoverable: true,
     rerunInstallerRepairsPayload: true, noPersistentPayloadCache: true,
@@ -347,4 +364,6 @@ try {
     else throw new AggregateError(cleanupErrors, `Installer smoke cleanup failed: ${message}`);
   }
 }
+await atomicJson(resolve('build/windows-installer-smoke.json'), { ...successReport,
+  completedAt: new Date().toISOString(), sourceInstallerSha256: await sha256File(sourceInstaller) });
 console.log(JSON.stringify(successReport));

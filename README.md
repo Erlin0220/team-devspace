@@ -26,7 +26,7 @@ ChatGPT 工作空间 App + 员工 Access Key
 
 | 组件 | 版本 |
 | --- | --- |
-| Team DevSpace | 0.2.1 |
+| Team DevSpace | 0.2.2 |
 | 官方 DevSpace | 1.0.8 |
 | Node.js | 22.23.0 |
 | cloudflared | 2026.8.3 |
@@ -37,6 +37,22 @@ ChatGPT 工作空间 App + 员工 Access Key
 | Admin CSS | Pico CSS 2.1.1 |
 
 构建固定使用 npm 11.19.1，避免上游发布的旧 shrinkwrap 绕过安全补丁覆盖；只允许已审核、精确版本的依赖安装脚本。官方 DevSpace 代码保持原样，下游 `undici`、`brace-expansion` 和 `protobufjs` 使用已修补的锁定版本。包管理锁文件和二进制 SHA-256 固定实际输入。员工端不执行 `npm update`；升级使用经过重新验证的 Team DevSpace 安装包。二进制来源和校验值见 `scripts/binaries.json`，安装包内附组件说明、SBOM 和构建来源记录。
+
+## 跨平台一行安装
+
+统一下载入口：**https://downloads.568920429.xyz/**。软件通过现有阿里云服务器和 Caddy HTTPS 静态分发，不需要管理员生成下载链接，不需要下载票据或 GitHub 登录。每个版本的四个平台包和 SHA-256 不可覆盖，固定入口仅切换到已验收版本。
+
+```powershell
+# Windows x64：在 PowerShell 执行
+irm https://downloads.568920429.xyz/install.ps1 | iex
+```
+
+```sh
+# macOS Apple Silicon / Intel 或 Linux x64：自动识别平台
+curl -fsSL https://downloads.568920429.xyz/install.sh | sh
+```
+
+以上命令执行本站 HTTPS 安装脚本；可先在浏览器检查脚本，或直接下载安装包。脚本固定对应版本的包 URL、大小和 SHA-256，校验通过才交给现有系统安装器。安装不携带 Access Key，不创建设备身份；Windows/macOS 安装后在应用内配置，Linux 运行 `~/.local/bin/team-devspace setup`。更换 Key 不需重装。方案、发布、回滚与信任边界见 [固定软件分发](docs/one-command-distribution.md)；实际部署和验收状态仍以 [验证记录](docs/verification.md) 为准。
 
 ## 管理员首次部署
 
@@ -83,11 +99,11 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 管理员先完成云端部署，再按平台取得安装包并分发对应员工的 Access Key。Windows/Linux 只在对应原生主机本地打包，不再走 GitHub Actions；macOS arm64 与 Intel x64 共用根目录 `codemagic.yaml` 的一个 Codemagic M2 workflow，通过 `architecture` 输入选择目标架构。当前构建产物可直接由管理员下载后分发，private GitHub Release 仅作为可选的固定版本归档/交付位置。发行目录和离线布局见 [客户端发行模型](docs/distribution.md)。
 
-**Windows x64：**管理员分发 `Team-DevSpace-0.2.1-windows-x64.zip`。员工解压后，首次先运行 `Trust-Team-DevSpace-Internal-Publisher.ps1` 为当前 Windows 用户信任随包附带的固定内部发布者证书，再运行单个自包含 `Team-DevSpace-0.2.1-windows-x64-setup.exe`，输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
+**Windows x64：**通过固定入口下载单个自包含 `Team-DevSpace-0.2.2-windows-x64-setup.exe`，不再要求 ZIP 或安装前导入证书。当前 `internal-free` 包不承诺公共 Authenticode 信任或 SmartScreen 信誉，保留正常系统确认；管理员已有的内部签名可继续使用，但固定入口不会自动建立根证书信任。安装器只安装软件；完成后打开 Team DevSpace，在应用控制中心输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
 
-**macOS：**分别提供 Apple Silicon (`arm64`) 与 Intel (`x64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含对应架构的离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；两个架构共用同一 M2 workflow，Intel 构建在 Rosetta x86_64 进程中运行目标 Node/npm 与原生依赖安装，cloudflared 由固定源码交叉构建为 amd64，AppKit helper 明确使用 `x86_64-apple-macosx` target。workflow 执行打包、真实 AppKit 窗口/菜单栏短消息冒烟、release layout 校验和对应架构的 Mach-O/最低系统版本检查，不执行系统级 `.pkg` 安装事务。管理员下载 Codemagic 产物并核对随包 SHA-256，再交给对应架构的真实 Mac 安装验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。安装完成后 PKG 会自动打开 Team DevSpace，并通过用户状态目录中的 `.ui-ready` 标记确认原生设置窗口或菜单栏已显示；如果 LaunchServices/Gatekeeper 导致自动首启没有真正发生，会直接向当前登录用户显示恢复指引，而不是静默显示“安装成功”。首次打开完成本地校验和解压后，在同一个 AppKit 窗口输入 Access Key、选择项目目录，并显示验证、错误、重试和完成状态，不下载 runtime；绑定失败时保留已产生的待配置状态与菜单栏入口，用户取消设置不作为安装失败。日常操作使用原生菜单栏与系统单色图标，不弹常规成功通知，设置窗口仍复用 Node 中的验证和生命周期逻辑。
+**macOS：**分别提供 Apple Silicon (`arm64`) 与 Intel (`x64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含对应架构的离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；两个架构共用同一 M2 workflow，Intel 构建在 Rosetta x86_64 进程中运行目标 Node/npm 与原生依赖安装，cloudflared 由固定源码交叉构建为 amd64，AppKit helper 明确使用 `x86_64-apple-macosx` target。workflow 执行打包、真实 AppKit 窗口/菜单栏短消息冒烟、release layout 校验、Mach-O/最低系统版本检查，并对最终 `.pkg` 执行系统安装与 LaunchAgent 验收；Rosetta 验证不等于 Intel 硬件实测。管理员下载 Codemagic 产物并核对随包 SHA-256，再交给对应架构的真实 Mac 安装验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。安装完成后 PKG 会自动打开 Team DevSpace，并通过用户状态目录中的 `.ui-ready` 标记确认原生设置窗口或菜单栏已显示；如果 LaunchServices/Gatekeeper 导致自动首启没有真正发生，会直接向当前登录用户显示恢复指引，而不是静默显示“安装成功”。首次打开完成本地校验和解压后，在同一个 AppKit 窗口输入 Access Key、选择项目目录，并显示验证、错误、重试和完成状态，不下载 runtime；绑定失败时保留已产生的待配置状态与菜单栏入口，用户取消设置不作为安装失败。日常操作使用原生菜单栏与系统单色图标，不弹常规成功通知，设置窗口仍复用 Node 中的验证和生命周期逻辑。
 
-**Linux x64：**当前包要求 `x86_64`、glibc 2.34+ 和可用的 systemd user manager。Linux 当前不走 GitHub Actions；需要时在原生 Linux x64 主机执行 `npm run package`，取得 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与对应 SHA-256。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
+**Linux x64：**当前包要求 `x86_64`、glibc 2.34+；支持 systemd user manager 和已有无 systemd 生命周期。Linux 当前不走 GitHub Actions；需要时在原生 Linux x64 主机执行 `npm run package`，取得 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与对应 SHA-256。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup`，在终端隐藏输入 Access Key 并选择项目目录；以后用 `team-devspace access-key change` 更换 Key。原 `--credential-file` 仅保留为显式无人值守配置入口。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
 
 内部发行仍可能触发 Windows SmartScreen 或 macOS Gatekeeper 的额外确认；只对管理员提供、SHA-256 已核对的固定版本包建立例外，不要关闭整机安全功能。
 
@@ -95,9 +111,9 @@ CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还
 
 Windows/macOS 登录后显示统一的系统托盘/菜单栏入口：真实状态、当前设备与项目、暂停/恢复远程访问、**设置…**、**诊断与修复…**、**退出 Team DevSpace**。诊断入口定位到同一个本机设置页，不再在托盘复制维护按钮或创建第二套诊断界面。两端从同一份 `desktop-state.mjs` 投影渲染菜单和图标；`desktop-controller.mjs` 只协调操作与反馈，实际生命周期仍复用现有 controller/操作锁/系统启动管理器。“退出 Team DevSpace”停止本次连接并关闭托盘，但保留原有登录启动设置；关闭设置网页或托盘崩溃不会改变远程访问意图。
 
-Access Key、项目目录、检查连接、修复、脱敏诊断和作者/版本信息集中到一个本地控制中心，不再维护两套托盘设置弹窗。控制中心首次使用时才在现有桌面进程中监听随机的 `127.0.0.1` 端口；不增加公网路由、独立服务、持久状态或 npm 依赖。每次启动生成独立访问凭据，通过 URL fragment 交给页面，再移至当前标签页 `sessionStorage`；API 校验 Bearer、Host 和同源请求，密钥不会回显。暂停远程访问不关闭本地设置。已配置设备使用“更换项目目录…”一次选择并应用，取消不改配置；首次设置的目录仍与 Access Key 一起提交。手动路径输入折叠为备用方式，并复用同一更改动作。目录选择复用 Windows 系统对话框与已打包的 macOS AppKit helper；Windows 使用调用窗口关联的临时 owner，不全局置顶、不禁用浏览器、不修改前台策略。首次安装继续使用现有原生设置窗口。
+Access Key、项目目录、检查连接、修复、脱敏诊断和作者/版本信息集中到一个本地控制中心，不再维护两套托盘设置弹窗。控制中心首次使用时才在现有桌面进程中监听随机的 `127.0.0.1` 端口；不增加公网路由、独立服务、持久状态或 npm 依赖。每次启动生成独立访问凭据，通过 URL fragment 交给页面，再移至当前标签页 `sessionStorage`；API 校验 Bearer、Host 和同源请求，密钥不会回显。暂停远程访问不关闭本地设置。已配置设备使用“更换项目目录…”一次选择并应用，取消不改配置；首次设置的目录仍与 Access Key 一起提交。手动路径输入折叠为备用方式，并复用同一更改动作。目录选择复用 Windows 系统对话框与已打包的 macOS AppKit helper；Windows 使用调用窗口关联的临时 owner，不全局置顶、不禁用浏览器、不修改前台策略。首次配置时 Windows 使用同一个控制中心，macOS 保留现有原生 AppKit 设置窗口。
 
-Linux 使用稳定 CLI 和原有 systemd/无 systemd 生命周期，不引入桌面控制面或托盘。Windows 开始菜单仍提供 **Status**、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
+Linux 使用稳定 CLI 和原有 systemd/无 systemd 生命周期，不引入桌面控制面或托盘。Windows 开始菜单提供主应用、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
 
 ```sh
 team-devspace status
@@ -123,7 +139,7 @@ team-devspace project-root set <绝对项目目录>
 
 ### 升级和卸载
 
-重新运行明确版本的完整离线安装包，先取得并验证候选版本，再切换 active slot。失败时保留当前版本；成功激活后清理旧解压版本和当前 manifest 不再引用的缓存。没有长期保留的手动回滚槽，需要退回时由管理员重新分发旧版本安装包。私有状态位于应用目录以外：
+重新运行明确版本的完整离线安装包，先取得并验证候选版本，再切换 active slot。失败时保留当前版本；成功激活后清理旧解压版本和当前 manifest 不再引用的缓存。没有长期保留的本地手动回滚槽，需要退回时从下载站历史版本取得兼容的旧安装包。服务器稳定版回滚只改变后续下载，不自动降级现有客户端。私有状态位于应用目录以外：
 
 - Windows：`%LOCALAPPDATA%\TeamDevSpace`
 - macOS：`~/Library/Application Support/TeamDevSpace`

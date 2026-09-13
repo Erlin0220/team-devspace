@@ -14,14 +14,14 @@ test('release acceptance rejects extracted-only PKGs and missing native startup 
   const root = await mkdtemp(join(tmpdir(), 'tds-acceptance-contract-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
-  for (const file of ['verify-acceptance.mjs', 'build-utils.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['darwin-arm64'] } }));
   const directory = join(root, 'release/offline/1.2.3/darwin-arm64');
   await mkdir(directory, { recursive: true });
   const bytes = 'fixture package bytes';
-  await writeFile(join(directory, 'fixture.pkg'), bytes);
+  await writeFile(join(directory, 'Team-DevSpace-1.2.3-macos-arm64.pkg'), bytes);
   const evidence = { schema: 1, passed: true, release: '1.2.3', target: 'darwin-arm64',
-    entrypoint: { name: 'fixture.pkg', sha256: createHash('sha256').update(bytes).digest('hex') },
+    entrypoint: { name: 'Team-DevSpace-1.2.3-macos-arm64.pkg', sha256: createHash('sha256').update(bytes).digest('hex') },
     checks: { releaseLayout: true, installerTransaction: true, installedPayload: true, zeroResidue: true,
       trayProtocol: true, traySingleInstance: true, finalEntrypointTransaction: true, nativeStartup: true } };
   const verify = () => exec(process.execPath, ['scripts/verify-acceptance.mjs'], {
@@ -57,7 +57,7 @@ test('installed payload verification rejects a foreign manifest and altered nati
   const root = await mkdtemp(join(tmpdir(), 'tds-installed-content-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
-  for (const file of ['verify-release.mjs', 'distribution.mjs', 'build-utils.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  for (const file of ['verify-release.mjs', 'distribution.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   await writeFile(join(root, 'release.config.json'), JSON.stringify(release));
   const target = `${process.platform}-${process.arch}`;
   const directory = join(root, 'release/offline', release.version, target);
@@ -129,13 +129,13 @@ test('strict Windows acceptance rejects isolated-only installer evidence', async
   const root = await mkdtemp(join(tmpdir(), 'tds-final-windows-evidence-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
-  for (const file of ['verify-acceptance.mjs', 'build-utils.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['win32-x64'] } }));
   const directory = join(root, 'release/offline/1.2.3/win32-x64');
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, 'fixture.exe'), 'test-only bytes');
+  await writeFile(join(directory, 'Team-DevSpace-1.2.3-windows-x64-setup.exe'), 'test-only bytes');
   const evidence = { schema: 1, passed: true, release: '1.2.3', target: 'win32-x64',
-    entrypoint: { name: 'fixture.exe', sha256: createHash('sha256').update('test-only bytes').digest('hex') },
+    entrypoint: { name: 'Team-DevSpace-1.2.3-windows-x64-setup.exe', sha256: createHash('sha256').update('test-only bytes').digest('hex') },
     checks: { releaseLayout: true, installerTransaction: true, installedPayload: true, zeroResidue: true,
       trayProtocol: true, traySingleInstance: true, nativeStartup: true, finalEntrypointTransaction: false } };
   const verify = () => exec(process.execPath, ['scripts/verify-acceptance.mjs'], {

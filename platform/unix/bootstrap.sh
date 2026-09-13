@@ -293,7 +293,12 @@ rollback_candidate() {
 
 if [ "$MODE" = uninstall ]; then
   current=$(active_path || true)
-  if [ -n "$current" ] && invoke_client "$current" uninstall; then
+  if [ ! -f "$STATE_HOME/state.json" ]; then
+    # An intentionally unconfigured installation is not a damaged client.
+    # Reuse the same owned-startup cleanup as first-run rollback, without trying
+    # to load a device identity that software-only installation never creates.
+    remove_native_startup_fallback
+  elif [ -n "$current" ] && invoke_client "$current" uninstall; then
     :
   else
     echo 'Installed client uninstall failed; using native startup cleanup fallback.' >&2
@@ -494,7 +499,8 @@ echo "Team DevSpace $release is active ($TARGET)."
 case "$TARGET" in
   linux-*)
     if [ ! -f "$STATE_HOME/state.json" ]; then
-      echo "Run $CLI_LINK setup --credential-file <employee-key.json> --root <project-directory> to enroll this device."
+      echo "Run $CLI_LINK setup to enter your Access Key privately and choose a project directory."
+      echo "Use $CLI_LINK access-key change later to switch credentials without reinstalling."
     elif [ "$refresh_startup" = 1 ]; then
       echo "Linux services were refreshed through the stable $CLI_LINK entrypoint."
       if ! command -v systemctl >/dev/null 2>&1; then

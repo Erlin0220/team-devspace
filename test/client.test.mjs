@@ -273,6 +273,22 @@ test('Admin Reset plus the same Access Key preserves an explicit local pause', a
   assert.equal(after.remoteAccess, 'suspended');
 });
 
+test('changing to a different Access Key preserves explicit pause, identity and project', async t => {
+  const f = await fixture(t);
+  await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+    { home: f.home, startup: false });
+  const before = await loadState(f.home);
+  await atomicJson(join(f.home, 'state.json'), { ...before, remoteAccess: 'suspended' });
+  const replacement = `tds_${randomSecret()}`;
+  const result = await replaceAccessKey(replacement, f.home, { startup: false });
+  const after = await loadState(f.home);
+  assert.equal(result.remoteAccess, 'suspended');
+  assert.equal(after.remoteAccess, 'suspended');
+  assert.equal(after.accessKey, replacement);
+  for (const field of ['deviceId', 'deviceSecret', 'ownerToken', 'currentProjectRoot']) assert.equal(after[field], before[field]);
+  assert.equal(f.requests.some(request => request.path === '/v1/device/resume'), false);
+});
+
 test('same Access Key still bound on the server gives an explicit Admin Reset next step', async t => {
   const f = await fixture(t);
   const accessKey = `tds_${randomSecret()}`;

@@ -1,6 +1,7 @@
 import { cp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { run, sha256File } from './build-utils.mjs';
+import { httpsOrigin } from './download-catalog.mjs';
 
 const SHA256 = /^[a-f0-9]{64}$/;
 const TARGET = /^(win32|darwin|linux)-(x64|arm64)$/;
@@ -8,9 +9,10 @@ const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 
 export function validateDistributionConfig(release) {
   const distribution = release?.distribution;
-  if (!distribution || distribution.mode !== 'private-github-release') {
-    throw new Error('release.config.json distribution.mode must be private-github-release');
+  if (!distribution || distribution.mode !== 'static-https') {
+    throw new Error('release.config.json distribution.mode must be static-https');
   }
+  httpsOrigin(distribution.origin);
   if (distribution.trustProfile !== 'internal-free') {
     throw new Error('release.config.json distribution.trustProfile must be internal-free');
   }

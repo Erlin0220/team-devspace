@@ -1,69 +1,27 @@
-# Internal free distribution
+# Internal-free software trust
 
-This project intentionally uses the `internal-free` trust profile for private administrator handoff. It avoids paid public code-signing and Apple Developer Program requirements without pretending the resulting packages have public-store trust.
+The repository and device-control service remain private, but installer files are intentionally available without download authentication. `internal-free` describes code-signing limitations, not an access-control promise. Fixed software delivery is documented in [one-command-distribution.md](one-command-distribution.md).
 
 ## Windows
 
-Published Windows installers are Authenticode-signed with one fixed self-signed certificate:
+The normal handoff is the self-contained EXE, not a credential-bearing ZIP. Local builds do not promise public Authenticode trust or SmartScreen reputation. Existing administrator tooling may apply the fixed `CN=Team DevSpace Internal Publisher` signature before final acceptance, but an internal self-signed identity is not a publicly trusted publisher.
 
-```text
-CN=Team DevSpace Internal Publisher
-```
-
-The private key is never shipped in a release. It is retained only in the protected administrator backup and GitHub `production` Environment secrets. Create this identity once on a trusted administrator Windows machine as a self-signed, end-entity Code Signing certificate named `CN=Team DevSpace Internal Publisher`, using RSA 3072 bits or stronger and a long validity period. Export it as a password-protected PFX, keep the PFX/password outside Git, and configure these two `production` secrets:
-
-```text
-WINDOWS_INTERNAL_SIGNING_PFX_BASE64
-WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD
-```
-
-The workflow rejects a PFX that is not self-signed with the exact subject, lacks the Code Signing EKU, is a CA certificate, uses RSA below 3072 bits, or has less than six months of validity remaining. The Windows administrator handoff ZIP contains only:
-
-```text
-Team-DevSpace-<version>-windows-x64-setup.exe
-Team-DevSpace-Internal-Publisher.cer
-Trust-Team-DevSpace-Internal-Publisher.ps1
-```
-
-The installer EXE is self-contained: its fixed manifest and verified Node, DevSpace runtime, cloudflared and conditional PortableGit payload are embedded at build time. Employees do not need an `objects/` directory, a GitHub credential or a runtime download during installation.
-
-On each managed Windows user account, establish trust once before running the installer:
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\Trust-Team-DevSpace-Internal-Publisher.ps1
-```
-
-The helper validates the expected subject, self-signed/end-entity shape, validity period and Code Signing EKU, then imports only the public certificate into the current user's `Root` and `TrustedPublisher` stores. If the installer is present beside the helper, it also requires the installer Authenticode signature to validate against that exact certificate.
-
-To remove this publisher trust for the current user:
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\Trust-Team-DevSpace-Internal-Publisher.ps1 -Action Remove
-```
-
-Self-signed trust is suitable only for devices whose users explicitly trust this publisher certificate. It does not create public SmartScreen reputation or third-party trust. Do not distribute the PFX or its password to employees.
+The stable installation script validates the complete EXE hash and size before execution. It never imports a certificate, changes the global PowerShell policy, supplies an Access Key, or bypasses a system warning. Administrators who deliberately manage an internal publisher certificate can retain their separate current-user trust procedure; it is not required or silently invoked by the public download flow. A PFX, password or private key must never enter the download directory or release asset.
 
 ## macOS
 
-The private macOS `.pkg` is currently built manually on Codemagic M2 and remains unsigned/unnotarized in `internal-free` mode. The hosted build keeps only cheap structural/compatibility checks; it does not run the system-level Installer transaction. Administrators download the `.pkg` plus `.sha256`, verify the checksum, and hand it to a real Mac user for installation/LaunchAgent/menu-bar/Enrollment validation. A private GitHub Release can still be used as optional fixed-version storage, but it is not part of the build path.
+The two PKGs remain unsigned/unnotarized unless the existing protected Developer ID signing/notarization path is explicitly configured. Codemagic builds each target and runs actual system PKG installation, installed-payload and LaunchAgent checks. The x64 build and runtime tests use Rosetta on Apple Silicon, not physical Intel hardware.
 
-If Gatekeeper blocks the package, do not disable Gatekeeper globally. On the employee Mac, attempt to open the package once, then use **System Settings → Privacy & Security → Open Anyway** for that administrator-supplied package and complete the normal macOS confirmation flow.
-
-For an unsigned package this is an explicit internal exception, not Developer ID trust or Apple notarization. Never apply that exception to a job reported as signed/notarized without separately verifying its signature.
+Normal Gatekeeper and administrator confirmations remain. Where macOS permits it, a user who has verified the source may approve that specific downloaded package in System Settings → Privacy & Security. Never disable Gatekeeper globally or advertise zero-confirmation installation. CI installation does not prove employee-machine Gatekeeper approval or real employee Enrollment.
 
 ## Linux
 
-Linux handoff remains the fixed-version x64 offline `.tar.gz` plus SHA-256 verification. No new signing subsystem is introduced by the free internal profile. The current runtime baseline is `x86_64`, glibc 2.34 or newer, and a working systemd user manager.
+The x64 offline archive requires glibc 2.34+ and runs as the employee's ordinary user, never through sudo. It reuses existing systemd user or no-systemd lifecycle support. Software installation does not bind a device. Run `~/.local/bin/team-devspace setup` afterward to enter the Access Key privately and select a project; `access-key change` replaces it without reinstalling.
 
-Employees run `install.sh` as their normal account, never through `sudo`. The installer keeps versioned payloads private, installs the stable `~/.local/bin/team-devspace` command, and uses fixed `team-devspace-runtime.service` / `team-devspace-tunnel.service` user units that resolve the current payload through `active-path`. A first installation without retained Enrollment is completed with `team-devspace setup --credential-file <employee-key.json> --root <project-directory>`; an enrolled upgrade only needs the new `install.sh` and refreshes the same fixed units without another device binding. Linux service output is owned by journald and can be read with `team-devspace logs` or followed with `team-devspace logs --follow`.
-
-On a headless server, keeping a user service alive after logout is an explicit administrator choice (`loginctl enable-linger <user>`). The installer never enables linger or installs a root daemon on its own.
+The stable CLI resolves `active-path`. Upgrades retain identity and pause intent; uninstall removes owned application/startup files but retains employee state and projects. A user-service linger setting remains an explicit administrator decision, never an automatic installer action.
 
 ## Release policy
 
-- The source repository remains private.
-- GitHub Actions no longer builds native client installers; its remaining workflow is infrastructure deployment only.
-- Windows/Linux packages are created on matching native hosts when needed.
-- macOS arm64 and Intel x64 share one manual Codemagic M2 workflow selected by its `architecture` input; no push/PR trigger is configured, and candidate packages are unsigned/unnotarized.
-- Fixed `v<version>` private GitHub Releases, when used for administrator storage, remain immutable by policy and are never overwritten.
-- Moving to public distribution later is a separate trust-profile change and must introduce an appropriate public Windows signing service and Apple Developer ID application/installer signing plus notarization; do not silently reuse the internal-free contract.
+One clean source commit and exact final-byte acceptance are required for every platform. Signing, where used, must precede that acceptance. Windows/Linux build on native local hosts; both Mac architectures use the existing manual Codemagic workflow. Software publication uploads all four targets, verifies checksums and public HTTPS reads, then switches one stable pointer. Historical versions cannot be overwritten.
+
+GitHub Releases may remain private backup/archive storage; employees never need a GitHub token. Public Windows signing and Apple Developer ID/notarization remain future trust improvements, not reasons to add R2 authentication or administrator-generated download tickets.

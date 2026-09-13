@@ -243,6 +243,15 @@ async function configureFromDesktopUnlocked(home, { onProgress, startup, input =
   if (!startup) return { ...enrolled, startup: 'not-installed' };
   const state = await loadState(home);
   await installServices(state, home, undefined, COMPONENTS);
+  if (process.platform === 'win32') {
+    // First-run Windows desktop can exist before Enrollment. Register its login
+    // entry now without replacing/restarting the currently visible tray owner.
+    try { await readFile(join(home, 'startup', 'tray.xml')); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await installServices(state, home, undefined, ['tray']);
+    }
+  }
   const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
   if (startComponents.length) await serviceAction('start', state, home, startComponents);
   return { ...enrolled, startup: 'installed' };
@@ -256,7 +265,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   if (!/^tds_[A-Za-z0-9_-]{43}$/.test(accessKey ?? '')) throw new Error('请输入完整的 Access Key');
   let state = await loadState(home);
   const sameAccessKey = !state.pendingAccessKey && state.accessKey === accessKey;
-  const preserveSameKeyPause = sameAccessKey && state.remoteAccess === 'suspended';
+  const preservePause = state.remoteAccess === 'suspended';
   if (sameAccessKey && !state.bindingId) {
     // Enrollment may have committed remotely before its response was lost.
     // Retry with the retained identity, not a preflight that rejects bound keys.
@@ -302,7 +311,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   }
 
   await rm(join(home, 'tunnel.token'), { force: true });
-  const next = { ...state, accessKey, remoteAccess: preserveSameKeyPause ? 'suspended' : 'active' };
+  const next = { ...state, accessKey, remoteAccess: preservePause ? 'suspended' : 'active' };
   delete next.pendingAccessKey;
   delete next.keyId;
   delete next.bindingId;

@@ -147,6 +147,7 @@ function json(value, status = 200) {
 }
 
 export async function adminWeb(request, env, service) {
+  if (new URL(request.url).origin !== new URL(env.PUBLIC_ORIGIN).origin) throw new AdminWebError(404, 'not_found');
   await requireAccess(request, env);
   const pathname = new URL(request.url).pathname;
   if (pathname.startsWith('/admin/assets/')) {
@@ -160,6 +161,12 @@ export async function adminWeb(request, env, service) {
   }
   if ((pathname === '/admin' || pathname === '/admin/') && request.method === 'GET') {
     return new Response(renderAdmin(await service.listKeys()), { headers: headers('text/html; charset=utf-8') });
+  }
+  if (pathname === '/admin/downloads' && request.method === 'POST') {
+    requireMutation(request, env);
+    const body = await smallJson(request);
+    if (Object.keys(body).length) throw new AdminWebError(400, 'invalid_download_request');
+    throw new AdminWebError(410, 'download_commands_retired');
   }
   const createKey = pathname === '/admin/keys' && request.method === 'POST';
   const lifecycleMatch = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
@@ -182,7 +189,8 @@ export async function adminWeb(request, env, service) {
 }
 
 export function adminWebError(error, requestId) {
-  const status = error instanceof AdminWebError || error instanceof AdminServiceError ? error.status : 503;
-  const code = error instanceof AdminWebError || error instanceof AdminServiceError ? error.code : 'service_unavailable';
+  const known = error instanceof AdminWebError || error instanceof AdminServiceError;
+  const status = known ? error.status : 503;
+  const code = known ? error.code : 'service_unavailable';
   return json({ error: code, requestId }, status);
 }

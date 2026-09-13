@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { atomicJson, randomSecret } from '../client/state.mjs';
 import { run } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
@@ -43,7 +44,6 @@ try {
   const state = { schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
     gateway: 'https://offline-smoke.invalid', currentProjectRoot: work,
     ports: { devspace: ports[0], bridge: ports[1], metrics: ports[2] } };
-  await atomicJson(join(home, 'state.json'), state);
   const manifestPath = join(media, 'release-manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const bootstrap = join(media, process.platform === 'linux' ? 'install.sh' : 'bootstrap.sh');
@@ -60,6 +60,34 @@ try {
     '--offline', media, '--setup', 'none'], { cwd: work, env, timeout: 240000 }), /exited/);
   assert.equal(await readFile(foreignSentinel, 'utf8'), 'keep');
 
+  await install();
+  assert.equal(await exists(join(home, 'state.json')), false, 'Software installation must not create a connection identity');
+  if (process.platform === 'linux') {
+    const installed = await active();
+    const pty = createRequire(join(installed, 'client', 'cli.mjs'))('node-pty');
+    const terminal = pty.spawn(join(installed, 'runtime/bin/node'), [join(installed, 'client/cli.mjs'), 'setup'],
+      { cwd: work, env: { ...process.env, ...env }, cols: 100, rows: 24 });
+    let output = '', phase = 0;
+    const testKey = `tds_${'a'.repeat(43)}`;
+    try {
+      const exit = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Installed interactive setup did not settle')), 15000);
+        terminal.onData(chunk => {
+          output += chunk;
+          if (phase === 0 && output.includes('Access Key:')) { phase = 1; terminal.write(`${testKey}\r`); }
+          if (phase === 1 && output.includes('Project directory')) { phase = 2; terminal.write('\u0003'); }
+        });
+        terminal.onExit(event => { clearTimeout(timer); resolve(event.exitCode); });
+      });
+      assert.equal(phase, 2, 'The installed CLI must accept hidden input and prompt for the project');
+      assert.equal(exit, 1, 'Cancelling setup must be explicit');
+      assert.equal(output.includes(testKey), false, 'The real PTY must never echo the Access Key');
+      assert.equal(await exists(join(home, 'state.json')), false, 'Cancelled setup must leave the device unconfigured');
+    } finally { terminal.kill(); }
+  }
+  await uninstall();
+  assert.equal(await exists(join(root, 'versions')), false, 'An unconfigured application can be uninstalled');
+  await atomicJson(join(home, 'state.json'), state);
   await install();
   assert.equal((await readFile(join(root, '.team-devspace-distribution'), 'utf8')).trim(), 'team-devspace-distribution-v1');
   const first = await active();
@@ -109,6 +137,7 @@ try {
   assert.equal(await exists(join(root, '.team-devspace-distribution')), false);
   if (process.platform === 'linux') assert.equal(await exists(join(cliDir, 'team-devspace')), false);
   console.log(JSON.stringify({ passed: true, target, actualOfflinePackage: true, pathsWithSpaces: true,
+    credentialFreeInstallAndUninstall: true, installedInteractiveSetup: process.platform === 'linux',
     nativeModulesFromInstalledTree: true, repair: true, damagedInstalledCliRepair: true, failedRepairRetainsActive: true,
     retiredVersionsCollected: true, cacheGarbageCollected: true, staleInstallerLockRecovered: true,
     unownedRootProtected: true, damagedClientUninstallFallback: true, unknownRootFilesPreserved: true,

@@ -1,11 +1,8 @@
 Unicode True
 RequestExecutionLevel user
 !include "MUI2.nsh"
-!include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
-!include "StrFunc.nsh"
-${StrRep}
 
 !ifndef APP_VERSION
 !error "APP_VERSION must be generated from release.config.json"
@@ -60,13 +57,7 @@ VIAddVersionKey "ProductName" "Team DevSpace"
 VIAddVersionKey "FileDescription" "Team DevSpace self-contained offline installer"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 
-Var Dialog
-Var KeyControl
-Var RootControl
-Var AccessKey
-Var ProjectRoot
 Var RequestFile
-Var PreviousEnrollment
 Var ResultCode
 Var Arguments
 Var NoStartup
@@ -99,8 +90,10 @@ FunctionEnd
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
-Page custom EnrollmentPage EnrollmentLeave
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION OpenDesktop
+!define MUI_FINISHPAGE_RUN_TEXT "Open Team DevSpace (enter Access Key in the application)"
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -111,9 +104,6 @@ Page custom EnrollmentPage EnrollmentLeave
 
 Function .onInit
   SetShellVarContext current
-  StrCpy $PreviousEnrollment "0"
-  IfFileExists "$LOCALAPPDATA\TeamDevSpace\state.json" 0 +2
-    StrCpy $PreviousEnrollment "1"
   ReadEnvStr $RequestFile "TEAM_DEVSPACE_SETUP_REQUEST_FILE"
   ReadEnvStr $NoStartup "TEAM_DEVSPACE_SETUP_NO_STARTUP"
   ${If} $RequestFile == ""
@@ -122,63 +112,15 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
-Function EnrollmentPage
-  ${If} $PreviousEnrollment == "1"
-    Abort
+Function OpenDesktop
+  ${If} $NoStartup != "1"
+    ExecShell "open" "$SMPROGRAMS\${START_MENU_FOLDER}\Team DevSpace.lnk"
   ${EndIf}
-  nsDialogs::Create 1018
-  Pop $Dialog
-  ${If} $Dialog == error
-    Abort
-  ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 24u "Enter the Access Key issued by your administrator. The installer uses only the supplied fixed release package and verifies every artifact before activation."
-  Pop $0
-  ${NSD_CreatePassword} 0 28u 100% 14u ""
-  Pop $KeyControl
-  ${NSD_CreateLabel} 0 52u 100% 14u "Project directory to allow:"
-  Pop $0
-  ${NSD_CreateDirRequest} 0 70u 80% 14u ""
-  Pop $RootControl
-  ${NSD_CreateBrowseButton} 82% 70u 18% 14u "Browse..."
-  Pop $0
-  ${NSD_OnClick} $0 BrowseProject
-  ${NSD_CreateLabel} 0 100u 100% 48u "File tools use the selected directory. Shell commands run with your Windows user permissions; this is not a sandbox. Enrollment stays outside application versions and survives upgrades."
-  Pop $0
-  nsDialogs::Show
-FunctionEnd
-
-Function BrowseProject
-  nsDialogs::SelectFolderDialog "Choose your project directory" "$PROFILE"
-  Pop $0
-  ${If} $0 != error
-    ${NSD_SetText} $RootControl $0
-  ${EndIf}
-FunctionEnd
-
-Function EnrollmentLeave
-  ${NSD_GetText} $KeyControl $AccessKey
-  ${NSD_GetText} $RootControl $ProjectRoot
-  StrLen $0 $AccessKey
-  StrCpy $1 $AccessKey 4
-  ${If} $0 != 47
-  ${OrIf} $1 != "tds_"
-    MessageBox MB_ICONEXCLAMATION "Enter your complete administrator-issued Access Key."
-    Abort
-  ${EndIf}
-  IfFileExists "$ProjectRoot\*.*" +3 0
-    MessageBox MB_ICONEXCLAMATION "Choose an existing project directory."
-    Abort
 FunctionEnd
 
 Section "Install"
   SetShellVarContext current
   StrCpy $SetupPending "0"
-  ${If} ${Silent}
-  ${AndIf} $PreviousEnrollment != "1"
-  ${AndIf} $RequestFile == ""
-    SetErrorLevel 2
-    Abort "A fresh unattended installation requires /REQUEST=<private setup JSON file>."
-  ${EndIf}
 
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\offline\objects"
@@ -194,18 +136,6 @@ Section "Install"
   File /oname=repair.cmd "${PLATFORM_DIR}\repair.cmd"
   File /oname=status.cmd "${PLATFORM_DIR}\status.cmd"
 
-  ${If} $RequestFile == ""
-  ${AndIf} $PreviousEnrollment != "1"
-    InitPluginsDir
-    StrCpy $RequestFile "$PLUGINSDIR\team-devspace-request.json"
-    ${StrRep} $ProjectRoot $ProjectRoot '\' '\\'
-    ${StrRep} $AccessKey $AccessKey '\' '\\'
-    ${StrRep} $AccessKey $AccessKey '$\"' '\$\"'
-    FileOpen $0 $RequestFile w
-    FileWrite $0 '{"accessKey":"$AccessKey","currentProjectRoot":"$ProjectRoot"}'
-    FileClose $0
-  ${EndIf}
-
   StrCpy $Arguments '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\bootstrap.ps1$\" -Mode Install -InstallPath $\"$INSTDIR$\" -ManifestPath $\"$INSTDIR\release-manifest.json$\" -OfflineRoot $\"$PLUGINSDIR\offline$\"'
   ${If} $RequestFile != ""
     StrCpy $Arguments '$Arguments -RequestFile $\"$RequestFile$\"'
@@ -218,7 +148,6 @@ Section "Install"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" $Arguments'
   Pop $ResultCode
   Call StopBootstrapProgress
-  StrCpy $AccessKey ""
   ${If} $ResultCode == 10
     StrCpy $SetupPending "1"
     StrCpy $SetupMessage "Connection setup did not complete. Check the installer details, then use Repair connection."
@@ -256,7 +185,7 @@ Section "Install"
   Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Status.lnk"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Repair connection.lnk" "$INSTDIR\repair.cmd"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
-  DetailPrint "Team DevSpace local installation is complete."
+  DetailPrint "Team DevSpace local installation is complete. Enter or change Access Key in the application."
   ${If} $SetupPending == "1"
     MessageBox MB_OK|MB_ICONEXCLAMATION "Team DevSpace was installed successfully, but connection setup did not complete.$\r$\n$\r$\n$SetupMessage$\r$\n$\r$\nAfter resolving the issue, use 'Repair connection'. The installed application does not need to be reinstalled." /SD IDOK
   ${EndIf}
