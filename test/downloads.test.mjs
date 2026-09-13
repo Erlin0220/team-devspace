@@ -69,7 +69,7 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   assert.ok(page.includes(`${origin}/releases/`));
   assert.ok(homepage.includes(`${origin}/install.ps1`));
   assert.ok(homepage.includes(`${origin}/stable/windows-x64.exe`));
-  assert.ok(homepage.includes('把开发机，安全带到 ChatGPT 里。'));
+  assert.ok(homepage.includes('把开发机，安全带到 <span class="nowrap">ChatGPT 里。</span>'));
   assert.ok(homepage.includes('Team DevSpace') && !homepage.includes('tailscale.com'));
   assert.ok(!renderAdmin([]).includes('issue-downloads'));
   assert.equal(spawnSync('bash', ['-n', join(f.site, 'install.sh').replaceAll('\\', '/')]).status, 0);
