@@ -58,7 +58,8 @@ if [ -n "$current" ] && [ -f "$TRAY_PLIST" ]; then
   /bin/launchctl kickstart "$domain/$TRAY_LABEL" >/dev/null 2>&1 || true
 fi
 # Opening the same installed release should not unpack and verify the offline
-# payload again. Start its existing current-user jobs without rewriting them; a
+# payload again. Refresh the existing jobs through the established lifecycle so
+# the native tray re-confirms visibility after postinstall clears its marker; a
 # missing/partial local install falls through to the transactional bootstrap.
 if [ -n "$current" ] && [ -f "$current/install-manifest.json" ] &&
    /usr/bin/cmp -s "$current/install-manifest.json" "$RESOURCES/release-manifest.json" &&
@@ -67,7 +68,7 @@ if [ -n "$current" ] && [ -f "$current/install-manifest.json" ] &&
     # Cancelling first-run setup leaves a valid payload, but no enrolled device.
     # Reopen the form rather than calling startup install/stop on missing state.
     if "$current/runtime/bin/node" "$current/client/cli.mjs" setup-gui >> "$LOG" 2>&1; then exit 0; fi
-  elif "$current/runtime/bin/node" "$current/client/cli.mjs" start >> "$LOG" 2>&1; then
+  elif "$current/runtime/bin/node" "$current/client/cli.mjs" startup install --runtime-root "$current" >> "$LOG" 2>&1; then
     exit 0
   fi
   /usr/bin/printf '%s\n' 'Existing release fast start failed; falling back to bootstrap.' >> "$LOG"

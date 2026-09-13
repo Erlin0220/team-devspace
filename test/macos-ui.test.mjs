@@ -115,6 +115,9 @@ test('macOS launcher surfaces the existing tray before bootstrap work and reject
   assert.match(launch, /TEAM_DEVSPACE_UI_READY_MARKER/);
   assert.match(launch, /install-manifest\.json/);
   assert.match(launch, /release-manifest\.json/);
+  // postinstall removes its old visibility receipt. A no-op kickstart of an
+  // already-running tray cannot acknowledge the new open/install request.
+  assert.match(launch, /startup install --runtime-root "\$current"/);
 });
 
 test('macOS packaging uses separate Team DevSpace assets for app and menu bar icons', async () => {
