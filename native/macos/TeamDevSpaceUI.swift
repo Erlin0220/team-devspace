@@ -4,26 +4,18 @@ import AppKit
 import Foundation
 import Darwin
 
+struct MenuEntry: Decodable {
+    let id: String
+    let text: String
+    let enabled: Bool
+    let action: String?
+    let separator: Bool?
+}
 struct TrayState: Decodable {
     let status: String
-    let summary: String
-    let remoteText: String
-    let remoteAction: String
-    let remoteEnabled: Bool
-    let switchKeyText: String
-    let switchKeyEnabled: Bool
-    let projectText: String
-    let projectRoot: String?
-    let projectRootEnabled: Bool
-    let restartEnabled: Bool
-    let repairEnabled: Bool
-    let logsEnabled: Bool
-    let diagnosticsEnabled: Bool
-    let diagnosticsText: String
-    let exitEnabled: Bool
-    let activity: String?
-    let notice: String?
-    let alert: String?
+    let iconStatus: String
+    let tooltip: String
+    let menu: [MenuEntry]
 }
 
 func emit(_ event: String, _ fields: [String: Any] = [:]) {
@@ -87,7 +79,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var submitButton = NSButton()
     private var cancelButton = NSButton()
     private var formProjectRoot = ""
-    private var currentProjectRoot = ""
+    private var menuLayout: [String] = []
     private var setup = true
     private var busy = false
     private var complete = false
@@ -169,28 +161,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem = item
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let status = add(menu, "status", "正在启动…")
-        status.isEnabled = false
-        let project = add(menu, "project", "项目：未设置")
-        project.isEnabled = false
-        menu.addItem(.separator())
-        add(menu, "remote", "暂停远程访问").isEnabled = false
-        add(menu, "project-root", "项目目录…").isEnabled = false
-        add(menu, "switch-key", "完成设置…").isEnabled = false
-        menu.addItem(.separator())
-        let troubleshooting = NSMenu(title: "诊断与修复")
-        troubleshooting.autoenablesItems = false
-        add(troubleshooting, "restart", "重新连接").isEnabled = false
-        add(troubleshooting, "repair", "修复连接").isEnabled = false
-        troubleshooting.addItem(.separator())
-        add(troubleshooting, "diagnostics", "复制诊断信息")
-        add(troubleshooting, "logs", "打开日志")
-        let group = NSMenuItem(title: "诊断与修复", action: nil, keyEquivalent: "")
-        group.submenu = troubleshooting
-        menu.addItem(group)
-        menu.addItem(.separator())
-        add(menu, "about", "关于 Team DevSpace")
-        add(menu, "exit", "退出 Team DevSpace").keyEquivalent = "q"
+        add(menu, "status", "正在启动…").isEnabled = false
         item.menu = menu
         if let url = Bundle.main.url(forResource: "TeamDevSpaceTemplate", withExtension: "png"),
            let image = NSImage(contentsOf: url) {
@@ -210,19 +181,17 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func setIcon(_ status: String, summary: String, showText: Bool = false) {
+    private func setIcon(_ status: String, summary: String) {
         guard let item = statusItem, let button = item.button else { return }
         button.image = statusIcon
         button.imagePosition = .imageLeading
-        if showText {
-            item.length = NSStatusItem.variableLength
-            button.title = " \(summary)"
-        } else {
-            button.title = ""
-            item.length = NSStatusItem.squareLength
-        }
-        button.toolTip = "Team DevSpace：\(summary)"
-        button.setAccessibilityLabel("Team DevSpace：\(summary)")
+        // Compact feedback remains visible after the menu closes; full progress
+        // belongs in the shared Control Center, not a growing menu-bar label.
+        let marker = ["busy": " …", "partial": " !", "suspended": " Ⅱ", "stopped": " –"][status] ?? ""
+        button.title = marker
+        item.length = marker.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
+        button.toolTip = summary
+        button.setAccessibilityLabel(summary)
     }
 
     private func receive(_ data: Data) {
@@ -257,7 +226,10 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
             } else {
                 let state = try JSONDecoder().decode(TrayState.self, from: data)
                 guard ["ready", "partial", "suspended", "busy", "stopped"].contains(state.status),
-                      ["suspend", "resume"].contains(state.remoteAction) else { throw ProtocolError.invalid }
+                      ["ready", "partial", "suspended", "busy", "stopped"].contains(state.iconStatus),
+                      (1...20).contains(state.menu.count),
+                      Set(state.menu.map { $0.id }).count == state.menu.count,
+                      state.menu.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 64 }) else { throw ProtocolError.invalid }
                 apply(state)
                 if smoke { emit("state-applied", ["status": state.status]) }
             }
@@ -265,70 +237,29 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func apply(_ state: TrayState) {
-        let visibleFeedback = state.activity ?? state.notice
-        let summary = String((visibleFeedback ?? state.summary).prefix(64))
-        items["status"]?.title = summary
-        items["remote"]?.title = state.remoteText
-        items["remote"]?.representedObject = state.remoteAction
-        items["remote"]?.isEnabled = state.remoteEnabled
-        items["project"]?.title = state.projectText
-        items["project-root"]?.isEnabled = state.projectRootEnabled
-        currentProjectRoot = state.projectRoot ?? ""
-        items["switch-key"]?.title = state.switchKeyText
-        items["switch-key"]?.isEnabled = state.switchKeyEnabled
-        items["restart"]?.isEnabled = state.restartEnabled
-        items["repair"]?.isEnabled = state.repairEnabled
-        items["logs"]?.isEnabled = state.logsEnabled
-        items["diagnostics"]?.title = state.diagnosticsText
-        items["diagnostics"]?.isEnabled = state.diagnosticsEnabled
-        items["exit"]?.isEnabled = state.exitEnabled
-        setIcon(state.status, summary: summary, showText: visibleFeedback != nil)
-        if let message = state.alert {
-            let alert = NSAlert()
-            alert.messageText = "操作未完成"
-            alert.informativeText = String(message.prefix(360))
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "好")
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+        let layout = state.menu.map { "\($0.id):\($0.separator == true)" }
+        if layout != menuLayout {
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            items.removeAll()
+            for entry in state.menu {
+                if entry.separator == true { menu.addItem(.separator()) }
+                else { add(menu, entry.id, String(entry.text.prefix(64))) }
+            }
+            statusItem?.menu = menu
+            menuLayout = layout
         }
+        for entry in state.menu {
+            items[entry.id]?.title = String(entry.text.prefix(64))
+            items[entry.id]?.isEnabled = entry.enabled
+            items[entry.id]?.representedObject = entry.action ?? ""
+        }
+        setIcon(state.iconStatus, summary: String(state.tooltip.prefix(360)))
     }
 
     @objc private func menuAction(_ sender: NSMenuItem) {
-        guard let action = sender.representedObject as? String else { return }
-        if action == "about" {
-            showAbout()
-        } else if action == "project-root" {
-            chooseProjectRootFromTray()
-        } else if action != "status" && action != "project" { emit("menu", ["action": action]) }
-    }
-
-    private func showAbout() {
-        let info = Bundle.main.infoDictionary ?? [:]
-        let devspaceVersion = info["TeamDevSpaceDevSpaceVersion"] as? String ?? "未知"
-        let authorName = info["TeamDevSpaceAuthorName"] as? String ?? ""
-        let authorEmail = info["TeamDevSpaceAuthorEmail"] as? String ?? ""
-        let author = authorName.isEmpty ? "" : "作者：\(authorName)" + (authorEmail.isEmpty ? "" : " (\(authorEmail))")
-        let credits = NSAttributedString(string: ["DevSpace \(devspaceVersion)", author].filter { !$0.isEmpty }.joined(separator: "\n"))
-        NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(options: [.applicationName: "Team DevSpace", .credits: credits])
-    }
-
-    private func chooseProjectRootFromTray() {
-        let picker = NSOpenPanel()
-        picker.canChooseFiles = false
-        picker.canChooseDirectories = true
-        picker.allowsMultipleSelection = false
-        picker.canCreateDirectories = false
-        picker.prompt = "选择"
-        picker.message = "选择 Team DevSpace 当前项目目录"
-        if !currentProjectRoot.isEmpty, FileManager.default.fileExists(atPath: currentProjectRoot) {
-            picker.directoryURL = URL(fileURLWithPath: currentProjectRoot)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        if picker.runModal() == .OK, let path = picker.url?.path {
-            emit("menu", ["action": "project-root", "projectRoot": path])
-        }
+        guard sender.isEnabled, let action = sender.representedObject as? String, !action.isEmpty else { return }
+        emit("menu", ["action": action])
     }
 
     private func buildForm() {
@@ -514,13 +445,14 @@ struct Main {
             return
         }
         let form = CommandLine.arguments.contains("form")
+        let folder = CommandLine.arguments.contains("choose-folder")
         guard let identity = ProcessInfo.processInfo.environment["TEAM_DEVSPACE_TRAY_INSTANCE_ID"], validInstanceID(identity) else {
             fputs("Start Team DevSpace through its controller; a valid local instance identity is required.\n", stderr)
             exit(1)
         }
         let instance: InstanceGuard
         do {
-            guard let acquired = try InstanceGuard.acquire(identity: identity, form: form) else { emit("duplicate"); return }
+            guard let acquired = try InstanceGuard.acquire(identity: identity, form: form || folder) else { emit("duplicate"); return }
             instance = acquired
         } catch { fputs("Team DevSpace could not acquire its UI instance lock.\n", stderr); exit(1) }
         let app = NSApplication.shared
@@ -528,10 +460,41 @@ struct Main {
         // A redundant policy switch may return false; the current policy is authoritative.
         if app.activationPolicy() != .accessory && !app.setActivationPolicy(.accessory) {
             // A setup form may use a regular window, but the tray must stay menu-bar-only.
-            if !form || (app.activationPolicy() != .regular && !app.setActivationPolicy(.regular)) {
+            if (!form && !folder) || (app.activationPolicy() != .regular && !app.setActivationPolicy(.regular)) {
                 fputs("Team DevSpace could not enter a visible macOS application session (policy=\(app.activationPolicy().rawValue)).\n", stderr)
                 exit(1)
             }
+        }
+        if folder {
+            // Reuse the packaged AppKit helper for the Control Center's one-shot
+            // directory picker. No AppleScript, settings state or service logic.
+            app.finishLaunching()
+            let picker = NSOpenPanel()
+            picker.canChooseFiles = false
+            picker.canChooseDirectories = true
+            picker.allowsMultipleSelection = false
+            picker.canCreateDirectories = false
+            picker.prompt = "选择"
+            picker.message = "选择 Team DevSpace 当前项目目录"
+            if let root = ProcessInfo.processInfo.environment["TEAM_DEVSPACE_CURRENT_PROJECT_ROOT"],
+               !root.isEmpty, FileManager.default.fileExists(atPath: root) {
+                picker.directoryURL = URL(fileURLWithPath: root)
+            }
+            app.activate(ignoringOtherApps: true)
+            var visiblyPresented = false
+            if CommandLine.arguments.contains("--smoke") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    visiblyPresented = picker.isVisible
+                    picker.cancel(nil)
+                }
+            }
+            withExtendedLifetime(instance) {
+                let result = picker.runModal()
+                var fields: [String: Any] = ["projectRoot": NSNull(), "visible": visiblyPresented]
+                if result == .OK, let path = picker.url?.path { fields["projectRoot"] = path }
+                emit("folder-result", fields)
+            }
+            return
         }
         let delegate = Application(form: form, smoke: CommandLine.arguments.contains("--smoke"))
         app.delegate = delegate

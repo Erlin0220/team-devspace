@@ -10,7 +10,7 @@ async function check(directory) {
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) await check(path);
-    else if (path.endsWith('.mjs')) execFileSync(process.execPath, ['--check', path], { stdio: 'inherit' });
+    else if (path.endsWith('.mjs') || path.endsWith('.js')) execFileSync(process.execPath, ['--check', path], { stdio: 'inherit' });
   }
 }
 

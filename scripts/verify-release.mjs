@@ -56,7 +56,11 @@ for (const target of targets) {
     const nodePath = windows ? 'runtime/node.exe' : 'runtime/bin/node';
     const cloudPath = windows ? 'bin/cloudflared.exe' : 'bin/cloudflared';
     const files = [nodePath, cloudPath, 'client/cli.mjs', 'client/platform.mjs',
+      'client/state.mjs', 'client/setup.mjs', 'client/control.mjs', 'client/operation.mjs',
       'release.config.json', 'release-provenance.json', 'sbom.cdx.json', 'THIRD-PARTY-NOTICES.txt'];
+    if (windows || process.platform === 'darwin') files.push('client/tray.mjs', 'client/desktop.mjs',
+      'client/desktop-controller.mjs', 'client/desktop-state.mjs', 'client/local-control.mjs',
+      'client/control.html', 'client/control.js', 'client/control.css');
     if (windows) files.push('platform/windows/tds-launcher.exe', 'platform/windows/team-devspace-tray.exe');
     if (process.platform === 'darwin') files.push('platform/macos/Team DevSpace Tray.app/Contents/MacOS/TeamDevSpaceTray');
     // Compare the extracted/native files, not just the surrounding archive hashes.

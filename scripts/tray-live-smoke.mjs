@@ -37,6 +37,7 @@ const keys = [];
 const checks = [];
 let state;
 let client;
+let cleanupFailed = false;
 async function ready() {
   const deadline = Date.now() + 90000;
   do {
@@ -57,6 +58,21 @@ async function remoteMcp(key) {
       }));
       const tools = await client.listTools();
       assert.ok(tools.tools.some(tool => tool.name === 'open_workspace'));
+      const opened = await client.callTool({ name: 'open_workspace', arguments: { path: project, mode: 'checkout' } });
+      assert.ok(!opened.isError, 'Live MCP must open the isolated project');
+      const data = opened.structuredContent ?? opened.content.filter(item => item.type === 'text')
+        .map(item => { try { return JSON.parse(item.text); } catch { return null; } })
+        .find(item => item?.workspaceId || item?.result?.workspaceId);
+      const workspaceId = data?.workspaceId ?? data?.result?.workspaceId;
+      assert.ok(workspaceId, 'Live MCP must return a workspace identity');
+      const written = await client.callTool({ name: 'write', arguments: { workspaceId,
+        path: 'live-proof.txt', content: 'live-cloudflare-write-proof' } });
+      assert.ok(!written.isError, 'Live MCP must write inside the isolated project');
+      const read = await client.callTool({ name: 'read', arguments: { workspaceId, path: 'live-proof.txt' } });
+      assert.ok(!read.isError && JSON.stringify(read).includes('live-cloudflare-write-proof'));
+      const shell = await client.callTool({ name: 'bash', arguments: { workspaceId,
+        command: 'printf live-cloudflare-shell-proof', timeout: 10 } });
+      assert.ok(!shell.isError && JSON.stringify(shell).includes('live-cloudflare-shell-proof'));
       await client.close(); client = null;
       return;
     } catch (error) {
@@ -86,14 +102,20 @@ try {
   await actions.restartTeamDevSpace(home); await ready(); passed('restart');
   await setup.repairDevice(home, { preserveTray: true }); await ready(); passed('repair');
   const identity = await stateApi.loadState(home);
-  await setup.replaceAccessKey(keys[1].accessKey, home); await ready();
-  const replaced = await stateApi.loadState(home);
-  assert.equal(replaced.deviceId, identity.deviceId);
-  assert.equal(replaced.ownerToken, identity.ownerToken);
-  assert.equal(replaced.currentProjectRoot, identity.currentProjectRoot);
-  assert.equal(replaced.accessKey, keys[1].accessKey);
-  assert.notEqual(replaced.bindingId, identity.bindingId);
-  await remoteMcp(keys[1].accessKey); passed('replace Access Key retains identity/project root and reconnects with new key');
+  let previousBinding = identity.bindingId;
+  // Reuse the same two isolated keys to exercise repeated native stop/start and
+  // binding transitions, not merely one fortunate connection attempt.
+  for (const [index, key] of [keys[1], keys[0], keys[1]].entries()) {
+    await setup.replaceAccessKey(key.accessKey, home); await ready();
+    const replaced = await stateApi.loadState(home);
+    assert.equal(replaced.deviceId, identity.deviceId);
+    assert.equal(replaced.ownerToken, identity.ownerToken);
+    assert.equal(replaced.currentProjectRoot, identity.currentProjectRoot);
+    assert.equal(replaced.accessKey, key.accessKey);
+    assert.notEqual(replaced.bindingId, previousBinding);
+    previousBinding = replaced.bindingId;
+    await remoteMcp(key.accessKey); passed(`replace Access Key round ${index + 1} retains identity/project root and reconnects`);
+  }
   assert.equal((await control(config.gateway, '/v1/enrollment/preflight', keys[0].accessKey, { body: {} })).available, true);
   passed('old Key binding released');
   await actions.stopTeamDevSpace(home);
@@ -104,7 +126,11 @@ try {
   console.log(JSON.stringify({ passed: true, checks, realGateway: true, realCloudflare: true,
     candidateRuntime: Boolean(values['runtime-root']), employeeStateUntouched: true }));
 } catch (error) {
-  console.error(JSON.stringify({ passed: false, completedChecks: checks, error: error.message }));
+  console.error(JSON.stringify({ passed: false, completedChecks: checks, error: actions.redactDiagnostic(error.message) }));
+  // Capture the product's bounded, redacted diagnostics before the isolated
+  // scope is cleaned up. Readiness booleans alone cannot explain a crashed worker.
+  const diagnostics = await actions.diagnosticReport(home).catch(failure => ({ error: actions.redactDiagnostic(failure.message) }));
+  console.error(JSON.stringify({ diagnostics }));
   const text = await readFile(join(home, 'logs', 'runtime.log'), 'utf8').catch(() => '');
   console.error(text.split(/\r?\n/).filter(line => /"event":"(?:paused|listening)"/.test(line)).slice(-6).join('\n'));
   process.exitCode = 1;
@@ -112,15 +138,16 @@ try {
   await client?.close().catch(() => {});
   const current = await stateApi.loadState(home).catch(() => state);
   if (current) await lifecycle.serviceAction('remove', current, home, lifecycle.COMPONENTS).catch(error => {
-    console.error(`Test-only native startup cleanup: ${error.message}`); process.exitCode = 1;
+    console.error(`Test-only native startup cleanup: ${actions.redactDiagnostic(error.message)}`); cleanupFailed = true; process.exitCode = 1;
   });
   for (const key of keys) {
     try { await control(config.gateway, `/v1/admin/keys/${key.id}/revoke`, config.adminToken, { body: {}, timeout: 30000 }); }
-    catch (error) { console.error(`Test-only key cleanup failed (${key.id}): ${error.code ?? 'unknown'}`); process.exitCode = 1; }
+    catch (error) { console.error(`Test-only key cleanup failed (${key.id}): ${error.code ?? 'unknown'}`); cleanupFailed = true; process.exitCode = 1; }
   }
   if (await employeeFingerprint() !== employeeBefore) {
     console.error('Employee state fingerprint changed during verification; inspect before any further operation');
-    process.exitCode = 1;
+    cleanupFailed = true; process.exitCode = 1;
   }
   await rm(home, { recursive: true, force: true });
+  console.log(JSON.stringify({ cleanupCompleted: !cleanupFailed, testKeys: keys.length, employeeStateUntouched: await employeeFingerprint() === employeeBefore }));
 }

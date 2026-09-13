@@ -157,7 +157,8 @@ test('macOS menu bar keeps lifecycle feedback visible after the menu closes', as
   const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
   assert.match(swift, /NSStatusItem\.variableLength/);
   assert.match(swift, /button(?:\?)?\.title\s*=/);
-  assert.match(swift, /state\.activity\s*\?\?\s*state\.notice/);
+  assert.match(swift, /setIcon\(state\.iconStatus, summary: String\(state\.tooltip/);
+  assert.doesNotMatch(swift, /state\.activity|state\.notice|state\.remoteAction/);
 });
 
 test('macOS presentation reuses lifecycle facts and redacts credentials', () => {

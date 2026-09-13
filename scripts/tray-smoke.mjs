@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { access, mkdtemp, stat } from 'node:fs/promises';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,7 @@ import { resolve, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
+import { desktopState } from '../client/desktop-state.mjs';
 
 if (!['win32', 'darwin'].includes(process.platform)) {
   console.log(JSON.stringify({ skipped: true, reason: 'Native tray is a Windows/macOS component' }));
@@ -31,7 +33,7 @@ const smokeHome = await mkdtemp(join(tmpdir(), 'team-devspace-ui-smoke-'));
 const marker = join(smokeHome, '.ui-ready');
 const env = { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: randomBytes(32).toString('hex'),
   TEAM_DEVSPACE_UI_READY_MARKER: marker };
-const child = spawn(binary, process.platform === 'darwin' ? ['--smoke'] : [],
+const child = spawn(binary, ['--smoke'],
   { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 let duplicate;
 process.once('exit', () => {
@@ -87,23 +89,15 @@ assert.equal(duplicateCode, 0, duplicateStderr);
 const duplicateEvents = duplicateStdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
 assert.equal(duplicateEvents.some(event => event.event === 'ready'), false, 'A duplicate tray must never create a second icon');
 assert.equal(duplicateEvents.some(event => event.event === 'duplicate'), true, 'A duplicate tray must report a clean single-instance rejection');
-const common = {
-  checkEnabled: true, switchKeyText: '更换 Access Key…', switchKeyEnabled: true,
-  projectText: '项目：smoke-project', projectRootEnabled: true,
-  logsEnabled: true, diagnosticsEnabled: true, diagnosticsText: '复制诊断信息', exitEnabled: true,
-};
+const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gateway: 'active',
+  remoteAccess: 'active', desiredRemoteAccess: 'active', currentProjectRoot: '/smoke-project' };
+const stopped = { ...healthy, ready: false, devspace: false, bridge: false, tunnel: false };
 for (const state of [
-  { ...common, status: 'ready', summary: 'Team DevSpace 正常', remoteText: '暂停远程访问', remoteAction: 'suspend',
-    remoteEnabled: true, restartEnabled: true, repairEnabled: true },
-  { ...common, status: 'partial', summary: 'Team DevSpace 部分异常', remoteText: '暂停远程访问', remoteAction: 'suspend',
-    remoteEnabled: true, restartEnabled: true, repairEnabled: true },
-  { ...common, status: 'suspended', summary: 'Team DevSpace 远程访问已暂停', remoteText: '恢复远程访问', remoteAction: 'resume',
-    remoteEnabled: true, restartEnabled: false, repairEnabled: false },
-  { ...common, status: 'stopped', summary: 'Team DevSpace 本机服务已停止', remoteText: '暂停远程访问', remoteAction: 'suspend',
-    remoteEnabled: true, restartEnabled: true, repairEnabled: true },
-  { ...common, status: 'ready', summary: 'Team DevSpace 正常', activity: '正在检查连接…', remoteText: '暂停远程访问',
-    remoteAction: 'suspend', remoteEnabled: false, checkEnabled: false, switchKeyEnabled: false,
-    restartEnabled: false, repairEnabled: false, exitEnabled: false },
+  desktopState(healthy),
+  desktopState({ ...healthy, ready: false, bridge: false }),
+  desktopState({ ...stopped, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' }),
+  desktopState(stopped),
+  desktopState(healthy, { busy: true, activity: '正在检查连接…' }),
 ]) {
   const expected = applied.length + 1;
   const bytes = Buffer.from(`${JSON.stringify(state)}\n`);
@@ -117,18 +111,22 @@ for (const state of [
     await waitFor(() => applied.length === expected, 'apply a short fragmented state message');
   } else child.stdin.write(bytes);
 }
+// Exercise the real native menu handlers on both platforms without invoking
+// connection operations. Both adapters consume the production controller schema.
+child.stdin.write(`${JSON.stringify(desktopState(healthy))}\n`);
+for (const action of ['settings', 'remote', 'restart', 'logs', 'exit']) {
+  child.stdin.write(`${JSON.stringify({ exerciseMenu: action })}\n`);
+}
+child.stdin.write('not-json\n{}\n');
+await waitFor(() => applied.length === 6 && menuActions.length === 5 && protocolErrors === 2,
+  'process coalesced commands and malformed input');
 if (process.platform === 'darwin') {
-  // Exercise real NSMenu targets without executing connection operations.
-  child.stdin.write(`${JSON.stringify({ ...common, status: 'ready', summary: '已连接',
-    remoteText: '暂停远程访问', remoteAction: 'suspend', remoteEnabled: true,
-    restartEnabled: true, repairEnabled: true })}\n`);
-  for (const action of ['remote', 'switch-key', 'restart', 'repair', 'diagnostics', 'logs', 'exit']) {
-    child.stdin.write(`${JSON.stringify({ exerciseMenu: action })}\n`);
-  }
-  child.stdin.write('not-json\n{}\n');
-  await waitFor(() => applied.length === 6 && menuActions.length === 7 && protocolErrors === 2,
-    'process coalesced commands and malformed input');
   await smokeMacForm(binary, env);
+  const { stdout } = await promisify(execFile)(binary, ['choose-folder', '--smoke'], { env, timeout: 10000 });
+  const selected = JSON.parse(stdout);
+  assert.equal(selected.event, 'folder-result');
+  assert.equal(selected.visible, true, 'The real AppKit directory picker must be visibly presented');
+  assert.equal(selected.projectRoot, null, 'Cancelling the directory picker must not mutate settings');
 }
 child.stdin.end();
 const code = await new Promise((resolveExit, reject) => {
@@ -136,17 +134,14 @@ const code = await new Promise((resolveExit, reject) => {
   child.once('close', code => { clearTimeout(timer); resolveExit(code); });
 });
 assert.equal(code, 0, stderr);
-assert.equal(protocolErrors, process.platform === 'darwin' ? 2 : 0,
-  'Native tray must accept valid state and explicitly reject malformed input');
-if (process.platform === 'darwin') {
-  assert.deepEqual(applied, ['ready', 'partial', 'suspended', 'stopped', 'ready', 'ready']);
-  assert.deepEqual(menuActions, ['suspend', 'switch-key', 'restart', 'repair', 'diagnostics', 'logs', 'exit']);
-}
+assert.equal(protocolErrors, 2, 'Native tray must accept valid state and explicitly reject malformed input');
+assert.deepEqual(applied, ['ready', 'partial', 'suspended', 'stopped', 'ready', 'ready']);
+assert.deepEqual(menuActions, ['settings', 'suspend', 'restart', 'logs', 'exit']);
 console.log(JSON.stringify({ passed: true, platform: process.platform, nativeTray: true,
   protocol: 'json-lines', packagedArtifact: binary.includes(`bundle-${target}`), lifecycleIndependent: true,
-  singleInstance: true, isolatedInstance: true,
+  singleInstance: true, isolatedInstance: true, sharedMenu: true, nativeMenuActions: true,
   ...(process.platform === 'darwin' ? { appKitMenus: true, setupFormRetry: true, malformedInput: true,
-    trayVisible: true, formVisible: true, shortMessagesBeforeEOF: true, fragmentedUTF8: true } : {}) }));
+    trayVisible: true, formVisible: true, directoryPicker: true, shortMessagesBeforeEOF: true, fragmentedUTF8: true } : {}) }));
 
 async function smokeMacForm(binary, env) {
   const form = spawn(binary, ['form', '--smoke'], { env, stdio: ['pipe', 'pipe', 'pipe'] });

@@ -1,9 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { macUiCompileArgs } from '../scripts/macos-ui-build.mjs';
 import release from '../release.config.json' with { type: 'json' };
 import packageJson from '../package.json' with { type: 'json' };
+import { desktopState } from '../client/desktop-controller.mjs';
+
+test('native package smoke imports the production projection before npm dependencies exist', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tds-tray-no-deps-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'client'));
+  for (const file of ['client/desktop-state.mjs', 'package.json', 'release.config.json']) await cp(file, join(root, file));
+  const output = execFileSync(process.execPath, ['--input-type=module', '-e',
+    "import {desktopState} from './client/desktop-state.mjs'; console.log(desktopState(null).menu.some(item => item.action === 'settings'));"],
+    { cwd: root, encoding: 'utf8' });
+  assert.equal(output.trim(), 'true');
+});
 
 test('AppKit build uses the pinned deployment floor and native target architecture', () => {
   for (const [architecture, triple] of [
@@ -23,22 +38,24 @@ test('AppKit build uses the pinned deployment floor and native target architectu
   assert.throws(() => macUiCompileArgs('build/test-ui', release.distribution.macosMinimumVersion, 'ia32'), /Unsupported/);
 });
 
-test('desktop About metadata has one author source and is wired into both native implementations', async () => {
+test('desktop About metadata has one author source and one shared Control Center', async () => {
   assert.deepEqual(packageJson.author, { name: '常二林', email: 'cerlin0220@gmail.com' });
-  const [builder, packaging, rust, swift] = await Promise.all([
-    readFile('scripts/tray-build.mjs', 'utf8'), readFile('scripts/package.mjs', 'utf8'),
+  const state = desktopState(null);
+  assert.deepEqual(state.author, packageJson.author);
+  assert.equal(state.version, release.version);
+  assert.equal(state.devspaceVersion, release.devspaceVersion);
+  const [html, ui, packaging, rust, swift] = await Promise.all([
+    readFile('client/control.html', 'utf8'), readFile('client/control.js', 'utf8'), readFile('scripts/package.mjs', 'utf8'),
     readFile('native/tray/src/main.rs', 'utf8'), readFile('native/macos/TeamDevSpaceUI.swift', 'utf8'),
   ]);
-  assert.match(builder, /TEAM_DEVSPACE_AUTHOR_NAME/);
-  assert.match(builder, /TEAM_DEVSPACE_AUTHOR_EMAIL/);
-  assert.match(builder, /TEAM_DEVSPACE_APP_VERSION/);
-  assert.match(builder, /TEAM_DEVSPACE_DEVSPACE_VERSION/);
-  assert.match(rust, /关于 Team DevSpace/);
-  assert.match(rust, /TEAM_DEVSPACE_AUTHOR_NAME/);
+  assert.match(html, /id="author"/);
+  assert.match(ui, /state\.author\.name/);
+  assert.match(ui, /state\.author\.email/);
+  assert.doesNotMatch(html, /cerlin0220@gmail\.com/);
+  assert.doesNotMatch(rust, /show_about|show_message_box/);
+  assert.doesNotMatch(swift, /showAbout|orderFrontStandardAboutPanel/);
   assert.match(packaging, /TeamDevSpaceAuthorName/);
   assert.match(packaging, /TeamDevSpaceAuthorEmail/);
-  assert.match(packaging, /TeamDevSpaceDevSpaceVersion/);
-  assert.match(swift, /TeamDevSpaceAuthorName/);
 });
 
 test('macOS UI has one AppKit implementation and Windows retains its Rust build', async () => {

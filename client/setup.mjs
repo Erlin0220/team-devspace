@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -11,6 +13,7 @@ import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } 
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 import { runMacForm } from './macos-ui.mjs';
+import { trayExecutable, trayInstanceId } from './desktop.mjs';
 
 async function hasTunnelCredential(home) {
   try { return Boolean((await readFile(join(home, 'tunnel.token'), 'utf8')).trim()); }
@@ -139,50 +142,25 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
     startup: startup ? 'installed' : 'not-installed' };
 }
 
-export async function promptReplacementAccessKey({ signal } = {}) {
-  if (process.platform === 'win32') {
-    const script = `
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class KeyDialogWindow { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
-$form = New-Object System.Windows.Forms.Form
-$form.Text = '更换 Access Key'
-$form.Width = 520
-$form.Height = 230
-$form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MaximizeBox = $false
-$form.MinimizeBox = $false
-$form.ShowInTaskbar = $true
-$form.TopMost = $true
-$label = New-Object System.Windows.Forms.Label
-$label.Left = 20; $label.Top = 20; $label.Width = 460; $label.Text = '新的 Access Key'
-$keyInput = New-Object System.Windows.Forms.TextBox
-$keyInput.Left = 20; $keyInput.Top = 45; $keyInput.Width = 460; $keyInput.UseSystemPasswordChar = $true
-$hint = New-Object System.Windows.Forms.Label
-$hint.Left = 20; $hint.Top = 78; $hint.Width = 460; $hint.Height = 42
-$hint.Text = '更换后，当前远程连接会断开，并使用新的 Access Key 重新绑定此电脑。项目目录设置不会改变。'
-$cancel = New-Object System.Windows.Forms.Button
-$cancel.Text = '取消'; $cancel.Left = 310; $cancel.Top = 135; $cancel.Width = 80; $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-$ok = New-Object System.Windows.Forms.Button
-$ok.Text = '更换'; $ok.Left = 400; $ok.Top = 135; $ok.Width = 80; $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$form.Controls.AddRange(@($label, $keyInput, $hint, $cancel, $ok))
-$form.AcceptButton = $ok
-$form.CancelButton = $cancel
-$form.Add_Shown({ [void][KeyDialogWindow]::ShowWindow($form.Handle, 5); [void][KeyDialogWindow]::SetForegroundWindow($form.Handle); $form.Activate(); [void]$keyInput.Focus() })
-try {
-  $result = $form.ShowDialog()
-  if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($keyInput.Text) }
-} finally { $form.Dispose() }
-`;
+export async function promptProjectRoot(currentProjectRoot, { signal, home = stateHome() } = {}) {
+  if (process.platform === 'darwin') {
     try {
-      return (await runWindowsDesktop(script, { signal, timeout: 300000 })).trim() || null;
-    } catch (error) { if (error.name === 'AbortError') return null; throw error; }
+      const { stdout } = await promisify(execFile)(trayExecutable(), ['choose-folder'],
+        { signal, timeout: 300000, maxBuffer: 16384, env: { ...process.env,
+          TEAM_DEVSPACE_TRAY_INSTANCE_ID: await trayInstanceId(home),
+          TEAM_DEVSPACE_CURRENT_PROJECT_ROOT: currentProjectRoot ?? '' } });
+      const result = JSON.parse(stdout);
+      if (result.event === 'duplicate') throw new Error('本机设置窗口已经打开，请先完成或关闭该窗口');
+      if (result.event !== 'folder-result' || (result.projectRoot !== null && typeof result.projectRoot !== 'string')) {
+        throw new Error('目录选择器未返回有效结果');
+      }
+      return result.projectRoot;
+    } catch (error) {
+      if (error.name === 'AbortError') return null;
+      throw new Error('无法完成目录选择，请关闭其他设置窗口后重试，或直接输入目录路径');
+    }
   }
-  throw new Error('Use the native macOS form for Access Key replacement');
-}
-
-export async function promptProjectRoot(currentProjectRoot, { signal } = {}) {
-  if (process.platform !== 'win32') throw new Error('macOS project selection is handled by its native menu-bar picker');
+  if (process.platform !== 'win32') throw new Error('Use an absolute project directory on this platform');
   const script = `
 Add-Type -AssemblyName System.Windows.Forms
 $picker = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -271,7 +249,11 @@ async function changeProjectRootUnlocked(projectRoot, home, options = {}) {
   }
 }
 
-async function enrollWithoutReplacingTray(home, { onProgress, startup, input = {} }) {
+export function configureFromDesktop(home, options) {
+  return withDeviceOperation(home, () => configureFromDesktopUnlocked(home, options));
+}
+
+async function configureFromDesktopUnlocked(home, { onProgress, startup, input = {} }) {
   const enrolled = await configureDevice(input, { home, startup: false, onProgress });
   if (!startup) return { ...enrolled, startup: 'not-installed' };
   const state = await loadState(home);
@@ -294,7 +276,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
     // Enrollment may have committed remotely before its response was lost.
     // Retry with the retained identity, not a preflight that rejects bound keys.
     onProgress('正在继续未完成的设备绑定…');
-    return { ...await enrollWithoutReplacingTray(home, { onProgress, startup }), recoveredEnrollment: true };
+    return { ...await configureFromDesktop(home, { onProgress, startup }), recoveredEnrollment: true };
   }
 
   onProgress(sameAccessKey ? '正在确认管理员重置后的设备绑定状态…' : '正在验证新的 Access Key…');
@@ -344,7 +326,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   await atomicJson(join(home, 'state.json'), next);
 
   onProgress('正在使用新的 Access Key 重新绑定…');
-  return { ...await enrollWithoutReplacingTray(home, { onProgress, startup }), replacedAccessKey: true };
+  return { ...await configureFromDesktop(home, { onProgress, startup }), replacedAccessKey: true };
 }
 
 export function repairDevice(home = stateHome(), options = {}) {
@@ -410,17 +392,8 @@ export async function deviceStatus(home = stateHome()) {
 
 export async function desktopLocalState(home = stateHome()) {
   const previous = await readJson(join(home, 'state.json'), null);
-  return { accessKeyMode: previous?.bindingId || previous?.pendingAccessKey ? 'replace-key' : 'setup',
+  return { configured: Boolean(previous), accessKeyMode: previous?.bindingId || previous?.pendingAccessKey ? 'replace-key' : 'setup',
     currentProjectRoot: projectRootFromState(previous) };
-}
-
-export async function macAccessKeyMode(home = stateHome()) {
-  return (await desktopLocalState(home)).accessKeyMode;
-}
-
-export async function macAccessKeyDialog(home = stateHome(), { preserveTray = false, signal, onProgress } = {}) {
-  if (await macAccessKeyMode(home) === 'replace-key') return macReplaceAccessKey(home, { signal, onProgress });
-  return macSetupDialog(home, { preserveTray, signal });
 }
 
 export async function macSetupDialog(home = stateHome(), { preserveTray = false, signal } = {}) {
@@ -428,14 +401,14 @@ export async function macSetupDialog(home = stateHome(), { preserveTray = false,
   const previous = await readJson(join(home, 'state.json'), null);
   if (previous?.pendingAccessKey) return macReplaceAccessKey(home, { signal });
   if (previous?.bindingId) return preserveTray
-    ? enrollWithoutReplacingTray(home, { startup: true })
+    ? configureFromDesktop(home, { startup: true })
     : configureDevice({}, { home });
   return runMacForm({ home, mode: 'setup', projectRoot: projectRootFromState(previous), signal,
     submit: async (input, onProgress) => {
       try {
         // The UI owns no state or network logic. Existing operations still own
         // validation, enrollment, pause preservation and startup transactions.
-        if (preserveTray) return await enrollWithoutReplacingTray(home, { input, onProgress, startup: true });
+        if (preserveTray) return await configureFromDesktop(home, { input, onProgress, startup: true });
         return await configureDevice(input, { home, onProgress });
       } catch (error) {
         const pending = await readJson(join(home, 'state.json'), null);

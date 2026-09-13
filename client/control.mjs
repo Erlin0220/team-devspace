@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
 import { COMPONENTS, installServices, serviceAction, serviceLabel } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
-import { atomicJson, installRoot, loadState, privateDirectory, stateHome } from './state.mjs';
+import { atomicJson, installRoot, loadState, privateDirectory, readJson, stateHome } from './state.mjs';
 import { openWindowsDirectory } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 import { linuxServiceManager } from './linux-lifecycle.mjs';
@@ -177,6 +177,9 @@ export function stopTeamDevSpace(home = stateHome()) {
 }
 
 async function stopTeamDevSpaceUnlocked(home = stateHome()) {
+  // A first-run tray has no connection services yet. It must still be closable.
+  // Corrupt/unreadable state is not treated as an unconfigured installation.
+  if (!await readJson(join(home, 'state.json'), null)) return { stopped: true, configured: false, startupRetained: true };
   const state = await loadState(home);
   await serviceAction('stop', state, home, COMPONENTS);
   return { stopped: true, deviceId: state.deviceId,
@@ -245,10 +248,14 @@ export async function diagnosticReport(home = stateHome()) {
   try {
     state = await loadState(home);
     status = await deviceStatus(home);
-  } catch {
-    return { release: null, manifest, devspace: null, platform: process.platform, architecture: process.arch,
-      remoteAccess: 'not-enrolled', desiredRemoteAccess: 'not-enrolled', devspaceHealth: false,
-      bridgeHealth: false, tunnelHealth: false, gatewayHealth: 'not-enrolled', recentErrors: await recentErrors(home, state) };
+  } catch (error) {
+    const missing = await readJson(join(home, 'state.json'), null).then(value => value === null, () => false);
+    const unavailable = missing ? 'not-enrolled' : 'unknown';
+    return { release: state?.releaseVersion ?? null, manifest, devspace: null, platform: process.platform, architecture: process.arch,
+      remoteAccess: unavailable, desiredRemoteAccess: state?.remoteAccess ?? unavailable,
+      stateHealth: missing ? 'not-configured' : state ? 'readable' : 'unreadable',
+      ...(!missing ? { error: redactDiagnostic(error.message) } : {}), devspaceHealth: false,
+      bridgeHealth: false, tunnelHealth: false, gatewayHealth: unavailable, recentErrors: await recentErrors(home, state) };
   }
   return {
     release: state.releaseVersion,
@@ -266,22 +273,6 @@ export async function diagnosticReport(home = stateHome()) {
     projectRootAvailable: status.currentProjectRootAvailable,
     recentErrors: await recentErrors(home, state),
   };
-}
-
-export async function copyDiagnosticReport(home = stateHome()) {
-  const text = JSON.stringify(await diagnosticReport(home), null, 2);
-  const command = process.platform === 'win32'
-    ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    : process.platform === 'darwin' ? '/usr/bin/pbcopy' : 'xclip';
-  const args = process.platform === 'win32'
-    ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-      '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::In.ReadToEnd() | Set-Clipboard']
-    : process.platform === 'linux' ? ['-selection', 'clipboard'] : [];
-  await new Promise((resolveCopy, reject) => {
-    const child = execFile(command, args, { windowsHide: true, timeout: 10000 }, error => error ? reject(error) : resolveCopy());
-    child.stdin.end(text, 'utf8');
-  });
-  return text;
 }
 
 export async function openLogs(home = stateHome(), { launch, follow = false } = {}) {

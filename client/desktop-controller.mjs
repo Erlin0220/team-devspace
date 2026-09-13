@@ -1,0 +1,144 @@
+import { diagnosticReport, openLogs, restartTeamDevSpace, resumeRemoteAccess,
+  stopTeamDevSpace, suspendRemoteAccess } from './control.mjs';
+import { changeProjectRoot, configureFromDesktop, desktopLocalState, deviceStatus,
+  promptProjectRoot, repairDevice, replaceAccessKey } from './setup.mjs';
+import { desktopErrorText, macProgress } from './desktop.mjs';
+import { stateHome } from './state.mjs';
+import { desktopState } from './desktop-state.mjs';
+export { desktopState } from './desktop-state.mjs';
+
+const ACTIVITY = {
+  suspend: '正在暂停远程访问…', resume: '正在恢复远程访问…', restart: '正在重启连接服务…',
+  repair: '正在修复连接…', 'project-root': '正在切换项目目录…',
+  'switch-key': '正在设置 Access Key…', setup: '正在完成设置…',
+};
+const SUCCESS = {
+  suspend: '远程访问已暂停', resume: '恢复操作已完成，连接状态见下方', restart: '连接服务已重启，正在检查状态',
+  repair: '修复操作已完成', 'project-root': '项目目录已更改，请重新连接 ChatGPT',
+  'switch-key': 'Access Key 已更新', setup: '设置已完成，正在连接',
+};
+
+export function createDesktopController(home = stateHome(), options = {}) {
+  const operations = options.operations ?? {
+    status: async () => {
+      try { return await deviceStatus(home); }
+      catch (error) { if (!(await desktopLocalState(home)).configured) return null; throw error; }
+    }, localState: () => desktopLocalState(home),
+    suspend: ({ onProgress }) => suspendRemoteAccess(home, { onProgress }),
+    resume: ({ onProgress }) => resumeRemoteAccess(home, { onProgress }),
+    restart: ({ onProgress }) => restartTeamDevSpace(home, { onProgress }),
+    repair: ({ onProgress }) => repairDevice(home, { preserveTray: true, onProgress }),
+    setup: ({ accessKey, projectRoot, onProgress }) => configureFromDesktop(home,
+      { input: { accessKey, currentProjectRoot: projectRoot }, startup: true, onProgress }),
+    'switch-key': ({ accessKey, onProgress }) => replaceAccessKey(accessKey, home, { onProgress }),
+    'project-root': ({ projectRoot, onProgress }) => changeProjectRoot(projectRoot, home, { onProgress }),
+    'choose-folder': ({ signal, projectRoot }) => promptProjectRoot(projectRoot, { signal, home }),
+    logs: () => openLogs(home), diagnostics: () => diagnosticReport(home),
+    exit: () => stopTeamDevSpace(home),
+  };
+  let status = null, local = {}, activity = '正在启动…', notice, failure, probeFailure;
+  let revision = 0, pending = null, refreshPromise = null, closing = false, disposed = false, interval;
+  let started = false, checkedAt = null;
+  const listeners = new Set();
+  const utilities = new Map();
+  let prompts = new AbortController();
+  const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || closing,
+    exiting: closing, activity, notice, alert: failure ?? probeFailure }), checkedAt });
+  const publish = () => { if (!disposed) for (const listener of listeners) listener(snapshot()); };
+  const readLocal = async () => {
+    const generation = revision;
+    if (!operations.localState) return;
+    const value = await operations.localState();
+    if (generation === revision && !disposed) local = value;
+  };
+  const refresh = () => {
+    if (pending || closing || disposed) return Promise.resolve(snapshot());
+    if (refreshPromise) return refreshPromise;
+    const generation = revision;
+    refreshPromise = Promise.resolve().then(() => operations.status()).then(value => {
+      if (generation === revision && !disposed) { status = value; probeFailure = undefined; checkedAt = new Date().toISOString(); }
+    }, error => {
+      if (generation === revision && !disposed) { status = null; probeFailure = desktopErrorText(error); }
+    }).finally(() => {
+      refreshPromise = null;
+      if (generation === revision && !disposed) { activity = undefined; publish(); }
+    });
+    return refreshPromise;
+  };
+  const dispatch = async (action, input = {}) => {
+    if (disposed || closing) throw Object.assign(new Error('正在退出 Team DevSpace'), { status: 409 });
+    if (action === 'check') { await refresh(); return snapshot(); }
+    if (action === 'exit') {
+      closing = true; revision++; activity = '正在停止服务并退出…'; publish();
+      prompts.abort();
+      try {
+        // Finish an already-started binding transaction before stopping services.
+        // An unrelated health probe or open browser never gates shutdown.
+        await pending?.catch(() => {});
+        await operations.exit();
+        return { stopped: true };
+      } catch (error) {
+        closing = false; activity = undefined; failure = `关闭 Team DevSpace失败：${desktopErrorText(error)}`;
+        publish(); throw error;
+      }
+    }
+    if (['logs', 'diagnostics', 'choose-folder'].includes(action)) {
+      if (!operations[action]) throw new Error('不支持的操作');
+      if (utilities.has(action)) return utilities.get(action);
+      if (prompts.signal.aborted) prompts = new AbortController();
+      const task = Promise.resolve().then(() => operations[action]({ ...input, signal: prompts.signal }))
+        .catch(error => { failure = desktopErrorText(error); publish(); throw error; })
+        .finally(() => utilities.delete(action));
+      utilities.set(action, task);
+      return task;
+    }
+    if (!Object.hasOwn(ACTIVITY, action) || !operations[action]) throw Object.assign(new Error('未知控制操作'), { status: 400 });
+    if (pending) throw Object.assign(new Error('已有操作正在进行，请等待完成'), { status: 409 });
+    revision++; failure = undefined; notice = undefined; activity = ACTIVITY[action];
+    pending = Promise.resolve().then(async () => {
+      const result = await operations[action]({ ...input, signal: prompts.signal,
+        onProgress: message => { if (!closing) { activity = macProgress(message); publish(); } } });
+      await readLocal();
+      if (!closing) {
+        try {
+          // An Enrollment acknowledgement is not a runtime health snapshot.
+          status = typeof result?.devspace === 'boolean' && typeof result?.gateway === 'string'
+            ? result : await operations.status();
+          probeFailure = undefined;
+        } catch (error) { status = null; probeFailure = desktopErrorText(error); }
+        if (!result?.cancelled) notice = SUCCESS[action];
+        checkedAt = new Date().toISOString();
+      }
+      return result;
+    }).catch(async error => {
+      failure = desktopErrorText(error); publish();
+      // A failed operation may still persist a safety intent or partial binding.
+      await readLocal().catch(() => {});
+      if (!closing) {
+        try { status = await operations.status(); } catch { status = null; }
+      }
+      throw error;
+    }).finally(() => {
+      pending = null;
+      if (!closing) { activity = undefined; publish(); }
+    });
+    publish();
+    return pending;
+  };
+  return {
+    snapshot, dispatch,
+    subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
+    start() {
+      if (started) return;
+      started = true;
+      void readLocal().then(publish, error => { failure = desktopErrorText(error); publish(); });
+      void refresh();
+      interval = setInterval(() => void refresh(), options.refreshInterval ?? 5000);
+      interval.unref();
+    },
+    async dispose() {
+      disposed = true; clearInterval(interval); prompts.abort(); listeners.clear();
+      await pending?.catch(() => {});
+    },
+  };
+}

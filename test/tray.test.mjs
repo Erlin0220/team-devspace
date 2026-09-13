@@ -7,7 +7,11 @@ import { redactDiagnostic } from '../client/control.mjs';
 import { launchAgentXml, serviceLabel, windowsTaskXml } from '../client/platform.mjs';
 import { runTray, trayInstanceId, trayState } from '../client/tray.mjs';
 
-test('tray ownership is stable per local state directory, not global to every isolated installation', async () => {
+const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gateway: 'active',
+  remoteAccess: 'active', desiredRemoteAccess: 'active', currentProjectRoot: join(homedir(), 'project-a'), currentProjectRootAvailable: true };
+const stopped = { ...healthy, ready: false, devspace: false, bridge: false, tunnel: false };
+
+test('tray ownership is stable per state directory and independent of key changes', async () => {
   const home = join(homedir(), 'team-devspace-instance-test');
   const identity = await trayInstanceId(home);
   assert.match(identity, /^[a-f0-9]{64}$/);
@@ -16,311 +20,91 @@ test('tray ownership is stable per local state directory, not global to every is
   if (process.platform === 'win32') assert.equal(await trayInstanceId(home.toUpperCase()), identity);
 });
 
-test('tray presentation separates persistent status, activity and available actions', () => {
-  const readyStatus = { ready: true, devspace: true, bridge: true, tunnel: true,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active',
-    currentProjectRoot: join(homedir(), 'project-a'), currentProjectRootAvailable: true };
-  const ready = trayState(readyStatus);
-  assert.equal(ready.status, 'ready');
-  assert.equal(ready.summary, 'Team DevSpace 正常');
-  assert.equal(ready.remoteText, '暂停远程访问');
-  assert.equal(ready.remoteAction, 'suspend');
-  assert.equal(ready.switchKeyEnabled, true);
-  assert.equal(ready.projectText, '项目：project-a');
-  assert.equal(ready.projectRootEnabled, true);
-  assert.equal(ready.restartEnabled, true);
-  assert.equal(ready.repairEnabled, true);
-
-  const partial = trayState({ ...readyStatus, ready: false, bridge: false });
-  assert.equal(partial.status, 'partial');
-  assert.equal(partial.summary, 'Team DevSpace 本机服务异常');
-
-  const stopped = trayState({ ...readyStatus, ready: false, devspace: false, bridge: false, tunnel: false });
-  assert.equal(stopped.status, 'stopped');
-  assert.equal(stopped.summary, 'Team DevSpace 本机服务已停止');
-  assert.equal(stopped.restartEnabled, true);
-
-  const suspended = trayState({ ready: false, devspace: false, bridge: false, tunnel: false,
-    gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' });
-  assert.equal(suspended.status, 'suspended');
-  assert.equal(suspended.summary, 'Team DevSpace 远程访问已暂停');
-  assert.equal(suspended.remoteText, '恢复远程访问');
-  assert.equal(suspended.remoteAction, 'resume');
-  assert.equal(suspended.restartEnabled, false);
-  assert.equal(suspended.repairEnabled, false);
-
-  const incompleteLocalPause = trayState({ ready: false, devspace: true, bridge: true, tunnel: true,
-    gateway: 'unreachable', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' });
-  assert.equal(incompleteLocalPause.status, 'partial');
-  assert.equal(incompleteLocalPause.summary, 'Team DevSpace 暂停未完成');
-
-  const unconfirmed = trayState({ ready: false, devspace: false, bridge: false, tunnel: false,
-    gateway: 'unreachable', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' });
-  assert.equal(unconfirmed.status, 'suspended');
-  assert.equal(unconfirmed.summary, 'Team DevSpace 本机已暂停，服务端状态未知');
-  assert.equal(unconfirmed.remoteText, '重试暂停远程访问');
-  assert.equal(unconfirmed.remoteAction, 'suspend');
-  assert.equal(unconfirmed.restartEnabled, false);
-
-  const pendingGateway = trayState({ ready: false, devspace: false, bridge: false, tunnel: false,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'suspended' });
-  assert.equal(pendingGateway.summary, 'Team DevSpace 本机已暂停，服务端待确认');
-  assert.equal(pendingGateway.remoteText, '重试暂停远程访问');
-  assert.equal(pendingGateway.remoteAction, 'suspend');
-  assert.equal(pendingGateway.remoteEnabled, true);
-  assert.equal(pendingGateway.restartEnabled, false);
-
-  const gatewaySuspended = trayState({ ready: false, devspace: true, bridge: true, tunnel: true,
-    gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'active' });
-  assert.equal(gatewaySuspended.summary, 'Team DevSpace 服务端仍处于暂停状态');
-  assert.equal(gatewaySuspended.remoteAction, 'resume');
-  assert.equal(gatewaySuspended.restartEnabled, false);
-  assert.equal(gatewaySuspended.repairEnabled, false);
-
-  const missingProject = trayState({ ...readyStatus, ready: false, currentProjectRootAvailable: false });
-  assert.equal(missingProject.status, 'partial');
-  assert.equal(missingProject.summary, 'Team DevSpace 项目目录不可用');
-  assert.equal(missingProject.projectRootEnabled, true);
-
-  const disabled = trayState({ ...readyStatus, ready: false, gateway: 'disabled' });
-  assert.equal(disabled.summary, 'Team DevSpace 授权已失效');
-  assert.equal(disabled.remoteEnabled, false);
-  assert.equal(disabled.switchKeyEnabled, true);
-
-  const pendingEnrollment = trayState({ ready: false, devspace: false, bridge: false, tunnel: false,
-    gateway: 'not-enrolled', remoteAccess: 'not-enrolled', desiredRemoteAccess: 'active' });
-  assert.equal(pendingEnrollment.summary, 'Team DevSpace 未完成 Enrollment');
-  assert.equal(pendingEnrollment.switchKeyText, '完成设置…');
-  assert.equal(pendingEnrollment.switchKeyEnabled, true);
-  assert.equal(pendingEnrollment.remoteEnabled, false);
-  assert.equal(pendingEnrollment.restartEnabled, false);
-
-  const missing = trayState(null, { accessKeyMode: 'setup', currentProjectRoot: join(homedir(), 'project-a') });
-  assert.equal(missing.summary, 'Team DevSpace 未连接');
-  assert.equal(missing.remoteEnabled, false);
-  assert.equal(missing.switchKeyText, '完成设置…');
-  assert.equal(missing.switchKeyEnabled, true);
-  assert.equal(missing.projectText, '项目：project-a');
-  assert.equal(missing.projectRootEnabled, true);
-  assert.equal(missing.exitEnabled, true);
-
-  const replacing = trayState(null, { accessKeyMode: 'replace-key' });
-  assert.equal(replacing.switchKeyText, '更换 Access Key…');
-  assert.equal(replacing.switchKeyEnabled, true);
-
-  const busy = trayState(readyStatus, { busy: true, activity: '正在暂停远程访问…' });
-  assert.equal(busy.summary, 'Team DevSpace 正常');
-  assert.equal(busy.activity, '正在暂停远程访问…');
-  assert.equal(busy.remoteEnabled, false);
-  assert.equal(busy.checkEnabled, false);
-  assert.equal(busy.switchKeyEnabled, false);
-  assert.equal(busy.logsEnabled, true);
-  assert.equal(busy.diagnosticsEnabled, true);
-  assert.equal(busy.exitEnabled, true, 'Exit must remain available while an input dialog or operation is pending');
+test('shared presentation distinguishes intent, observed health and partial pause failures', () => {
+  for (const [status, visual, summary, action] of [
+    [healthy, 'ready', '正常', 'suspend'],
+    [{ ...healthy, ready: false, bridge: false }, 'partial', '本机服务异常', 'suspend'],
+    [stopped, 'stopped', '本机服务已停止', 'suspend'],
+    [{ ...stopped, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' }, 'suspended', '远程访问已暂停', 'resume'],
+    [{ ...healthy, ready: false, gateway: 'unreachable', desiredRemoteAccess: 'suspended' }, 'partial', '暂停未完成', 'suspend'],
+    [{ ...stopped, gateway: 'unreachable', desiredRemoteAccess: 'suspended' }, 'suspended', '本机已暂停，服务端状态未知', 'suspend'],
+    [{ ...stopped, desiredRemoteAccess: 'suspended' }, 'suspended', '本机已暂停，服务端待确认', 'suspend'],
+    [{ ...healthy, ready: false, gateway: 'suspended' }, 'suspended', '服务端仍处于暂停状态', 'resume'],
+    [{ ...healthy, ready: false, currentProjectRootAvailable: false }, 'partial', '项目目录不可用', 'suspend'],
+    [{ ...healthy, ready: false, gateway: 'disabled' }, 'partial', '授权已失效', 'suspend'],
+    [{ ...stopped, remoteAccess: 'not-enrolled', gateway: 'not-enrolled' }, 'stopped', '未完成 Enrollment', 'suspend'],
+  ]) {
+    const view = trayState(status);
+    assert.equal(view.status, visual); assert.equal(view.summary, `Team DevSpace ${summary}`); assert.equal(view.remoteAction, action);
+    if (visual === 'suspended') assert.equal(view.restartEnabled, false);
+  }
+  const pending = trayState({ ...stopped, desiredRemoteAccess: 'suspended' });
+  assert.equal(pending.remoteText, '重试暂停远程访问');
+  const disabled = trayState({ ...healthy, gateway: 'disabled' });
+  assert.equal(disabled.remoteEnabled, false); assert.equal(disabled.switchKeyEnabled, true);
+  assert.equal(trayState({ ...stopped, enrollmentPending: true, remoteAccess: 'not-enrolled' }).repairEnabled, true);
+  const busy = trayState(healthy, { busy: true, activity: '处理中' });
+  assert.equal(busy.summary, 'Team DevSpace 正常'); assert.equal(busy.remoteEnabled, false);
+  assert.equal(busy.checkEnabled, false); assert.equal(busy.switchKeyEnabled, false); assert.equal(busy.exitEnabled, true);
+  assert.equal(busy.menu.find(item => item.id === 'settings').enabled, true);
+  assert.equal(trayState(null, { accessKeyMode: 'replace-key' }).switchKeyText, '更换 Access Key…');
+  const recovery = trayState({ ...stopped, remoteAccess: 'not-enrolled', gateway: 'not-enrolled', enrollmentPending: true }, { accessKeyMode: 'replace-key' });
+  assert.equal(recovery.accessKeyMode, 'replace-key');
+  assert.equal(recovery.remoteEnabled, false);
+  assert.equal(recovery.repairEnabled, true);
+  const notice = trayState(healthy, { notice: '旧操作已完成' });
+  assert.equal(notice.menu[0].text, 'Team DevSpace 正常');
+  assert.equal(notice.iconStatus, 'ready');
 });
 
-test('tray publishes the local Access Key action before a slow health refresh completes', { timeout: 3000 }, async () => {
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    const deadline=setTimeout(()=>process.exit(7),1000);
-    let input='';
-    process.stdin.on('data',chunk=>{input+=chunk; while(input.includes('\\n')){
-      const index=input.indexOf('\\n'); const line=input.slice(0,index); input=input.slice(index+1);
-      if(!line)continue; const state=JSON.parse(line); clearTimeout(deadline);
-      if(state.activity!=='正在启动…'||state.switchKeyText!=='更换 Access Key…'||state.switchKeyEnabled!==true||state.projectText!=='项目：project-a'||state.projectRootEnabled!==true) process.exit(8);
-      process.exit(0);
-    }});
-  `;
-  await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
-    refreshInterval: 60000, operations: {
-      localState: async () => ({ accessKeyMode: 'replace-key', currentProjectRoot: join(homedir(), 'project-a') }),
-      status: async () => new Promise(() => {}),
-    } });
+test('the shared native menu contains only status, common actions and Control Center entry', () => {
+  const view = trayState(healthy);
+  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['settings', 'suspend', 'restart', 'logs', 'exit']);
+  assert.equal(view.menu.find(item => item.id === 'project').text, '项目：project-a');
+  assert.equal(view.menu.find(item => item.id === 'exit').text, '停止服务并退出 Team DevSpace');
+  assert.ok(!view.menu.some(item => ['switch-key', 'project-root', 'repair'].includes(item.action)));
 });
 
-test('tray controller delegates fixed menu actions and exits only after services stop', async () => {
+test('native adapter coalesces opening settings, ignores removed actions and stops only on explicit exit', { timeout: 5000 }, async () => {
   const calls = [];
-  let remoteAccess = 'active';
-  let stopped = false;
-  const actions = ['suspend', 'resume', 'restart', 'repair', 'project-root', 'switch-key', 'logs', 'diagnostics', 'exit'];
   const fake = `
-    const actions=${JSON.stringify(actions)};
     console.log(JSON.stringify({event:'ready'}));
-    let index=0;
-    const timer=setInterval(()=>{
-      const action=actions[index++];
-      if(action) console.log(JSON.stringify({event:'menu',action}));
-      else clearInterval(timer);
-    },30);
-    process.stdin.resume();
+    let first=true;
+    process.stdin.on('data',()=>{if(!first)return;first=false;
+      for(const action of ['settings','settings','switch-key','logs'])console.log(JSON.stringify({event:'menu',action}));
+      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'exit'})),100);
+    });
     process.stdin.on('end',()=>process.exit(0));
   `;
-  const status = () => ({ ready: remoteAccess === 'active', devspace: true, bridge: true,
-    tunnel: true, gateway: remoteAccess, remoteAccess, desiredRemoteAccess: remoteAccess });
   await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
-    refreshInterval: 60000, operations: {
-      status: async () => status(),
-      suspend: async () => { calls.push('suspend'); remoteAccess = 'suspended'; },
-      resume: async () => { calls.push('resume'); remoteAccess = 'active'; },
-      restart: async () => { calls.push('restart'); },
-      repair: async () => { calls.push('repair'); },
-      'project-root': async () => { calls.push('project-root'); },
-      'switch-key': async () => { calls.push('switch-key'); },
-      logs: async () => { calls.push('logs'); },
-      diagnostics: async () => { calls.push('diagnostics'); },
-      exit: async () => { calls.push('exit'); await new Promise(resolve => setTimeout(resolve, 10)); stopped = true; return { startupRetained: true }; },
-    } });
-  assert.equal(stopped, true);
-  assert.deepEqual(calls, actions);
+    operations: { status: async () => healthy, localState: async () => ({ accessKeyMode: 'replace-key' }),
+      logs: async () => { calls.push('logs'); }, exit: async () => { calls.push('exit'); } },
+    startLocalControl: async () => ({ open: async () => { calls.push('settings'); await new Promise(r => setTimeout(r, 30)); },
+      close: async () => { calls.push('close'); } }),
+  });
+  assert.equal(calls.filter(value => value === 'settings').length, 1);
+  assert.deepEqual(calls.filter(value => value !== 'settings'), ['logs', 'exit', 'close']);
 });
 
-test('long-running tray mutations publish immediate busy feedback and retain a completion notice briefly', { timeout: 5000 }, async () => {
-  let releaseResume;
-  const resumeGate = new Promise(resolve => { releaseResume = resolve; });
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    let buffer='', phase=0;
-    const deadline=setTimeout(()=>process.exit(7),3000);
-    process.stdin.on('end',()=>{clearTimeout(deadline);process.exit(0)});
-    process.stdin.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\\n')){
-      const index=buffer.indexOf('\\n'), state=JSON.parse(buffer.slice(0,index)); buffer=buffer.slice(index+1);
-      if(phase===0 && !state.activity){phase=1;console.log(JSON.stringify({event:'menu',action:'resume'}));}
-      else if(phase===1 && state.activity==='正在恢复远程访问…' && state.remoteEnabled===false){phase=2;console.log(JSON.stringify({event:'test-release'}));}
-      else if(phase===2 && state.notice==='远程访问已恢复' && !state.activity){clearTimeout(deadline);process.exit(0);}
-    }});
-  `;
-  const status = { ready: true, devspace: true, bridge: true, tunnel: true,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' };
-  const helper = process.execPath;
-  const helperArgs = ['--input-type=module', '-e', fake];
-  await runTray('unused', { helper, helperArgs, refreshInterval: 60000, successNoticeDuration: 500, operations: {
-    localState: async () => ({ accessKeyMode: 'replace-key', currentProjectRoot: join(homedir(), 'project-a') }),
-    status: async () => status,
-    resume: async ({ onProgress }) => {
-      onProgress?.('正在恢复远程访问…');
-      setTimeout(() => releaseResume(), 25);
-      await resumeGate;
-      return status;
-    },
-  } });
-});
-
-test('exit cancels a pending Access Key prompt instead of remaining busy forever', { timeout: 5000 }, async () => {
-  let aborted = false;
-  let exitCalls = 0;
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    let buffer='', phase=0;
-    const deadline=setTimeout(()=>process.exit(7),2000);
-    process.stdin.on('end',()=>{clearTimeout(deadline);process.exit(0)});
-    process.stdin.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\\n')){
-      const index=buffer.indexOf('\\n'), state=JSON.parse(buffer.slice(0,index)); buffer=buffer.slice(index+1);
-      if(phase===0){phase=1;console.log(JSON.stringify({event:'menu',action:'switch-key'}));}
-      else if(phase===1 && state.activity){phase=2;console.log(JSON.stringify({event:'menu',action:'exit'}));}
-    }});
-  `;
-  await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
-    refreshInterval: 60000, operations: {
-      status: async () => ({ ready: true, devspace: true, bridge: true, tunnel: true,
-        gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' }),
-      'switch-key': async ({ signal } = {}) => new Promise(resolve => {
-        const timer = setTimeout(() => resolve({ cancelled: true }), 1000);
-        signal?.addEventListener('abort', () => { aborted = true; clearTimeout(timer); resolve({ cancelled: true }); }, { once: true });
-      }),
-      exit: async () => { exitCalls++; },
-    } });
-  assert.equal(aborted, true);
-  assert.equal(exitCalls, 1);
-});
-
-test('local shutdown failure stays visible as an explicit alert and keeps the tray controller alive', async () => {
-  let exitCalls = 0;
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    let input=''; let sent=false;
-    process.stdin.on('end',()=>process.exit(2));
-    process.stdin.on('data',chunk=>{input+=chunk; while(input.includes('\\n')){
-      const index=input.indexOf('\\n'); const line=input.slice(0,index); input=input.slice(index+1);
-      if(!line)continue; const state=JSON.parse(line);
-      if(!sent){ sent=true; console.log(JSON.stringify({event:'menu',action:'exit'})); }
-      if(String(state.alert||'').startsWith('关闭 Team DevSpace失败：')) setTimeout(()=>process.exit(0),10);
-    }});
-  `;
-  const status = { ready: false, devspace: false, bridge: false, tunnel: false,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'suspended' };
-  await runTray('unused', { helper: process.execPath,
-    helperArgs: ['--input-type=module', '-e', fake], refreshInterval: 60000,
-    operations: {
-      status: async () => status,
-      exit: async () => { exitCalls++; throw new Error('Local service shutdown failed'); },
-    } });
-  assert.equal(exitCalls, 1);
-});
-
-test('manual checks coalesce with an in-flight health refresh without blocking troubleshooting utilities', async () => {
-  let statusCalls = 0;
-  let logCalls = 0;
-  let releaseStatus;
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    setTimeout(()=>{
-      for(let i=0;i<20;i++) console.log(JSON.stringify({event:'menu',action:'check'}));
-      console.log(JSON.stringify({event:'menu',action:'logs'}));
-    },15);
-    let input='';
-    process.stdin.on('data',chunk=>{input+=chunk; while(input.includes('\\n')){
-      const index=input.indexOf('\\n'); const line=input.slice(0,index); input=input.slice(index+1);
-      if(!line)continue; JSON.parse(line); setTimeout(()=>process.exit(0),25);
-    }});
-  `;
-  const status = { ready: true, devspace: true, bridge: true, tunnel: true,
-    gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' };
-  await runTray('unused', { helper: process.execPath,
-    helperArgs: ['--input-type=module', '-e', fake], refreshInterval: 60000,
-    operations: {
-      status: async () => {
-        statusCalls++;
-        return new Promise(resolve => { releaseStatus = () => resolve(status); });
-      },
-      logs: async () => { logCalls++; releaseStatus?.(); },
-    } });
-  assert.equal(logCalls, 1);
-  assert.equal(statusCalls, 1);
-});
-
-test('native startup keeps tray separate from runtime and does not expose credentials',
-  { skip: !['win32', 'darwin'].includes(process.platform) }, () => {
+test('native startup keeps tray separate from runtime and never embeds credentials', { skip: !['win32', 'darwin'].includes(process.platform) }, () => {
   const state = { deviceId: randomUUID(), deviceSecret: 'secret', ownerToken: 'x'.repeat(43), accessKey: 'tds_secret',
     ports: { devspace: 47670, bridge: 47770, metrics: 47870 } };
-  const home = join(homedir(), 'TeamDevSpace');
-  const root = join(homedir(), 'TDS');
+  const home = join(homedir(), 'TeamDevSpace'), root = join(homedir(), 'TDS');
   const task = windowsTaskXml(state, 'tray', home, 'S-1-5-21-123', root);
   assert.ok(task.includes('InteractiveToken') && task.includes('tds-launcher.exe'));
   assert.ok(task.includes('<Count>10</Count>') && !task.includes('<Count>999</Count>'));
-  assert.ok(task.includes('run&quot; &quot;tray') && !task.includes(state.deviceSecret) && !task.includes(state.accessKey));
+  assert.ok(!task.includes(state.deviceSecret) && !task.includes(state.accessKey));
   const launch = launchAgentXml(state, 'tray', home, { node: '/app/node', cloudflared: '/app/cloudflared' }, root);
-  assert.ok(launch.includes('<key>SuccessfulExit</key><false/>'));
-  assert.ok(launch.includes('<key>LimitLoadToSessionType</key><string>Aqua</string>'));
-  assert.ok(launch.includes('<key>ProcessType</key><string>Interactive</string>'));
-  assert.ok(launch.includes('<key>TEAM_DEVSPACE_UI_READY_MARKER</key>'));
+  for (const text of ['<key>SuccessfulExit</key><false/>', '<key>LimitLoadToSessionType</key><string>Aqua</string>',
+    '<key>ProcessType</key><string>Interactive</string>', '<key>TEAM_DEVSPACE_UI_READY_MARKER</key>']) assert.ok(launch.includes(text));
   assert.ok(!launch.includes('<key>KeepAlive</key><true/>'));
-  assert.equal(serviceLabel(state, 'tray').endsWith('.tray'), true);
   assert.equal(serviceLabel(state, 'tray', 'darwin'), 'com.teamdevspace.tray');
 });
 
-test('macOS tray controller requires a visible menu-bar handshake', { timeout: 3000 }, async () => {
-  const fake = `
-    console.log(JSON.stringify({event:'ready'}));
-    process.stdin.resume();
-  `;
-  await assert.rejects(runTray('unused', {
-    helper: process.execPath,
-    helperArgs: ['--input-type=module', '-e', fake],
-    requireVisible: true,
-    startupTimeout: 150,
-    refreshInterval: 60000,
-    operations: { status: async () => null },
-  }), /became visible/);
+test('macOS tray startup requires actual visibility, not merely process readiness', { timeout: 3000 }, async () => {
+  await assert.rejects(runTray('unused', { helper: process.execPath,
+    helperArgs: ['-e', "console.log(JSON.stringify({event:'ready'}));process.stdin.resume()"], requireVisible: true,
+    startupTimeout: 150, operations: { status: async () => null } }), /became visible/);
 });
 
 test('diagnostic redaction removes employee and bearer credentials', () => {

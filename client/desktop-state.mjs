@@ -1,0 +1,75 @@
+import { hostname } from 'node:os';
+import { basename } from 'node:path';
+import release from '../release.config.json' with { type: 'json' };
+import packageJson from '../package.json' with { type: 'json' };
+
+function summaryOf(status) {
+  if (!status) return { status: 'stopped', summary: 'Team DevSpace 未连接' };
+  const gateway = status.gateway ?? status.remoteAccess;
+  const desired = status.desiredRemoteAccess ?? status.remoteAccess;
+  const stopped = !status.devspace && !status.bridge && !status.tunnel;
+  let visual = 'partial';
+  let text;
+  if (status.remoteAccess === 'not-enrolled') { visual = 'stopped'; text = '未完成 Enrollment'; }
+  else if (gateway === 'disabled') text = '授权已失效';
+  else if (desired === 'suspended') {
+    visual = stopped ? 'suspended' : 'partial';
+    text = gateway === 'suspended' ? (stopped ? '远程访问已暂停' : '已暂停，本机清理未完成')
+      : !stopped ? '暂停未完成' : gateway === 'active' ? '本机已暂停，服务端待确认' : '本机已暂停，服务端状态未知';
+  } else if (gateway === 'suspended') { visual = 'suspended'; text = '服务端仍处于暂停状态'; }
+  else if (status.currentProjectRootAvailable === false) text = '项目目录不可用';
+  else if (status.ready) { visual = 'ready'; text = '正常'; }
+  else if (gateway === 'unreachable') { visual = stopped ? 'stopped' : 'partial'; text = '无法连接服务'; }
+  else if (stopped) { visual = 'stopped'; text = '本机服务已停止'; }
+  else if (!status.tunnel) text = '连接通道异常';
+  else if (!status.devspace || !status.bridge) text = '本机服务异常';
+  else text = '部分异常';
+  return { status: visual, summary: `Team DevSpace ${text}` };
+}
+
+// Pure projection shared by both native renderers and the Control Center.
+// No runtime dependencies: early native packaging smoke runs before npm ci.
+export function desktopState(status, { busy = false, exiting = false, activity, notice, alert,
+  accessKeyMode = 'setup', currentProjectRoot } = {}) {
+  const gateway = status?.gateway ?? status?.remoteAccess;
+  const desired = status?.desiredRemoteAccess ?? status?.remoteAccess;
+  const enrolled = Boolean(status && status.remoteAccess !== 'not-enrolled');
+  const canReplaceKey = enrolled || accessKeyMode === 'replace-key';
+  const suspended = desired === 'suspended' || gateway === 'suspended';
+  const controllable = Boolean(status && enrolled && gateway !== 'disabled');
+  const pausePending = desired === 'suspended' && gateway !== 'suspended';
+  const root = status?.currentProjectRoot ?? currentProjectRoot;
+  const view = {
+    ...summaryOf(status), activity, notice, alert,
+    remoteText: pausePending ? '重试暂停远程访问' : gateway === 'suspended' ? '恢复远程访问' : '暂停远程访问',
+    remoteAction: pausePending ? 'suspend' : gateway === 'suspended' ? 'resume' : 'suspend',
+    remoteEnabled: !busy && controllable, checkEnabled: !busy,
+    switchKeyText: canReplaceKey ? '更换 Access Key…' : '完成设置…',
+    switchKeyEnabled: !busy, accessKeyMode: canReplaceKey ? 'replace-key' : 'setup',
+    projectText: root ? `项目：${basename(root) || root}` : '项目：未设置', projectRoot: root,
+    projectRootEnabled: !busy && Boolean(root),
+    restartEnabled: !busy && controllable && !suspended,
+    repairEnabled: !busy && (Boolean(status?.enrollmentPending) || (controllable && !suspended)),
+    logsEnabled: !exiting, diagnosticsEnabled: !exiting,
+    exitEnabled: !exiting,
+    busy, exiting, version: release.version, devspaceVersion: release.devspaceVersion, computer: hostname(),
+    author: { name: packageJson.author.name, email: packageJson.author.email },
+    platform: process.platform, architecture: process.arch,
+    health: status ? Object.fromEntries(['devspace', 'bridge', 'tunnel', 'gateway', 'desiredRemoteAccess',
+      'currentProjectRootAvailable', 'ready'].map(key => [key, status[key]])) : null,
+  };
+  const item = (id, text, enabled, action = id) => ({ id, text, enabled, action });
+  const separator = id => ({ id, text: '', enabled: false, separator: true });
+  view.iconStatus = alert ? 'partial' : activity ? 'busy' : view.status;
+  view.tooltip = alert ?? activity ?? view.summary;
+  view.menu = [
+    item('status', alert ? '操作未完成，请打开控制中心' : activity ?? view.summary, false, ''),
+    item('project', view.projectText, false, ''), separator('main-separator'),
+    item('settings', '打开控制中心…', !exiting),
+    item('remote', view.remoteText, view.remoteEnabled, view.remoteAction),
+    item('restart', '重启连接服务', view.restartEnabled),
+    item('logs', '打开日志', !exiting), separator('exit-separator'),
+    item('exit', '停止服务并退出 Team DevSpace', !exiting),
+  ];
+  return view;
+}
