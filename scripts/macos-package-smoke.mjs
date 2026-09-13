@@ -180,7 +180,8 @@ try {
   }
   assert.equal(await exists(join(distribution, 'versions')), false);
   assert.equal((JSON.parse(await readFile(join(home, 'state.json'), 'utf8'))).bindingId, state.bindingId);
-  assert.equal(await readFile(join(project, 'keep.txt'), 'utf8'), 'employee project must survive damaged-client uninstall');
+  assert.equal(await readFile(join(project, 'keep.txt'), 'utf8'), 'employee project must survive',
+    'Damaged-client uninstall must preserve the original employee project content');
   await removePackageFiles();
   removed = true;
   for (const path of [app, command]) assert.equal(await exists(path), false);
