@@ -94,6 +94,7 @@ test('homepage preserves fixed and pinned download identities within the publica
     assert.ok(!page.includes('pause-motion') && !page.includes('暂停动效') && !page.includes('继续动效'));
     assert.ok(page.includes('aria-labelledby="hero-title"'));
     assert.ok(page.includes(`${origin}/devspace-logo-light.png`));
+    assert.ok(page.includes(`<link rel="icon" href="${origin}/devspace-logo-light.png" type="image/png">`));
     assert.ok(page.includes(`${origin}/download-site.js`));
     assert.equal((page.match(/data-copy-command/g) ?? []).length, 2);
     assert.ok(page.includes('复制脚本') && !page.includes('查看脚本'));

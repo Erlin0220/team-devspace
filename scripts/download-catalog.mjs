@@ -104,6 +104,7 @@ export function downloadPage(catalog, origin, { stable = false } = {}) {
 <meta property="og:description" content="同一个下载网址。你自己的开发环境。下载安装后，再输入管理员发放的 Access Key。">
 <meta property="og:url" content="${stable ? `${origin}/` : `${prefix}/`}">
 <link rel="canonical" href="${stable ? `${origin}/` : `${prefix}/`}">
+<link rel="icon" href="${origin}/devspace-logo-light.png" type="image/png">
 <title>Team DevSpace · ${stable ? '客户端下载' : `${catalog.version} 历史版本下载`}</title>
 <style>
 /* Homepage tokens. No imported fonts, frameworks or runtime dependencies. */
