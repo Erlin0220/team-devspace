@@ -2,9 +2,36 @@
 
 This file records evidence that has actually been produced. A checked item means the command or environment was exercised; implementation alone is not evidence.
 
-## Fixed HTTPS distribution 0.2.2: 2026-09-13 (deployed and verified)
+## macOS final review 0.2.3: 2026-09-13 (final bytes accepted; publication pending)
 
-All four final installers were built and accepted from clean commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. This documentation completion does not change those accepted package bytes. The employee entrypoint is **https://downloads.568920429.xyz/**; stable currently points to **0.2.2**.
+All four candidate installers were built and accepted from clean commit `f5ebc3bbf70f3bf392e5c52ae71b35eb47831f7a`. Subsequent documentation commits do not change these accepted client bytes. Product fixes are the legacy-Safari request timeout implementation and the bounded launchd wait in damaged-client uninstall; no runtime dependency was added.
+
+- [x] Final Windows source checks and full suite: **169 tests, 164 passed, 5 platform skips, 0 failures**. Regression tests failed on the previous Safari API assumption and immediate launchd-exit assumption, then passed after their targeted fixes. Final diff/whitespace review passed.
+- [x] Codemagic **37**, build `6aa6ab0550f900cd2da0ca1b`, passed the final **arm64** PKG workflow on M2 in **3m 34s**. Codemagic **38**, build `6aa6abc4cf71ccbc9031110b`, passed the final **x64** workflow on M2/Rosetta in **12m 13s**. Both used the same clean source commit and free M2 configuration.
+- [x] Both final packages passed architecture/minimum-OS and package-content checks, actual AppKit menu/form/selector protocol and single-instance tests, native installed runtime/authenticated fixture MCP, system PKG installation, interrupted first-run recovery, LaunchAgent/menu-bar lifecycle, repeated installation, damaged-CLI repair, pause/binding retention, normal uninstall, reinstall after uninstall, damaged-CLI uninstall, project preservation and zero owned residue.
+- [x] Build 36 failed on an incorrectly written new project-content assertion, not a product data-loss event. The assertion was corrected to compare the original fixture content without dropping the check. Only subsequent builds 37/38 are accepted; build 36 is not release evidence.
+- [x] Downloaded both final PKGs from their authenticated Codemagic artifact paths and independently rehashed them against the corresponding successful acceptance receipts and SHA files. No old package or failed-build receipt was substituted.
+- [x] WSL rebuilt the final Linux archive and passed full checks/tests, distribution tests, Gateway dry-run, native systemd/runtime/authenticated fixture MCP, actual offline install/repair/corruption/rollback/uninstall and owned cleanup. This run is not a new full no-systemd or live Cloudflare acceptance.
+- [x] Windows rebuilt the final EXE and passed native/isolated installation gates and the actual employee EXE upgrade, repeat install, Repair, redacted diagnostics, uninstall and reinstall. Identity, binding, project and original remote-access policy were preserved. A subsequent installed-client status reported release 0.2.3, runtime/Bridge/Tunnel ready and Gateway active.
+- [x] Strict four-platform acceptance passed against `f5ebc3b`, including actual final Windows installer transactions and final-byte hashes. No Gateway redeployment, certificate trust installation or global security-setting change was made.
+- [ ] Fixed HTTPS promotion of 0.2.3 is pending; 0.2.2 remains the active public release at this checkpoint.
+
+| Final Mac package | Bytes | SHA-256 |
+| --- | ---: | --- |
+| arm64 PKG | 94360990 | `fe1981b345e8b99307e07d0dbc7b2b7b297025bc87fa795702306bb7bf3fbdd2` |
+| x64 PKG | 96752640 | `0c2492e22b220a76c79256e4a25dfe56ed651434928e841b1fb0755f586ec7d9` |
+
+### Remaining employee-Mac acceptance
+
+- [ ] **Real first-run Key submission and ChatGPT-to-Mac work remain unverified.** Mac enrollment was seeded, and authenticated runtime MCP used a controlled local fixture, not the live external Cloudflare/ChatGPT path. The employee must use the same valid Key in the desktop client and their ChatGPT connection, choose a real project and actually read a file through the connected tool.
+- [ ] **Visual approval is not complete.** The captured CI screenshots showed Finder/background rather than the application window. Native UI presence/protocol checks do not prove font, icon, dark-mode, focus or actual screen layout. Do not count the existence of a PNG as visual acceptance.
+- [ ] **Unsigned/unnotarized distribution still needs real Gatekeeper/admin authorization.** CI uses passwordless sudo and does not prove browser-quarantine behavior. Do not disable global Gatekeeper. Physical Intel, older supported macOS/Safari, real user privacy permissions, relogin/reboot, sleep/wake and prolonged company-network operation remain manual checks.
+
+Employee handoff and signing limits: [0.2.3 release notes](release-notes-0.2.3.md).
+
+## Fixed HTTPS distribution 0.2.2: 2026-09-13 (historical deployed evidence)
+
+All four final installers were built and accepted from clean commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. This documentation completion does not change those accepted package bytes. The employee entrypoint is **https://downloads.568920429.xyz/**; stable pointed to **0.2.2** at that checkpoint.
 
 - [x] Final Windows full unit suite: **165 tests, 160 passed, 5 platform skips, 0 failures**. WSL full suite: **165 tests, 153 passed, 12 platform skips, 0 failures**; its distribution suite also passed all 14 tests. Source/pin policy, whitespace and Gateway dry-run checks passed. Linux ran the real shell publisher integration for incomplete/corrupt upload rejection, immutable versions, compare-and-swap activation and rollback; its synthetic package fixtures are not native installation evidence.
 - [x] Windows x64: built the unmodified final self-contained EXE, verified archive layout/native modules, native tray protocol/single instance/menu actions and runtime/Bridge lifecycle. The actual employee installation then passed final EXE upgrade, Desktop/Start Menu presence, repeated installation, Repair, credential-redacted diagnostics, real uninstall/owned-residue checks and reinstall. Device identity, binding, project and explicit pause policy were retained. The same entire employee transaction passed again using the EXE actually downloaded from the fixed HTTPS installation script on company WLAN with proxies disabled. This is not a claim that every GUI action was manually clicked or that Windows was rebooted.
