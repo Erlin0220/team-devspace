@@ -55,9 +55,11 @@ export async function prepareSite(directory, output, catalog, origin, notes) {
 
 export async function prepareHomepage(output, catalog, origin) {
   validateCatalog(catalog); httpsOrigin(origin);
+  const page = downloadPage(catalog, origin, { stable: true });
+  // Fail locally before upload if the page exceeds the existing read-back verifier.
+  if (Buffer.byteLength(page) > 65536) throw new Error('Homepage exceeds the 64 KiB verification budget');
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
-  const page = downloadPage(catalog, origin, { stable: true });
   await writeFile(join(output, 'index.html'), page);
   return page;
 }
@@ -132,12 +134,12 @@ async function publishHomepage({ origin, catalog, server, command }) {
 
 export async function main(argv = process.argv.slice(2)) {
   const { values } = parseArgs({ args: argv, options: {
-    publish: { type: 'boolean' }, activate: { type: 'string' }, 'init-server': { type: 'boolean' }, 'site-only': { type: 'boolean' },
+    publish: { type: 'boolean' }, activate: { type: 'string' }, 'init-server': { type: 'boolean' }, 'site-only': { type: 'boolean' }, preview: { type: 'boolean' },
     config: { type: 'string', default: 'downloads.config.json' }, version: { type: 'string' },
     commit: { type: 'string' }, directory: { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help) {
-    console.log('Prepare accepted release: npm run downloads:publish\nInitialize existing Caddy site (DNS must be ready): npm run downloads:deploy\nPublish + verify HTTPS + activate: npm run downloads:publish -- --publish\nRefresh only the public homepage: npm run downloads:site\nRollback: npm run downloads:publish -- --activate <version>\nImport accepted historical artifacts: add --version <version> --commit <source-commit> --directory <four-target-directory>\nNo Access Key, download ticket, R2 or HTTP publishing credentials. Uses existing SSH.');
+    console.log('Prepare accepted release: npm run downloads:publish\nInitialize existing Caddy site (DNS must be ready): npm run downloads:deploy\nPublish + verify HTTPS + activate: npm run downloads:publish -- --publish\nPreview the homepage locally from the active catalog: npm run downloads:preview\nRefresh only the public homepage: npm run downloads:site\nRollback: npm run downloads:publish -- --activate <version>\nImport accepted historical artifacts: add --version <version> --commit <source-commit> --directory <four-target-directory>\nNo Access Key, download ticket, R2 or HTTP publishing credentials. Uses existing SSH.');
     return;
   }
   const origin = httpsOrigin(release.distribution.origin);
@@ -145,6 +147,14 @@ export async function main(argv = process.argv.slice(2)) {
   if (!VERSION.test(version)) throw new Error('Invalid release version');
   if (values.activate && (values.commit || values.directory || values.version || values.publish || values['init-server'] || values['site-only'])) throw new Error('Activation is a separate operation');
   if (values['site-only'] && (values.publish || values['init-server'] || values.commit || values.directory || values.version)) throw new Error('Homepage refresh is a separate operation');
+  if (values.preview) {
+    if (values.publish || values.activate || values['init-server'] || values['site-only'] || values.commit || values.directory || values.version) throw new Error('Homepage preview is a separate read-only operation');
+    const catalog = validateCatalog(JSON.parse(await smallBody(await request(`${origin}/catalog.json`))));
+    const output = resolve('build', 'downloads', 'homepage-preview');
+    const page = await prepareHomepage(output, catalog, origin);
+    console.log(JSON.stringify({ preview: true, output, bytes: Buffer.byteLength(page), version: catalog.version, origin }));
+    return;
+  }
   const remote = values.publish || values.activate || values['init-server'] || values['site-only'];
   let server, remoteScript, command, initialStable;
   if (remote) {

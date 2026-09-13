@@ -1,0 +1,35 @@
+# Download homepage
+
+## Reference lock (2026-09-13)
+
+Surface: Team DevSpace public product / download homepage, not an administrator dashboard. Audience: employees installing the shared client before entering an independently issued Access Key.
+
+| Role / decision | Source | Application |
+| --- | --- | --- |
+| Visual language | User-selected Raycast homepage, https://www.raycast.com/ | Near-black canvas, oversized sculptural red diagonal light, deliberate display typography, restrained functional surfaces. No copied Raycast artwork, logo, screenshots or unsupported claims. |
+| Download structure | https://tailscale.com/download and existing four-target catalog | Obvious downloads, explicit platform/architecture, version, sizes, checksums and secondary command-line installation. No login or ticket gate. |
+| Product truth | CONTEXT.md, docs/one-command-distribution.md, active catalog | Download first; Access Key inside Team DevSpace after installation; one current project directory; honest connection schematic rather than fake live status. |
+| Motion / accessibility | Existing strict CSP, native HTML/CSS, user brief | CSS transform-only decorative motion, native pause checkbox, reduced-motion support, readable HTML heading, native details/summary. Downloads work without JavaScript. |
+| Typography / media | User's explicit Hero request and existing single-file publisher | Optical Latin/CJK hierarchy, tight Latin tracking, restrained pearlescent text treatment, original inline SVG light sculpture. System font stacks avoid external font availability/licensing and new deployment assets. |
+
+Implementation remains in `scripts/download-catalog.mjs`, a self-contained static document under the publisher's existing 64 KiB read-back verification budget. The server accepts up to 128 KiB, so homepage preparation also checks the stricter client budget before replacing local staging or uploading. No framework, client JavaScript, external fonts/images, extra HTTP service or CSP relaxation. Red is concentrated in brand art and emphasis, not every functional surface. Body text and download actions remain high contrast.
+
+## Acceptance
+
+Inspect the actual rendered HTML at desktop and mobile widths, including 320px, large desktop, keyboard focus, native FAQ expansion, motion pause/reduced motion and forced colors. Confirm stable URLs and historical pinned URLs differ correctly; active version/sizes/commit come from the catalog. Validate all public download destinations with HTTP HEAD/Range without executing installers. Verify script/metadata links, security disclosure, no third-party requests and no console/CSP errors.
+
+For a local preview, run `npm run downloads:preview`. It reads the active public catalog and writes only `build/downloads/homepage-preview/index.html`; it performs no SSH operations or public changes and rejects combinations with publish/activate/server-initialization flags. Open the generated file, or render it with the production CSP through the existing Playwright browser tools. `scripts/download-browser-smoke.js` is the reusable browser acceptance function; it needs no additional test dependencies. In Windows MCP, use its contents as the code argument (repo paths are not within that tool's filename allowlist), and prefer an isolated headless page when the shared browser is hidden so tests do not focus a user's window.
+
+For homepage-only changes use the existing clean-commit `npm run downloads:site` publication path. Do not rebuild packages, re-label binary acceptance receipts, change stable symlinks, modify Caddy policy, deploy the Gateway, or touch employee state. Published historical release pages remain immutable. Roll back the homepage with a reviewed generator revert and the same homepage-only command, not a client release rollback.
+
+## Verification recorded on 2026-09-13
+
+The generated stable homepage is 39,983 bytes for the active 0.2.2 catalog. Its binary source identity remains `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`; a homepage revision is not a new native client release.
+
+- `npm run check` passed. Final Windows `npm test`: 167 tests, 162 passed, 5 platform-conditioned skips, no failures. Ubuntu 22.04 under local WSL / Node 22.23.0: all 6 download tests passed, including the server publication/rollback test skipped on Windows.
+- Rendered desktop and mobile pages were visually inspected. Headless Chrome on the company PC passed 320 / 375 / 390 / 600 / 768 / 1024 / 1280 / 1440 / 1920px layout checks, keyboard motion pause/resume, reduced motion, six native FAQ toggles, download navigation and forced-colors heading checks. The security fragment was additionally verified to reopen a previously closed disclosure. No page or CSP errors were observed in that audit.
+- Public HTTPS HEAD returned 200 with exact catalog sizes and ETag for all four stable packages. Range GET returned 206 and 16 bytes; each checksum sidecar matched its catalog value. All six distinct script/history/release metadata destinations returned 200. These are delivery checks, not another full-file hash download or native installer execution.
+- The preview used the production CSP with no client scripts or third-party assets. A separate JavaScript-disabled browser experiment hit an automation timeout and is not counted as a passing browser test. Safari/Firefox and physical mobile browsers were not exercised this round.
+- Review fixes included the primary button icon contrast, first-screen vertical density, mobile closing-line wrapping, security-fragment visibility, and an early page-size guard that fails before upload or replacing local staging. Preview flags are covered by a no-publication regression test.
+
+Before homepage publication the stable symlink was `releases/0.2.2`, Caddy was active, and baseline SHA-256 values were: Caddy site `6099c6213c0fff9b1a7d1078f7429e1c66c9f2dbe55dac293fd558d4ca5e4116`; release catalog `9f7adb3f0c71c11adf8de3bd4ce55233601f3083f4a588642e237d5727e747a8`; immutable release page `7edd03af1d893515b664d258757a6c931d1d44f12aea2786669a5ae5ac2c6488`. Compare these after the existing homepage-only command to verify deployment isolation.

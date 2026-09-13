@@ -4,8 +4,8 @@ import { cp, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from 'node:fs/p
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { DOWNLOAD_TARGETS, packageName, httpsOrigin, validateCatalog } from '../scripts/download-catalog.mjs';
-import { buildDownloadCatalog, prepareSite, prepareHomepage } from '../scripts/publish-downloads.mjs';
+import { DOWNLOAD_TARGETS, ALIASES, packageName, httpsOrigin, validateCatalog, downloadPage } from '../scripts/download-catalog.mjs';
+import { buildDownloadCatalog, prepareSite, prepareHomepage, main } from '../scripts/publish-downloads.mjs';
 import { verifyAcceptance } from '../scripts/verify-acceptance.mjs';
 import { renderAdmin } from '../gateway/admin-web.mjs';
 
@@ -69,7 +69,7 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   assert.ok(page.includes(`${origin}/releases/`));
   assert.ok(homepage.includes(`${origin}/install.ps1`));
   assert.ok(homepage.includes(`${origin}/stable/windows-x64.exe`));
-  assert.ok(homepage.includes('把开发机，安全带到 <span class="nowrap">ChatGPT 里。</span>'));
+  assert.ok(homepage.includes('<h1 id="hero-title">') && homepage.includes('你自己的开发环境'));
   assert.ok(homepage.includes('Team DevSpace') && !homepage.includes('tailscale.com'));
   assert.ok(!renderAdmin([]).includes('issue-downloads'));
   assert.equal(spawnSync('bash', ['-n', join(f.site, 'install.sh').replaceAll('\\', '/')]).status, 0);
@@ -80,6 +80,44 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
       `$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('${file}',[ref]$null,[ref]$e); if($e.Count){$e | Out-String | Write-Error; exit 1}`], { encoding: 'utf8', windowsHide: true });
     assert.equal(parsed.status, 0, parsed.stderr);
   }
+});
+
+test('homepage preserves fixed and pinned download identities within the publication budget', async t => {
+  const { catalog } = await fixture(t);
+  for (const stable of [true, false]) {
+    const page = downloadPage(catalog, origin, { stable });
+    assert.ok(Buffer.byteLength(page) < 65536);
+    assert.ok(page.includes('prefers-reduced-motion:reduce'));
+    assert.ok(page.includes('forced-colors:active'));
+    assert.ok(page.includes('animation-play-state:paused'));
+    assert.ok(page.includes('aria-labelledby="hero-title"'));
+    assert.ok(page.includes('不代表当前设备的实时状态'));
+    const base = stable ? origin : `${origin}/releases/${catalog.version}`;
+    assert.ok(page.includes(`<code>irm ${base}/install.ps1 | iex</code>`));
+    assert.ok(page.includes(`<code>curl -fsSL ${base}/install.sh | sh</code>`));
+    for (const target of DOWNLOAD_TARGETS) {
+      const url = stable ? `${origin}/stable/${ALIASES[target]}` : `${base}/${catalog.targets[target].file}`;
+      assert.ok(page.includes(`href="${url}"`));
+      assert.ok(page.includes(`href="${url}.sha256"`));
+    }
+    assert.equal(page.includes('class="historical"'), !stable);
+    assert.equal(page.includes(`当前稳定版 ${catalog.version}`), stable);
+  }
+});
+
+test('homepage preview cannot publish and oversized pages fail before replacing staging output', async t => {
+  for (const flag of ['--publish', '--site-only', '--init-server']) {
+    await assert.rejects(main(['--preview', flag]), /separate.*operation/);
+  }
+  const { root, catalog } = await fixture(t);
+  const output = join(root, 'homepage');
+  const original = await prepareHomepage(output, catalog, origin);
+  const version = `1.0.${'1'.repeat(10000)}`;
+  const large = { ...catalog, version, targets: Object.fromEntries(DOWNLOAD_TARGETS.map(target =>
+    [target, { ...catalog.targets[target], file: packageName(version, target) }])) };
+  assert.ok(Buffer.byteLength(downloadPage(large, origin, { stable: true })) > 65536);
+  await assert.rejects(prepareHomepage(output, large, origin), /verification budget/);
+  assert.equal(await readFile(join(output, 'index.html'), 'utf8'), original);
 });
 
 test('publication requires final installer evidence for exact commit and exact bytes', async t => {
