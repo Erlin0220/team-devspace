@@ -57,7 +57,7 @@ if ($Action -in @('menu', 'click')) {
   if ($Action -eq 'click') {
     $item = Get-ProductMenus | ForEach-Object { Descendants $_ } | Where-Object { $_.Current.Name -eq $Name } | Select-Object -First 1
     if (-not $item) {
-      $submenu = Get-ProductMenus | ForEach-Object { Descendants $_ } | Where-Object { $_.Current.Name -eq '故障排查' } | Select-Object -First 1
+      $submenu = Get-ProductMenus | ForEach-Object { Descendants $_ } | Where-Object { $_.Current.Name -eq '诊断与修复' } | Select-Object -First 1
       if ($submenu) {
         $rect = $submenu.Current.BoundingRectangle
         [void][TrayDesktopProbe]::SetCursorPos([int]($rect.X+$rect.Width/2), [int]($rect.Y+$rect.Height/2))

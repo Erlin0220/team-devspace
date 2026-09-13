@@ -27,6 +27,17 @@ function summaryOf(status) {
   return { status: visual, summary: `Team DevSpace ${text}` };
 }
 
+// Authorize native events using the same enabled tree the user can see.
+export function findMenuAction(menu, action) {
+  for (const item of menu) {
+    if (!item.enabled) continue;
+    if (item.children) {
+      const child = findMenuAction(item.children, action);
+      if (child) return child;
+    } else if (item.action === action) return item;
+  }
+}
+
 // Pure projection shared by both native renderers and the Control Center.
 // No runtime dependencies: early native packaging smoke runs before npm ci.
 export function desktopState(status, { busy = false, exiting = false, activity, notice, alert,
@@ -68,7 +79,15 @@ export function desktopState(status, { busy = false, exiting = false, activity, 
     item('project', view.projectText, false, ''), separator('main-separator'),
     item('remote', view.remoteText, view.remoteEnabled, view.remoteAction),
     item('settings', '设置…', !exiting),
-    item('troubleshoot', '诊断与修复…', !exiting), separator('exit-separator'),
+    { id: 'troubleshoot', text: '诊断与修复', enabled: !exiting, children: [
+      item('check', '检查连接', view.checkEnabled),
+      item('restart', '重启连接', view.restartEnabled),
+      item('repair', '修复连接', view.repairEnabled),
+      separator('diagnostics-separator'),
+      item('logs', '打开日志', view.logsEnabled),
+      item('diagnostics', '查看完整诊断…', view.diagnosticsEnabled, 'troubleshoot'),
+    ] },
+    item('about', '关于 Team DevSpace…', !exiting), separator('exit-separator'),
     item('exit', '退出 Team DevSpace', !exiting),
   ];
   return view;

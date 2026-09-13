@@ -7,22 +7,18 @@
 </head>
 <body>
 <main>
-  <header><div><p class="eyebrow">本机设置</p><h1>Team DevSpace</h1></div><span id="connection" class="badge">正在读取状态</span></header>
-  <p id="identity" class="muted"></p>
+  <header><div><p class="eyebrow">本机设置</p><h1>Team DevSpace</h1><p id="identity" class="muted"></p></div><nav aria-label="页面导航"><a href="#diagnostics-section">诊断与修复</a><a href="#about-title">关于</a></nav></header>
   <div id="feedback" role="status" aria-live="polite" hidden></div>
   <section aria-labelledby="connection-title">
-    <h2 id="connection-title">连接</h2>
-    <p id="summary">正在读取连接状态…</p>
-    <div class="actions"><button id="remote" disabled>暂停远程访问</button></div>
-    <details><summary>连接详情</summary><dl id="health"></dl></details>
-    <p class="hint">暂停会关闭远程访问，设置仍可使用。托盘中“退出 Team DevSpace”会停止本次连接并关闭托盘，不更改原有登录启动设置。</p>
+    <div class="section-heading"><h2 id="connection-title">连接</h2><span id="connection" class="badge">正在读取状态</span></div>
+    <div class="connection-row"><div><p id="summary">正在读取连接状态…</p><p id="checked-at" class="hint"></p></div><button id="remote" disabled>暂停远程访问</button></div>
+    <details><summary>连接详情与启动说明</summary><dl id="health"></dl><p class="hint">暂停会关闭远程访问，设置仍可使用。退出会停止本次连接并关闭托盘，不更改登录启动设置。再次打开应用仍保留暂停意图，只有“恢复远程访问”会解除暂停。</p></details>
   </section>
   <section aria-labelledby="settings-title">
     <h2 id="settings-title">本机设置</h2>
     <div class="project-setting">
-      <h3>项目目录</h3>
+      <div class="section-heading"><h3>项目目录</h3><button id="choose-folder" class="secondary" type="button" disabled>更换项目目录…</button></div>
       <p id="current-root" class="project-path"></p>
-      <button id="choose-folder" class="secondary" type="button" disabled>更换项目目录…</button>
       <p class="hint" id="project-hint">在目录窗口确认后直接应用，取消则不更改。切换后需要在 ChatGPT 中重新连接；已暂停的访问不会自动恢复。</p>
       <details id="manual-project"><summary>手动输入路径</summary>
         <form id="project-form">
@@ -32,20 +28,21 @@
       </details>
       <p class="hint">文件工具使用此目录。Shell 仍以你的用户权限执行，这不是系统级沙箱。</p>
     </div>
-    <form id="key-form">
-      <label for="access-key">Access Key</label>
-      <input id="access-key" name="accessKey" type="password" placeholder="输入管理员发放的 Access Key" autocomplete="new-password" maxlength="128" required>
-      <p id="key-hint" class="hint">密钥不会回显；提交成功后自动清空。更换会断开旧连接，并保留项目目录。</p>
-      <button id="save-key" type="submit">完成设置</button>
-    </form>
+    <details id="key-settings"><summary id="key-title">访问密钥</summary>
+      <form id="key-form">
+        <label for="access-key">Access Key</label>
+        <div class="input-row"><input id="access-key" name="accessKey" type="password" placeholder="输入管理员发放的 Access Key" autocomplete="new-password" maxlength="128" required><button id="save-key" type="submit">完成设置</button></div>
+        <p id="key-hint" class="hint">密钥不会回显；提交成功后自动清空。更换会断开旧连接，并保留项目目录。</p>
+      </form>
+    </details>
   </section>
   <section aria-labelledby="diagnostics-title" id="diagnostics-section">
     <h2 id="diagnostics-title" tabindex="-1">诊断与修复</h2>
-    <div class="actions"><button id="check" class="secondary">检查连接</button><button id="restart" class="secondary" disabled>重启连接</button><button id="repair" class="secondary" disabled>修复连接</button><button id="logs" class="secondary">打开日志</button><button id="diagnostics" class="secondary">查看诊断</button><button id="copy" class="secondary" hidden>复制诊断</button></div>
-    <p class="hint">修复沿用当前设备身份和项目目录；已暂停的访问不会被自动恢复。诊断信息已隐藏凭据。</p>
-    <pre id="report" tabindex="0" hidden></pre>
+    <div class="actions"><button id="check" class="secondary">检查连接</button><button id="restart" class="secondary" disabled>重启连接</button><button id="logs" class="secondary">打开日志</button><button id="diagnostics" class="secondary">查看诊断</button><button id="copy" class="secondary" hidden>复制诊断</button></div>
+    <details id="repair-details"><summary>连接仍有问题？</summary><p class="hint">修复会重新配置本机启动项，沿用设备身份和项目目录；已暂停的访问不会被自动恢复。</p><button id="repair" class="secondary" disabled>修复连接</button></details>
+    <pre id="report" tabindex="0" aria-label="已脱敏诊断信息" hidden></pre>
   </section>
-  <footer aria-label="关于 Team DevSpace"><p id="version"></p><p id="author"></p><p>此页面仅在本机提供，不通过 Team DevSpace 公网连接提供。</p></footer>
+  <footer aria-labelledby="about-title"><h2 id="about-title" tabindex="-1">关于 Team DevSpace</h2><p id="version"></p><p id="author"></p><p>此设置页仅在本机提供。诊断信息已隐藏凭据。</p></footer>
 </main>
 </body>
 </html>

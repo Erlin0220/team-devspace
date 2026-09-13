@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { redactDiagnostic } from '../client/control.mjs';
 import { launchAgentXml, serviceLabel, windowsTaskXml } from '../client/platform.mjs';
 import { runTray, trayInstanceId, trayState } from '../client/tray.mjs';
+import { findMenuAction } from '../client/desktop-state.mjs';
 
 const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gateway: 'active',
   remoteAccess: 'active', desiredRemoteAccess: 'active', currentProjectRoot: join(homedir(), 'project-a'), currentProjectRootAvailable: true };
@@ -59,7 +60,17 @@ test('shared presentation distinguishes intent, observed health and partial paus
 
 test('the shared native menu contains only status, common actions and Control Center entry', () => {
   const view = trayState(healthy);
-  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['suspend', 'settings', 'troubleshoot', 'exit']);
+  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['suspend', 'settings', 'about', 'exit']);
+  const diagnostics = view.menu.find(item => item.id === 'troubleshoot');
+  assert.deepEqual(diagnostics.children.filter(item => item.action).map(item => item.action),
+    ['check', 'restart', 'repair', 'logs', 'troubleshoot']);
+  assert.equal(findMenuAction(view.menu, 'repair').id, 'repair');
+  diagnostics.enabled = false;
+  assert.equal(findMenuAction(view.menu, 'repair'), undefined, 'Disabled parents cannot dispatch child actions');
+  const paused = trayState({ ...stopped, gateway: 'suspended', desiredRemoteAccess: 'suspended' });
+  assert.equal(findMenuAction(paused.menu, 'restart'), undefined);
+  assert.equal(findMenuAction(paused.menu, 'repair'), undefined);
+  assert.ok(findMenuAction(paused.menu, 'logs'));
   assert.equal(view.menu.find(item => item.id === 'project').text, '项目：project-a');
   assert.equal(view.menu.find(item => item.id === 'exit').text, '退出 Team DevSpace');
   assert.match(view.tooltip, /已连接.*project-a/);
@@ -87,7 +98,7 @@ test('native adapter coalesces opening settings, ignores removed actions and sto
       close: async () => { calls.push('close'); } }),
   });
   assert.equal(calls.filter(value => value === 'settings').length, 1);
-  assert.deepEqual(calls.filter(value => value !== 'settings'), ['diagnostics', 'exit', 'close']);
+  assert.deepEqual(calls.filter(value => value !== 'settings'), ['logs', 'diagnostics', 'exit', 'close']);
 });
 
 test('native startup keeps tray separate from runtime and never embeds credentials', { skip: !['win32', 'darwin'].includes(process.platform) }, () => {

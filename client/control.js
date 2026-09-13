@@ -33,13 +33,18 @@ async function request(path, body) {
 function render(state) {
   current = state;
   const setup = state.accessKeyMode === 'setup';
+  if (setup) $('key-settings').open = true;
+  $('key-title').textContent = setup ? '完成设备设置' : '访问密钥';
+  $('feedback').dataset.busy = String(Boolean(state.activity || submitting));
+  $('feedback').setAttribute('aria-busy', String(Boolean(state.activity || submitting)));
   const nativePicker = ['win32', 'darwin'].includes(state.platform);
   $('identity').textContent = `${state.computer} · ${state.platform} ${state.architecture}`;
   $('version').textContent = `Team DevSpace ${state.version} · DevSpace ${state.devspaceVersion}`;
   $('author').textContent = `作者：${state.author.name} · ${state.author.email}`;
-  $('summary').textContent = state.summary;
+  $('summary').textContent = state.summary.replace(/^Team DevSpace /, '');
+  $('checked-at').textContent = state.checkedAt ? `最近检查：${new Date(state.checkedAt).toLocaleTimeString()}` : '尚未完成状态检查';
   $('connection').textContent = state.activity ? '操作进行中' : state.status === 'ready' ? '已连接' : state.status === 'suspended' ? '已暂停' : '需要检查';
-  $('connection').dataset.state = state.status;
+  $('connection').dataset.state = state.activity ? 'busy' : state.status;
   const entries = [['本机运行时', state.health?.devspace], ['本机桥接', state.health?.bridge], ['连接通道', state.health?.tunnel],
     ['服务端状态', state.health?.gateway], ['本机访问意图', state.health?.desiredRemoteAccess]];
   const words = { active: '开启', suspended: '暂停', disabled: '授权失效', unreachable: '无法连接', 'not-enrolled': '未绑定', 'invalid-response': '响应无效' };
@@ -82,6 +87,9 @@ async function refresh() {
   catch (error) {
     feedback(`${error.message}。若应用已退出，请重新启动并从托盘打开控制中心。`, true);
     $('connection').textContent = '本地控制器不可用';
+    $('connection').dataset.state = 'stopped';
+    $('feedback').dataset.busy = 'false';
+    $('feedback').setAttribute('aria-busy', 'false');
     for (const button of document.querySelectorAll('button')) button.disabled = true;
   } finally { polling = false; }
 }
@@ -127,6 +135,12 @@ $('copy').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('report').textContent); feedback('诊断信息已复制'); }
   catch { feedback('浏览器未允许复制，请从下方诊断文本中手动复制。', true); }
 });
-void refresh().then(() => { if (location.pathname === '/diagnostics') $('diagnostics-title').focus(); });
+void refresh().then(() => {
+  const target = { '/diagnostics': 'diagnostics-title', '/about': 'about-title' }[location.pathname];
+  if (target) {
+    $(target).scrollIntoView({ block: 'start' });
+    $(target).focus({ preventScroll: true });
+  }
+});
 setInterval(() => { if (!document.hidden) void refresh(); }, 1500);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });

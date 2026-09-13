@@ -8,6 +8,7 @@ import { desktopErrorText } from './desktop.mjs';
 
 const ASSETS = { '/': ['control.html', 'text/html; charset=utf-8'],
   '/diagnostics': ['control.html', 'text/html; charset=utf-8'],
+  '/about': ['control.html', 'text/html; charset=utf-8'],
   '/control.js': ['control.js', 'text/javascript; charset=utf-8'],
   '/control.css': ['control.css', 'text/css; charset=utf-8'] };
 const ACTIONS = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'setup', 'switch-key',
@@ -124,7 +125,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   origin = `http://127.0.0.1:${server.address().port}`;
   return {
     url: `${origin}/#${token}`,
-    open: section => openBrowser(`${origin}/${section === 'diagnostics' ? 'diagnostics' : ''}#${token}`),
+    open: section => openBrowser(`${origin}/${['diagnostics', 'about'].includes(section) ? section : ''}#${token}`),
     close: () => new Promise((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());
       // The owner settles controller transactions before closing this surface.

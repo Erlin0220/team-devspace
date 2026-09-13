@@ -13,9 +13,9 @@ const ACTIVITY = {
   'switch-key': '正在设置 Access Key…', setup: '正在完成设置…',
 };
 const SUCCESS = {
-  suspend: '远程访问已暂停', resume: '恢复操作已完成，连接状态见下方', restart: '连接服务已重启，正在检查状态',
+  suspend: '暂停操作已完成', resume: '恢复操作已完成', restart: '连接服务重启操作已完成',
   repair: '修复操作已完成', 'project-root': '项目目录已更改，请重新连接 ChatGPT',
-  'switch-key': 'Access Key 已更新', setup: '设置已完成，正在连接',
+  'switch-key': 'Access Key 已更新', setup: '设置已完成',
 };
 
 export function createDesktopController(home = stateHome(), options = {}) {
@@ -68,7 +68,12 @@ export function createDesktopController(home = stateHome(), options = {}) {
   };
   const dispatch = async (action, input = {}) => {
     if (disposed || closing) throw Object.assign(new Error('正在退出 Team DevSpace'), { status: 409 });
-    if (action === 'check') { await refresh(); return snapshot(); }
+    if (action === 'check') {
+      if (!pending) { notice = undefined; activity = '正在检查连接…'; publish(); }
+      await refresh();
+      if (!pending && !closing) { activity = undefined; publish(); }
+      return snapshot();
+    }
     if (action === 'exit') {
       closing = true; revision++; activity = '正在停止服务并退出…'; publish();
       prompts.abort();
@@ -89,6 +94,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
       if (action === 'choose-folder') { failure = undefined; notice = undefined; }
       if (prompts.signal.aborted) prompts = new AbortController();
       const task = Promise.resolve().then(() => operations[action]({ ...input, signal: prompts.signal }))
+        .then(result => { if (action === 'logs' && !closing) notice = '已打开日志目录'; return result; })
         .catch(error => { failure = desktopErrorText(error); publish(); throw error; })
         .finally(() => { utilities.delete(action); publish(); });
       utilities.set(action, task); publish();

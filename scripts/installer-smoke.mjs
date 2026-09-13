@@ -46,6 +46,8 @@ if (!values.direct) {
   await run(join(compilerRoot, compilerDirectory.name, 'makensis.exe'), ['/V2', '/NOCD',
     `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${join(layout, 'manifest.json')}`,
     `/DOFFLINE_OBJECTS=${join(layout, 'objects')}`, `/DPLATFORM_DIR=${resolve('platform/windows')}`, `/DAPP_VERSION=${release.version}`,
+    `/DLAUNCHER=${resolve('build/bundle-win32-x64/platform/windows/tds-launcher.exe')}`,
+    `/DAPP_ICON=${resolve('build/bundle-win32-x64/platform/windows/team-devspace.ico')}`,
     `/DAPP_VERSION_NUM=${release.version.split('-')[0]}.0`, `/DDEVSPACE_VERSION=${release.devspaceVersion}`, `/DOUTPUT=${installer}`,
     `/DPRODUCT_KEY=Software\\TeamDevSpaceSmoke\\${suffix}`,
     `/DUNINSTALL_KEY=Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TeamDevSpaceSmoke-${suffix}`,

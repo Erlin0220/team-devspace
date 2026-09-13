@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createDesktopController } from './desktop-controller.mjs';
+import { findMenuAction } from './desktop-state.mjs';
 import { startLocalControl } from './local-control.mjs';
 import { stateHome } from './state.mjs';
 import { desktopErrorText, trayExecutable, trayInstanceId } from './desktop.mjs';
@@ -38,10 +39,12 @@ export async function runTray(home = stateHome(), options = {}) {
   };
   const onMenu = async action => {
     // Authorize against the same menu snapshot both native adapters display.
-    const item = controller.snapshot().menu.find(item => item.action === action && item.enabled);
+    const item = findMenuAction(controller.snapshot().menu, action);
     if (!item || exiting || closed) return;
     try {
-      if (action === 'settings' || action === 'troubleshoot') await openSettings(action === 'troubleshoot' ? 'diagnostics' : undefined);
+      if (['settings', 'troubleshoot', 'about'].includes(action)) {
+        await openSettings(action === 'troubleshoot' ? 'diagnostics' : action === 'about' ? 'about' : undefined);
+      }
       else if (action === 'exit') {
         exiting = true;
         try { await controller.dispatch('exit'); }
@@ -54,7 +57,7 @@ export async function runTray(home = stateHome(), options = {}) {
       process.stderr.write(`[Team DevSpace desktop] ${action}: ${desktopErrorText(error)}\n`);
       // Persistent errors are visible in the controller snapshot, not repeated
       // modal native alerts that can block the menu or hide operation progress.
-      if (!['settings', 'troubleshoot'].includes(action) && !exiting && !closed) await openSettings().catch(() => {});
+      if (!['settings', 'troubleshoot', 'about'].includes(action) && !exiting && !closed) await openSettings().catch(() => {});
     }
   };
   const lines = createInterface({ input: child.stdout });

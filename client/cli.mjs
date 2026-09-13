@@ -82,7 +82,13 @@ async function executeCommand(command, action, argument, values, home) {
     const state = await loadState(home);
     if (['start', 'stop', 'restart'].includes(command)) {
       if (command === 'restart') result = await restartTeamDevSpace(home);
-      else { await serviceAction(command, state, home); result = { action: command, deviceId: state.deviceId }; }
+      else {
+        // Opening the desktop is not consent to resume remote access. Reuse the
+        // existing login jobs and their single-instance policy, never reinstall.
+        const components = command === 'start' ? enabledStartupComponents(state) : undefined;
+        if (!components || components.length) await serviceAction(command, state, home, components);
+        result = { action: command, deviceId: state.deviceId };
+      }
     } else if (command === 'startup') {
       if (action === 'install') {
         const runtimeRoot = values['runtime-root'] ? await realpath(resolve(values['runtime-root'])) : undefined;

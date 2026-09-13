@@ -10,12 +10,14 @@ struct MenuEntry: Decodable {
     let enabled: Bool
     let action: String?
     let separator: Bool?
+    let children: [MenuEntry]?
 }
 struct TrayState: Decodable {
     let status: String
     let iconStatus: String
     let tooltip: String
     let menu: [MenuEntry]
+    var entries: [MenuEntry] { menu.flatMap { [$0] + ($0.children ?? []) } }
 }
 
 func emit(_ event: String, _ fields: [String: Any] = [:]) {
@@ -228,8 +230,13 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard ["ready", "partial", "suspended", "busy", "stopped"].contains(state.status),
                       ["ready", "partial", "suspended", "busy", "stopped"].contains(state.iconStatus),
                       (1...20).contains(state.menu.count),
-                      Set(state.menu.map { $0.id }).count == state.menu.count,
-                      state.menu.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 64 }) else { throw ProtocolError.invalid }
+                      state.entries.count <= 32,
+                      Set(state.entries.map { $0.id }).count == state.entries.count,
+                      state.entries.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 64 }),
+                      state.menu.allSatisfy({ entry in
+                          (entry.children ?? []).isEmpty || (entry.separator != true && (entry.action ?? "").isEmpty
+                            && (entry.children ?? []).allSatisfy { ($0.children ?? []).isEmpty })
+                      }) else { throw ProtocolError.invalid }
                 apply(state)
                 if smoke { emit("state-applied", ["status": state.status]) }
             }
@@ -237,19 +244,30 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func apply(_ state: TrayState) {
-        let layout = state.menu.map { "\($0.id):\($0.separator == true)" }
+        let layout = state.entries.map { "\($0.id):\($0.separator == true):\($0.children?.count ?? 0)" }
         if layout != menuLayout {
             let menu = NSMenu()
             menu.autoenablesItems = false
             items.removeAll()
             for entry in state.menu {
                 if entry.separator == true { menu.addItem(.separator()) }
-                else { add(menu, entry.id, String(entry.text.prefix(64))) }
+                else {
+                    let item = add(menu, entry.id, String(entry.text.prefix(64)))
+                    if let children = entry.children, !children.isEmpty {
+                        let submenu = NSMenu(title: entry.text)
+                        submenu.autoenablesItems = false
+                        for child in children {
+                            if child.separator == true { submenu.addItem(.separator()) }
+                            else { add(submenu, child.id, String(child.text.prefix(64))) }
+                        }
+                        item.submenu = submenu
+                    }
+                }
             }
             statusItem?.menu = menu
             menuLayout = layout
         }
-        for entry in state.menu {
+        for entry in state.entries {
             items[entry.id]?.title = String(entry.text.prefix(64))
             items[entry.id]?.isEnabled = entry.enabled
             items[entry.id]?.representedObject = entry.action ?? ""

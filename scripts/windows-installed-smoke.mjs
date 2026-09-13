@@ -68,6 +68,10 @@ async function install() {
   await verifyPolicy();
   restoreRequired = false;
 }
+async function desktopShortcut() {
+  const desktop = await powershell("[Environment]::GetFolderPath('Desktop')");
+  return join(desktop, 'Team DevSpace.lnk');
+}
 async function assertUninstalled() {
   // Windows uses v/, not the Unix versions/ directory. Wait for NSIS self-cleanup too.
   await waitFor(async () => !(await exists(join(distribution, 'active.json'))) && !(await exists(join(distribution, 'v'))),
@@ -83,11 +87,15 @@ async function assertUninstalled() {
   assert.equal(Number(registry), 0, 'Uninstall left product or uninstall registration');
   assert.equal(await exists(join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Team DevSpace')), false,
     'Uninstall left its Start Menu shortcuts');
+  assert.equal(await exists(await desktopShortcut()), false, 'Uninstall left the desktop launcher');
   await checkIdentity();
   assert.equal(await exists(before.currentProjectRoot), true, 'Uninstall removed the employee project');
 }
 try {
   await install(); pass('unmodified final EXE upgrades the actual employee installation and verifies installed payload');
+  assert.equal(await exists(await desktopShortcut()), true, 'Desktop restart entry is absent');
+  assert.equal(await exists(join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Team DevSpace', 'Team DevSpace.lnk')), true);
+  pass('normal Desktop and Start Menu launchers are installed');
   await install(); pass('repeated final EXE installation preserves binding, project and pause policy');
   await cli('repair'); await verifyPolicy(); pass('installed Repair restores native startup without replacing the binding');
   const diagnostic = JSON.stringify(await cli('diagnostics'));

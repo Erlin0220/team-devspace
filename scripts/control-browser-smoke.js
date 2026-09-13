@@ -30,6 +30,9 @@ async (page) => {
     await p.locator('#diagnostics').click();
     await p.waitForFunction(() => !document.querySelector('#report').hidden);
     check(JSON.parse(await p.locator('#report').textContent()).calls.setup === 1, 'duplicate setup submission produces one transaction');
+    await p.locator('#restart').click(); await settled(); await p.waitForTimeout(1800);
+    check(!/正在|检查状态/.test(await p.locator('#feedback').textContent()), 'completed restart cannot leave progress text after subsequent polls');
+    check(await p.locator('#feedback').getAttribute('data-busy') === 'false', 'completed restart stops the feedback spinner');
     await p.locator('#remote').click(); await settled();
     check((await p.locator('#remote').textContent()).includes('恢复'), 'pause is rendered from the controller observed/desired state');
     check(await p.locator('#restart').isDisabled(), 'restart cannot silently undo pause');
@@ -54,6 +57,9 @@ async (page) => {
     check(await p.locator('#access-key').inputValue() === '', 'key replacement can be retried without reopening a modal');
     await p.goto(`${url.split('/').slice(0, 3).join('/')}/diagnostics#${capability}`); await settled();
     check(await p.locator('#diagnostics-title').evaluate(el => document.activeElement === el), 'tray diagnostics navigates to the same page section, not another implementation');
+    await p.goto(`${url.split('/').slice(0, 3).join('/')}/about#${capability}`); await settled();
+    check(await p.locator('#about-title').evaluate(el => document.activeElement === el), 'About uses the same local page and focuses its information');
+    check(await p.locator('#key-settings').getAttribute('open') === null, 'configured device keeps low-frequency key controls collapsed');
     await p.reload(); await settled();
     check((await p.locator('#current-root').textContent()).includes('project-b'), 'reload restores controller state without losing the local capability');
     check(await p.evaluate(() => !Object.values(localStorage).some(value => value.includes('tds_'))), 'Access Keys are never persisted in browser localStorage');

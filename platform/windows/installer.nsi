@@ -31,6 +31,12 @@ ${StrRep}
 !ifndef OUTPUT
 !error "OUTPUT must be set"
 !endif
+!ifndef LAUNCHER
+!error "LAUNCHER must point to the built no-console launcher"
+!endif
+!ifndef APP_ICON
+!error "APP_ICON must point to the product shortcut icon"
+!endif
 !ifndef PRODUCT_KEY
 !define PRODUCT_KEY "Software\TeamDevSpace"
 !endif
@@ -183,6 +189,8 @@ Section "Install"
   File /oname=bootstrap.ps1 "${BOOTSTRAP}"
   File /oname=release-manifest.json "${MANIFEST}"
   File /oname=command.ps1 "${PLATFORM_DIR}\command.ps1"
+  File /oname=tds-launcher.exe "${LAUNCHER}"
+  File /oname=team-devspace.ico "${APP_ICON}"
   File /oname=repair.cmd "${PLATFORM_DIR}\repair.cmd"
   File /oname=status.cmd "${PLATFORM_DIR}\status.cmd"
 
@@ -239,7 +247,13 @@ Section "Install"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   DetailPrint "Creating current-user shortcuts..."
   CreateDirectory "$SMPROGRAMS\${START_MENU_FOLDER}"
-  CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Status.lnk" "$INSTDIR\status.cmd" "" "$INSTDIR\Uninstall.exe"
+  ; Stable launcher delegates through active.json, so shortcuts survive slot upgrades.
+  ; Use the same folder identity for the Desktop link so isolated smoke never
+  ; overwrites the employee's shortcut.
+  StrCpy $Arguments '--cwd $\"$INSTDIR$\" --stdout $\"$LOCALAPPDATA\TeamDevSpace\logs\open.log$\" --stderr $\"$LOCALAPPDATA\TeamDevSpace\logs\open.error.log$\" --env $\"NODE_OPTIONS=$\" -- $\"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe$\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $\"$INSTDIR\command.ps1$\" -Desktop start'
+  CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Team DevSpace.lnk" "$INSTDIR\tds-launcher.exe" "$Arguments" "$INSTDIR\team-devspace.ico" 0 SW_SHOWNORMAL "" "Open Team DevSpace in the system tray"
+  CreateShortcut "$DESKTOP\${START_MENU_FOLDER}.lnk" "$INSTDIR\tds-launcher.exe" "$Arguments" "$INSTDIR\team-devspace.ico" 0 SW_SHOWNORMAL "" "Open Team DevSpace in the system tray"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Status.lnk"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Repair connection.lnk" "$INSTDIR\repair.cmd"
   CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   DetailPrint "Team DevSpace local installation is complete."
@@ -260,6 +274,7 @@ Section "Uninstall"
     Abort "Could not remove user-login startup. Application versions were retained for repair."
   ${EndIf}
   RMDir /r "$SMPROGRAMS\${START_MENU_FOLDER}"
+  Delete "$DESKTOP\${START_MENU_FOLDER}.lnk"
   ; bootstrap.ps1 removes large payload trees before returning so NSIS does not
   ; enumerate tens of thousands of node_modules files in the uninstall UI.
   Delete "$INSTDIR\active.json"
@@ -271,6 +286,8 @@ Section "Uninstall"
   Delete "$INSTDIR\onboarding-message.txt"
   Delete "$INSTDIR\bootstrap.ps1"
   Delete "$INSTDIR\command.ps1"
+  Delete "$INSTDIR\tds-launcher.exe"
+  Delete "$INSTDIR\team-devspace.ico"
   Delete "$INSTDIR\repair.cmd"
   Delete "$INSTDIR\status.cmd"
   Delete "$INSTDIR\Uninstall.exe"

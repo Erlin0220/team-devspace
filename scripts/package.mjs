@@ -309,6 +309,8 @@ if (!values['prepare-only']) {
     await run(join(compilerRoot, directory.name, 'makensis.exe'), ['/V2', '/NOCD',
       `/DBOOTSTRAP=${resolve('platform/windows/bootstrap.ps1')}`, `/DMANIFEST=${distribution.manifestPath}`,
       `/DOFFLINE_OBJECTS=${join(distribution.layout, 'objects')}`, `/DPLATFORM_DIR=${resolve('platform/windows')}`,
+      `/DLAUNCHER=${join(bundle, 'platform', 'windows', 'tds-launcher.exe')}`,
+      `/DAPP_ICON=${join(bundle, 'platform', 'windows', 'team-devspace.ico')}`,
       `/DAPP_VERSION=${release.version}`,
       `/DAPP_VERSION_NUM=${release.version.split('-')[0]}.0`, `/DDEVSPACE_VERSION=${release.devspaceVersion}`, `/DOUTPUT=${artifact}`,
       resolve('platform/windows/installer.nsi')], { timeout: 600000 });

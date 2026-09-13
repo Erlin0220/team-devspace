@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { downloadPinned, run, sha256File } from './build-utils.mjs';
 
@@ -59,6 +59,17 @@ export async function buildWindowsLauncher(output, source = resolve('platform/wi
   if (process.platform !== 'win32') throw new Error('Build the Windows launcher on Windows x64');
   await mkdir(dirname(output), { recursive: true });
   await rm(output, { force: true });
+  // Windows Shell accepts a PNG-backed ICO; reuse the product icon without an
+  // image library, generated artwork or another desktop runtime dependency.
+  const png = await readFile(resolve('native/tray/assets/team-devspace.png'));
+  const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
+  if (!width || !height || width > 256 || height > 256) throw new Error('Shortcut PNG must fit a Windows icon');
+  const icon = Buffer.alloc(22);
+  icon.writeUInt16LE(1, 2); icon.writeUInt16LE(1, 4);
+  icon[6] = width % 256; icon[7] = height % 256;
+  icon.writeUInt16LE(1, 10); icon.writeUInt16LE(32, 12);
+  icon.writeUInt32LE(png.length, 14); icon.writeUInt32LE(22, 18);
+  await writeFile(join(dirname(output), 'team-devspace.ico'), Buffer.concat([icon, png]));
   const zig = await zigCompiler();
   await run(zig, ['cc', source, '-target', 'x86_64-windows-gnu', '-municode',
     '-Wl,--subsystem,windows', '-Os', '-s', '-o', output, '-lshell32'], { capture: true, timeout: 120000 });

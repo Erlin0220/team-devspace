@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::thread;
-use tray_icon::{menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem}, Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu}, Icon, TrayIcon, TrayIconBuilder};
 use winit::{application::ApplicationHandler, event_loop::{ActiveEventLoop, EventLoop}};
 
 const ICON_SIZE: usize = 32;
@@ -35,6 +35,7 @@ struct MenuEntry {
     id: String, text: String, enabled: bool,
     #[serde(default)] action: String,
     #[serde(default)] separator: bool,
+    #[serde(default)] children: Vec<MenuEntry>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,18 +43,24 @@ struct TrayState {
     status: String, icon_status: String, tooltip: String, menu: Vec<MenuEntry>,
 }
 impl TrayState {
+    fn entries(&self) -> impl Iterator<Item = &MenuEntry> {
+        self.menu.iter().flat_map(|item| std::iter::once(item).chain(item.children.iter()))
+    }
     fn valid(&self) -> bool {
         let mut ids = std::collections::HashSet::new();
         ["ready", "partial", "suspended", "busy", "stopped"].contains(&self.status.as_str())
             && ["ready", "partial", "suspended", "busy", "stopped"].contains(&self.icon_status.as_str())
             && !self.menu.is_empty() && self.menu.len() <= 20
-            && self.menu.iter().all(|item| !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id))
+            && self.entries().count() <= 32
+            && self.menu.iter().all(|item| item.children.is_empty() || (!item.separator && item.action.is_empty()
+                && item.children.iter().all(|child| child.children.is_empty())))
+            && self.entries().all(|item| !item.id.is_empty() && item.id.len() <= 64 && ids.insert(&item.id))
     }
 }
 #[derive(Debug)]
 enum UserEvent { State(TrayState), Menu(MenuId), Exercise(String), InputClosed }
 struct Application {
-    tray: Option<TrayIcon>, items: HashMap<String, MenuItem>, layout: Vec<String>,
+    tray: Option<TrayIcon>, items: HashMap<String, MenuItem>, submenus: HashMap<String, Submenu>, layout: Vec<String>,
     state: Option<TrayState>, last_icon: String, smoke: bool,
 }
 fn emit(event: &str, fields: serde_json::Value) {
@@ -110,12 +117,22 @@ fn icon(status: &str) -> Icon {
 }
 impl Application {
     fn update(&mut self, state: TrayState) {
-        let layout = state.menu.iter().map(|item| format!("{}:{}", item.id, item.separator)).collect::<Vec<_>>();
+        let layout = state.entries().map(|item| format!("{}:{}:{}", item.id, item.separator, item.children.len())).collect::<Vec<_>>();
         if layout != self.layout {
-            let menu = Menu::new(); self.items.clear();
+            let menu = Menu::new(); self.items.clear(); self.submenus.clear();
             for entry in &state.menu {
                 if entry.separator { menu.append(&PredefinedMenuItem::separator()).expect("separator"); }
-                else {
+                else if !entry.children.is_empty() {
+                    let submenu = Submenu::new(bounded_text(&entry.text, 64), entry.enabled);
+                    for child in &entry.children {
+                        if child.separator { submenu.append(&PredefinedMenuItem::separator()).expect("separator"); }
+                        else {
+                            let item = MenuItem::new(bounded_text(&child.text, 64), child.enabled, None);
+                            submenu.append(&item).expect("submenu item"); self.items.insert(child.id.clone(), item);
+                        }
+                    }
+                    menu.append(&submenu).expect("submenu"); self.submenus.insert(entry.id.clone(), submenu);
+                } else {
                     let item = MenuItem::new(bounded_text(&entry.text, 64), entry.enabled, None);
                     menu.append(&item).expect("menu item"); self.items.insert(entry.id.clone(), item);
                 }
@@ -123,8 +140,9 @@ impl Application {
             if let Some(tray) = &self.tray { tray.set_menu(Some(Box::new(menu))); }
             self.layout = layout;
         }
-        for entry in &state.menu {
+        for entry in state.entries() {
             if let Some(item) = self.items.get(&entry.id) { item.set_text(bounded_text(&entry.text, 64)); item.set_enabled(entry.enabled); }
+            if let Some(item) = self.submenus.get(&entry.id) { item.set_text(bounded_text(&entry.text, 64)); item.set_enabled(entry.enabled); }
         }
         if let Some(tray) = &self.tray {
             let _ = tray.set_tooltip(Some(bounded_text(&state.tooltip, 110)));
@@ -137,9 +155,11 @@ impl Application {
     }
     fn activate(&self, id: &MenuId) {
         if let Some(state) = &self.state {
-            if let Some(entry) = state.menu.iter().find(|entry| entry.enabled && !entry.action.is_empty()
+            if let Some(entry) = state.menu.iter().filter(|entry| entry.enabled)
+                .flat_map(|entry| std::iter::once(entry).chain(entry.children.iter()))
+                .find(|entry| entry.enabled && !entry.action.is_empty()
                 && self.items.get(&entry.id).is_some_and(|item| item.id() == id)) {
-                if entry.action == "settings" || entry.action == "troubleshoot" {
+                if ["settings", "troubleshoot", "about", "logs"].contains(&entry.action.as_str()) {
                     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
                 }
                 emit("menu", serde_json::json!({"action": entry.action}));
@@ -196,7 +216,7 @@ fn main() {
         }
         let _ = proxy.send_event(UserEvent::InputClosed);
     });
-    let mut application = Application { tray: None, items: HashMap::new(), layout: vec![], state: None, last_icon: String::new(), smoke };
+    let mut application = Application { tray: None, items: HashMap::new(), submenus: HashMap::new(), layout: vec![], state: None, last_icon: String::new(), smoke };
     if event_loop.run_app(&mut application).is_err() { std::process::exit(1); }
 }
 #[cfg(test)]
