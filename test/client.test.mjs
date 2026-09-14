@@ -4,7 +4,7 @@ import http from 'node:http';
 import { mkdtemp, mkdir, readFile, rm, writeFile, access, realpath, symlink } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join, parse } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -21,6 +21,8 @@ async function fixture(t) {
   const project = join(home, 'project');
   await mkdir(project);
   const requests = [];
+  const adminKeys = new Map();
+  const adminTombstones = new Set();
   const bindingId = randomUUID();
   const keyId = randomUUID();
   const flags = { reject: false, deviceState: 'active', releaseDisabled: false };
@@ -30,6 +32,27 @@ async function fixture(t) {
     const data = body ? JSON.parse(body) : null;
     requests.push({ path: request.url, body: data, authorization: request.headers.authorization });
     response.setHeader('Content-Type', 'application/json');
+    if (request.url === '/v1/admin/keys' && request.method === 'GET') {
+      response.end(JSON.stringify({ keys: [...adminKeys.values()] })); return;
+    }
+    if (request.url === '/v1/admin/keys' && request.method === 'POST') {
+      if (adminTombstones.has(data.id)) {
+        response.writeHead(409); response.end(JSON.stringify({ error: 'deleted_key_id_cannot_be_reused' })); return;
+      }
+      const existingById = adminKeys.get(data.id);
+      const existingByLabel = [...adminKeys.values()].find(item => item.label === data.label);
+      if (existingById && existingById.keyHash !== data.keyHash || existingByLabel && existingByLabel.id !== data.id) {
+        response.writeHead(409); response.end(JSON.stringify({ error: 'key_label_or_id_conflict' })); return;
+      }
+      const row = existingById ?? { id: data.id, label: data.label, keyHash: data.keyHash, state: 'issued' };
+      adminKeys.set(row.id, row);
+      if (flags.adminLoseCreateResponse) {
+        flags.adminLoseCreateResponse = false;
+        request.socket.destroy();
+        return;
+      }
+      response.writeHead(201); response.end(JSON.stringify({ id: row.id, label: row.label, state: row.state })); return;
+    }
     if (flags.reject) { response.writeHead(503); response.end(JSON.stringify({ error: 'temporary_failure' })); return; }
     if (request.url === '/v1/device/status-v2') {
       response.end(JSON.stringify({ state: flags.deviceState, bindingId })); return;
@@ -41,9 +64,6 @@ async function fixture(t) {
     if (request.url === '/v1/device/release') {
       if (flags.releaseDisabled) { response.writeHead(403); response.end(JSON.stringify({ error: 'device_disabled' })); return; }
       response.end(JSON.stringify({ released: true })); return;
-    }
-    if (request.url === '/v1/admin/keys') {
-      response.writeHead(201); response.end(JSON.stringify({ id: data.id, label: data.label, state: 'issued' })); return;
     }
     if (flags.beforeEnrollmentResponse) await flags.beforeEnrollmentResponse();
     if (flags.loseEnrollmentResponse) {
@@ -59,7 +79,8 @@ async function fixture(t) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(home, { recursive: true, force: true }); });
-  return { home, project, requests, flags, gateway: `http://127.0.0.1:${server.address().port}`, bindingId, keyId };
+  return { home, project, requests, flags, adminKeys, adminTombstones,
+    gateway: `http://127.0.0.1:${server.address().port}`, bindingId, keyId };
 }
 
 test('CLI direct entry still runs through a Unix symlink', { skip: process.platform === 'win32' }, async t => {
@@ -431,20 +452,53 @@ test('administrator issuance can be retried without losing the original employee
   const f = await fixture(t);
   const config = { gateway: f.gateway, adminToken: randomSecret(), directory: f.home };
   const output = join(f.home, 'employee-key.json');
-  f.flags.reject = true;
-  await assert.rejects(createAccessKey(config, 'Employee A', output), /temporary_failure/);
-  const failed = f.requests.at(-1).body;
-  f.flags.reject = false;
+  f.flags.adminLoseCreateResponse = true;
+  await assert.rejects(createAccessKey(config, 'Employee A', output), /gateway_unreachable/);
+  const failed = f.requests.findLast(request => request.path === '/v1/admin/keys' && request.body)?.body;
   const issued = await createAccessKey(config, 'Employee A', output);
   const saved = await readJson(output);
   assert.equal(issued.id, failed.id);
-  assert.equal(f.requests.at(-1).body.keyHash, failed.keyHash);
+  const retry = f.requests.findLast(request => request.path === '/v1/admin/keys' && request.body)?.body;
+  assert.equal(retry.keyHash, failed.keyHash);
   assert.ok(saved.accessKey.startsWith('tds_'));
   assert.ok(!JSON.stringify(issued).includes(saved.accessKey));
-  assert.ok(!JSON.stringify(f.requests.at(-1).body).includes(saved.accessKey));
+  assert.ok(!JSON.stringify(retry).includes(saved.accessKey));
   const outside = join(f.home, '..', `team-devspace-unsafe-export-${randomUUID()}.json`);
   await assert.rejects(createAccessKey(config, 'Employee A', outside), /private administrator configuration directory/);
   await assert.rejects(access(outside), { code: 'ENOENT' });
+});
+
+test('administrator issuance never resurrects a locally cached credential after the server record was deleted', async t => {
+  const f = await fixture(t);
+  const config = { gateway: f.gateway, adminToken: randomSecret(), directory: f.home };
+  const first = await createAccessKey(config, 'Reusable employee');
+  assert.equal(f.adminKeys.delete(first.id), true);
+  const second = await createAccessKey(config, 'Reusable employee');
+  assert.notEqual(second.id, first.id);
+  assert.notEqual(second.accessKey, first.accessKey);
+  assert.equal(f.adminKeys.has(first.id), false);
+  assert.equal(f.adminKeys.has(second.id), true);
+
+  const cache = join(config.directory, 'issued-keys', `${createHash('sha256').update('Reusable employee').digest('hex')}.json`);
+  const record = await readJson(cache);
+  assert.equal(record.id, second.id);
+  assert.equal(record.confirmed, true);
+});
+
+test('administrator issuance rotates an unconfirmed cached credential when the server tombstone proves it was deleted', async t => {
+  const f = await fixture(t);
+  const config = { gateway: f.gateway, adminToken: randomSecret(), directory: f.home };
+  f.flags.adminLoseCreateResponse = true;
+  await assert.rejects(createAccessKey(config, 'Lost then deleted'), /gateway_unreachable/);
+  const [oldId, oldRow] = [...f.adminKeys.entries()][0];
+  assert.ok(oldRow);
+  f.adminKeys.delete(oldId);
+  f.adminTombstones.add(oldId);
+
+  const replacement = await createAccessKey(config, 'Lost then deleted');
+  assert.notEqual(replacement.id, oldId);
+  assert.equal(f.adminKeys.has(oldId), false);
+  assert.equal(f.adminKeys.has(replacement.id), true);
 });
 
 test('concurrent first-time setup publishes exactly one durable device identity', async t => {

@@ -28,29 +28,63 @@ export async function createAccessKey(config, label, output) {
   const directory = join(config.directory, 'issued-keys');
   await secureStateDirectory(directory);
   const file = join(directory, `${createHash('sha256').update(label).digest('hex')}.json`);
+  const freshRecord = () => ({ schema: 2, id: randomUUID(), label,
+    accessKey: `tds_${randomSecret()}`, gateway: config.gateway, confirmed: false });
+  const issue = value => control(config.gateway, '/v1/admin/keys', config.adminToken, {
+    body: { id: value.id, label, keyHash: createHash('sha256').update(value.accessKey).digest('hex') },
+  });
   let record = await readJson(file, null);
   if (record && (record.gateway !== config.gateway || record.label !== label)) throw new Error('Existing issuance belongs to another gateway');
   if (!record) {
-    record = { id: randomUUID(), label, accessKey: `tds_${randomSecret()}`, gateway: config.gateway };
+    record = freshRecord();
     // Save before POST: a timeout can be retried without creating an inaccessible orphan key.
     const created = await atomicJson(file, record, { createOnly: true });
     if (!created) record = await readJson(file);
     if (record.gateway !== config.gateway || record.label !== label) throw new Error('Concurrent issuance belongs to another gateway');
+  } else if (record.schema !== 2 || record.confirmed === true) {
+    // Confirm that a previously issued local credential still exists remotely.
+    // If the server row was intentionally deleted after revoke+cleanup, never
+    // recreate it from the old bearer secret: rotate the local issuance first.
+    const listed = await control(config.gateway, '/v1/admin/keys', config.adminToken, { method: 'GET' });
+    const byId = listed.keys.find(item => item.id === record.id);
+    const byLabel = listed.keys.find(item => item.label === label);
+    if (byId) {
+      if (byId.label !== label) throw new Error('Existing issuance no longer matches its employee label');
+      if (byId.state === 'revoked') throw new Error('This label belongs to a revoked key; delete its revoked history before reusing the label');
+    } else if (byLabel) {
+      throw new Error('This employee label already belongs to another Access Key');
+    } else {
+      record = freshRecord();
+      await atomicJson(file, record);
+    }
   }
-  const row = await control(config.gateway, '/v1/admin/keys', config.adminToken, {
-    body: { id: record.id, label, keyHash: createHash('sha256').update(record.accessKey).digest('hex') },
-  });
+  let row;
+  try { row = await issue(record); }
+  catch (error) {
+    // A response may have been lost after a successful create. The server-side
+    // deletion tombstone is authoritative: only that explicit conflict permits
+    // rotating the persisted candidate and retrying once with a fresh secret.
+    if (error.code !== 'deleted_key_id_cannot_be_reused') throw error;
+    record = freshRecord();
+    await atomicJson(file, record);
+    row = await issue(record);
+  }
   if (row.state === 'revoked') throw new Error('This label belongs to a revoked key; use a new employee/device label');
+  if (record.schema !== 2 || record.confirmed !== true) {
+    record = { ...record, schema: 2, confirmed: true };
+    await atomicJson(file, record);
+  }
+  const credential = { id: record.id, label, accessKey: record.accessKey, gateway: record.gateway };
   if (output) {
     const target = isAbsolute(output) ? resolve(output) : resolve(config.directory, output);
     const rel = relative(resolve(config.directory), target);
     if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
       throw new Error('Credential exports must stay inside the private administrator configuration directory');
     }
-    await atomicJson(target, { ...record, endpoint: `${config.gateway}/mcp` });
+    await atomicJson(target, { ...credential, endpoint: `${config.gateway}/mcp` });
     return { id: record.id, label, credentialFile: target, state: row.state };
   }
-  return { ...record, endpoint: `${config.gateway}/mcp`, state: row.state };
+  return { ...credential, endpoint: `${config.gateway}/mcp`, state: row.state };
 }
 
 export async function adminMain(argv = process.argv.slice(2)) {

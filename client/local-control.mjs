@@ -11,7 +11,8 @@ const ASSETS = { '/': ['control.html', 'text/html; charset=utf-8'],
   '/about': ['control.html', 'text/html; charset=utf-8'],
   '/updates': ['control.html', 'text/html; charset=utf-8'],
   '/control.js': ['control.js', 'text/javascript; charset=utf-8'],
-  '/control.css': ['control.css', 'text/css; charset=utf-8'] };
+  '/control.css': ['control.css', 'text/css; charset=utf-8'],
+  '/devspace-logo-light.png': ['devspace-logo-light.png', 'image/png'] };
 const ACTIONS = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'setup', 'switch-key',
   'project-root', 'choose-folder', 'logs', 'update-check', 'update-apply', 'update-auto']);
 const badRequest = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -84,7 +85,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('X-Frame-Options', 'DENY');
-    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    response.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     try {
       if (request.headers.host !== new URL(origin).host ||
           (request.headers.origin && request.headers.origin !== origin) ||

@@ -26,10 +26,13 @@ test('completed lifecycle actions never leave future-tense progress above confir
     await controller.dispatch('check');
     view = controller.snapshot();
     assert.equal(view.status, 'partial');
-    assert.equal(view.notice, undefined, 'An explicit new check retires the preceding completion notice');
+    assert.equal(view.notice, '连接检查完成，请查看当前状态',
+      'A fresh check replaces the preceding lifecycle notice with its actual outcome');
     assert.equal(view.activity, undefined);
     state = healthy;
   }
+  await controller.dispatch('check');
+  assert.equal(controller.snapshot().notice, '连接检查完成，一切正常');
 });
 
 test('manual check settling a stale startup probe cannot leave a permanent activity', async t => {

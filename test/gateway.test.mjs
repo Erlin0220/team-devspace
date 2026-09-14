@@ -34,12 +34,13 @@ async function accessHeaders() {
 const secret = () => randomBytes(32).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
 
-async function fixture(t) {
+async function fixture(t, { inventoryMigration = true } = {}) {
   const adminToken = secret();
   const tunnels = new Map();
   const records = new Map();
   const forwarded = [];
   const apiTrace = [];
+  const metadataTrace = [];
   const switches = { offline: false, cleanupFailure: false, configureFailure: false };
   const envelope = (result, status = 200) => Response.json({ success: status < 400, result, errors: [] }, { status });
   const mf = new Miniflare({
@@ -62,9 +63,19 @@ async function fixture(t) {
     outboundService: async request => {
       const url = new URL(request.url);
       if (url.origin === release.distribution.origin) {
-        if (url.pathname === '/catalog.json') return Response.json(updateTestCatalog());
+        metadataTrace.push(url.pathname);
+        if (url.pathname === '/update.json') {
+          if (switches.missingStableSignature) return new Response('not found', { status: 404 });
+          const signed = await signUpdateFixture(updateTestCatalog(switches.stableVersion ?? '0.2.5'));
+          if (switches.holdStable && metadataTrace.filter(path => path === '/update.json').length === 1) {
+            switches.holdStable.started(); await switches.holdStable.release;
+          }
+          if (switches.invalidStableSignature) signed.signature = 'a'.repeat(86);
+          return Response.json(signed);
+        }
+        if (url.pathname === '/catalog.json') return Response.json(updateTestCatalog(switches.legacyStable ? '0.2.3' : '0.2.5'));
         if (url.pathname === '/releases.json') return Response.json({ schema: 1, versions: ['0.2.5', '0.2.4'] });
-        const version = /^\/releases\/(0\.2\.[45])\/update\.json$/.exec(url.pathname)?.[1];
+        const version = /^\/releases\/(0\.2\.[456])\/update\.json$/.exec(url.pathname)?.[1];
         if (!version || switches.unsignedUpdate) return new Response('not found', { status: 404 });
         const signed = await signUpdateFixture(updateTestCatalog(version));
         if (switches.invalidUpdateSignature) signed.signature = 'a'.repeat(86);
@@ -75,6 +86,8 @@ async function fixture(t) {
         if (switches.offline) return new Response('tunnel offline', { status: 530 });
         const tunnel = [...tunnels.values()].find(item => item.config?.ingress[0]?.hostname === url.hostname);
         if (!tunnel) return new Response('not found', { status: 530 });
+        if (switches.updating) return new Response('untrusted diagnostic body', { status: 503,
+          headers: { 'X-Team-Update-State': 'installing', 'Retry-After': '999999999', 'Set-Cookie': 'must-not-leak=1' } });
         const body = request.method === 'POST' ? await request.text() : '';
         forwarded.push({ host: url.hostname, authorization: request.headers.get('Authorization'),
           bindingId: request.headers.get('X-Team-Binding-Id'), session: request.headers.get('mcp-session-id'), body });
@@ -129,6 +142,7 @@ async function fixture(t) {
   t.after(() => mf.dispose());
   const db = await mf.getD1Database('DB');
   for (const migration of (await readdir('migrations')).filter(name => name.endsWith('.sql')).sort()) {
+    if (!inventoryMigration && migration === '0005_update_inventory.sql') continue;
     await db.exec((await readFile(`migrations/${migration}`, 'utf8')).replaceAll('\n', ' '));
   }
   async function request(path, token, body, extra = {}) {
@@ -146,8 +160,81 @@ async function fixture(t) {
     return { id, accessKey };
   }
   function device() { return { deviceId: randomUUID(), deviceSecret: secret(), bridgePort: 47671 }; }
-  return { mf, db, request, issue, device, adminToken, tunnels, records, forwarded, apiTrace, switches, accessHeaders };
+  return { mf, db, request, issue, device, adminToken, tunnels, records, forwarded, apiTrace, metadataTrace, switches, accessHeaders };
 }
+
+test('stable discovery verifies signatures, coalesces reads, and permits only legacy unsigned manual recovery', async t => {
+  const f = await fixture(t);
+  const responses = await Promise.all(Array.from({ length: 5 }, () => f.mf.dispatchFetch('https://team.example.test/v1/update-policy')));
+  for (const response of responses) { assert.equal(response.status, 200); assert.equal((await response.json()).stable, '0.2.5'); }
+  assert.equal(f.metadataTrace.filter(path => path === '/update.json').length, 1);
+  assert.equal(f.metadataTrace.includes('/catalog.json'), false);
+  const bad = await fixture(t);
+  bad.switches.invalidStableSignature = true;
+  assert.equal((await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy')).status, 503);
+  bad.switches.invalidStableSignature = false; bad.switches.missingStableSignature = true;
+  assert.equal((await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy')).status, 503);
+  bad.switches.legacyStable = true;
+  const legacy = await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy');
+  assert.equal(legacy.status, 200); assert.equal((await legacy.json()).stable, '0.2.3');
+});
+
+test('authenticated update drain is not misreported as offline and cannot leak upstream diagnostics', async t => {
+  const f = await fixture(t), key = await f.issue('Updating device');
+  await f.request('/v1/enroll', key.accessKey, f.device());
+  f.switches.updating = true;
+  const updating = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  assert.equal(updating.status, 503);
+  assert.equal(updating.headers.get('Retry-After'), '30');
+  assert.equal(updating.headers.has('Set-Cookie'), false);
+  assert.equal(updating.headers.has('X-Team-Update-State'), false);
+  const body = await updating.json(); assert.equal(body.error.message, 'client_update_in_progress');
+  assert.equal(JSON.stringify(body).includes('untrusted'), false);
+  f.switches.updating = false; f.switches.offline = true;
+  const offline = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.equal((await offline.json()).error.message, 'device_offline');
+  assert.equal(offline.headers.has('Retry-After'), false);
+});
+
+test('a slow stable read cannot repopulate stale discovery after a fresh administrator approval', async t => {
+  const f = await fixture(t); let started, release;
+  const entered = new Promise(resolve => { started = resolve; });
+  f.switches.holdStable = { started, release: new Promise(resolve => { release = resolve; }) };
+  const oldRead = f.mf.dispatchFetch('https://team.example.test/v1/update-policy');
+  await entered;
+  try {
+    f.switches.stableVersion = '0.2.6';
+    const saved = await f.request('/v1/admin/update-policy', f.adminToken,
+      { auto: '0.2.6', minimumSupported: null, enforceAfter: null, revision: 0 });
+    assert.equal(saved.status, 200);
+  } finally { release(); await oldRead; }
+  const latest = await f.mf.dispatchFetch('https://team.example.test/v1/update-policy');
+  assert.equal(latest.status, 200); const value = await latest.json();
+  assert.equal(value.stable, '0.2.6'); assert.equal(value.auto, '0.2.6');
+});
+
+test('update inventory is additive, binding-scoped, privacy-bounded and deduplicates unchanged snapshots', async t => {
+  const f = await fixture(t), key = await f.issue('Update inventory'), device = f.device();
+  const binding = await f.request('/v1/enroll', key.accessKey, device).then(response => response.json());
+  const body = { keyId: key.id, bindingId: binding.bindingId, version: '0.2.5', platform: 'win32-x64',
+    updateReport: { targetVersion: '0.2.6', status: 'deferred', code: 'remote_work_active' } };
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, body)).status, 200);
+  const store = new KeyStore(f.db);
+  assert.equal((await store.reportVersion(key.id, binding.bindingId, '0.2.5', 'win32-x64', body.updateReport)).meta.changes, 0);
+  // Older clients and resume/enroll inventory calls do not erase new snapshot fields.
+  await store.reportVersion(key.id, binding.bindingId, '0.2.5', 'win32-x64');
+  const listed = await f.request('/v1/admin/keys', f.adminToken).then(response => response.json());
+  assert.deepEqual(listed.keys[0].updateReport, body.updateReport);
+  await store.reportVersion(key.id, binding.bindingId, '0.2.6', 'win32-x64');
+  assert.equal((await store.byId(key.id)).update_report, null,
+    'A new running version without a report must not inherit an older version outcome');
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...body,
+    updateReport: { ...body.updateReport, logs: 'private log' } })).status, 400);
+  assert.equal((await f.request('/v1/device/version', secret(), body)).status, 403);
+  await f.request(`/v1/admin/keys/${key.id}/reset`, f.adminToken, {});
+  assert.equal((await store.byId(key.id)).update_report, null);
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, body)).status, 403);
+});
 
 test('one Worker serves health and public assets with consistent headers without weakening control routes', async t => {
   const f = await fixture(t);
@@ -172,6 +259,125 @@ test('one Worker serves health and public assets with consistent headers without
   assert.equal(requestOperation('POST', '/v1/enrollment/preflight'), 'enrollment_preflight');
   assert.equal(requestOperation('POST', '/v1/device/release'), 'device_release');
   assert.equal(requestOperation('POST', '/private-user-content'), 'not_found');
+});
+
+test('Expand keeps both status endpoints authenticated across pause, minimum support and rebinding', async t => {
+  const f = await fixture(t), key = await f.issue('Status migration'), device = f.device();
+  const binding = await f.request('/v1/enroll', key.accessKey, device).then(response => response.json());
+  const identity = { keyId: key.id, bindingId: binding.bindingId };
+  const routes = ['/v1/device/status', '/v1/device/status-v2'];
+  const policy = { auto: '0.2.5', minimumSupported: '0.2.4',
+    enforceAfter: new Date(Date.now() - 1000).toISOString(), revision: 0 };
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 200);
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 426);
+  for (const state of ['active', 'suspended']) {
+    if (state === 'suspended') await f.request('/v1/device/suspend', device.deviceSecret, identity);
+    for (const route of routes) {
+      const response = await f.request(route, device.deviceSecret, identity);
+      assert.equal(response.status, 200, route);
+      assert.deepEqual(await response.json(), { state, deviceId: device.deviceId, bindingId: binding.bindingId });
+      assert.equal((await f.request(route, secret(), identity)).status, 403);
+      assert.equal((await f.request(route, device.deviceSecret, { ...identity, bindingId: randomUUID() })).status, 403);
+    }
+  }
+  await f.request(`/v1/admin/keys/${key.id}/reset`, f.adminToken, {});
+  const replacementDevice = f.device();
+  const replacement = await f.request('/v1/enroll', key.accessKey, replacementDevice).then(response => response.json());
+  for (const route of routes) {
+    assert.equal((await f.request(route, device.deviceSecret, identity)).status, 403);
+    assert.equal((await f.request(route, replacementDevice.deviceSecret,
+      { keyId: key.id, bindingId: replacement.bindingId })).status, 200);
+  }
+  await f.request(`/v1/admin/keys/${key.id}/revoke`, f.adminToken, {});
+  for (const route of routes) assert.equal((await f.request(route, replacementDevice.deviceSecret,
+    { keyId: key.id, bindingId: replacement.bindingId })).status, 403);
+});
+
+test('inventory schema expansion preserves an existing binding and legacy version writes', async t => {
+  const f = await fixture(t, { inventoryMigration: false }), key = await f.issue('Existing binding'), device = f.device();
+  const binding = await f.request('/v1/enroll', key.accessKey, device).then(response => response.json());
+  const legacyWrite = () => f.db.prepare(`UPDATE access_keys SET client_version = ?, client_platform = ?,
+    version_reported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND binding_id = ?`)
+    .bind('0.2.4', 'win32-x64', key.id, binding.bindingId).run();
+  await legacyWrite();
+  const before = await f.db.prepare('SELECT * FROM access_keys WHERE id = ?').bind(key.id).first();
+  assert.equal(Object.hasOwn(before, 'update_report'), false);
+  await f.db.exec((await readFile('migrations/0005_update_inventory.sql', 'utf8')).replaceAll('\n', ' '));
+  const store = new KeyStore(f.db), after = await store.byId(key.id);
+  assert.deepEqual(after, { ...before, update_report: null });
+  assert.equal((await legacyWrite()).meta.changes, 1, 'An old Worker remains usable after the additive migration');
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 200);
+  const updateReport = { targetVersion: '0.2.5', status: 'deferred', code: 'remote_work_active' };
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, {
+    keyId: key.id, bindingId: binding.bindingId, version: '0.2.4', platform: 'win32-x64', updateReport,
+  })).status, 200);
+  assert.equal((await store.byId(key.id)).binding_id, before.binding_id);
+  assert.equal(f.tunnels.size, 1);
+  const policy = await store.updatePolicy();
+  assert.equal(policy.auto_version, null); assert.equal(policy.minimum_supported, null);
+});
+
+test('cleanup uses the partial indexes instead of scanning retained revoked history', async t => {
+  const f = await fixture(t);
+  await f.db.prepare(`WITH RECURSIVE history(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM history WHERE n<2000)
+    INSERT INTO access_keys(id,label,key_hash,state) SELECT 'history-'||n,'history-'||n,'hash-'||n,'revoked' FROM history`).run();
+  const queries = [];
+  const store = new KeyStore({ prepare(sql) {
+    return { bind(...values) { queries.push({ sql, values }); return f.db.prepare(sql).bind(...values); } };
+  } });
+  assert.deepEqual(await store.cleanupCandidates(), []);
+  assert.equal(queries.length, 2);
+  for (const { sql, values } of queries) {
+    const index = sql.includes('cleanup_pending') ? 'idx_access_keys_cleanup_pending_updated_at'
+      : 'idx_access_keys_provisioning_updated_at';
+    const plan = await f.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...values).all();
+    assert.ok(plan.results.some(row => row.detail.includes(index)), JSON.stringify(plan.results));
+    const result = await f.db.prepare(sql).bind(...values).all();
+    assert.equal(result.results.length, 0);
+    assert.ok(result.meta.rows_read < 10, JSON.stringify(result.meta));
+  }
+});
+
+test('revoked history can be deleted only after cleanup and deleting it releases the label', async t => {
+  const f = await fixture(t);
+  const key = await f.issue('Reusable label');
+  assert.equal((await f.request(`/v1/admin/keys/${key.id}`, f.adminToken, undefined, { method: 'DELETE' })).status, 409);
+  assert.equal((await f.request(`/v1/admin/keys/${key.id}/revoke`, f.adminToken, {})).status, 200);
+  const archived = await f.request('/v1/admin/keys', f.adminToken).then(response => response.json());
+  const archivedKey = archived.keys.find(item => item.id === key.id);
+  assert.ok(archivedKey.createdAt);
+  assert.ok(archivedKey.revokedAt);
+  assert.ok(archivedKey.cleanupCompletedAt);
+  assert.ok(new Date(archivedKey.createdAt) <= new Date(archivedKey.revokedAt));
+  assert.ok(new Date(archivedKey.revokedAt) <= new Date(archivedKey.cleanupCompletedAt));
+  const removed = await f.request(`/v1/admin/keys/${key.id}`, f.adminToken, undefined, { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(await removed.json(), { deleted: key.id });
+  assert.equal(await f.db.prepare('SELECT * FROM access_keys WHERE id = ?').bind(key.id).first(), null);
+  const events = await f.db.prepare(`SELECT event, label FROM access_key_events
+    WHERE key_id = ? ORDER BY id`).bind(key.id).all();
+  assert.deepEqual(events.results.map(item => item.event), ['created', 'revoked', 'revoked_cleanup_completed', 'deleted']);
+  assert.ok(events.results.every(item => item.label === 'Reusable label'));
+  const resurrect = await f.request('/v1/admin/keys', f.adminToken, {
+    id: key.id, label: 'Reusable label', keyHash: hash(key.accessKey),
+  });
+  assert.equal(resurrect.status, 409);
+  assert.equal((await resurrect.json()).error, 'deleted_key_id_cannot_be_reused');
+  const replacement = await f.issue('Reusable label');
+  assert.notEqual(replacement.id, key.id);
+
+  const a = await f.issue('Old A');
+  const b = await f.issue('Old B');
+  await f.request(`/v1/admin/keys/${a.id}/revoke`, f.adminToken, {});
+  await f.request(`/v1/admin/keys/${b.id}/revoke`, f.adminToken, {});
+  const purged = await f.request('/v1/admin/keys/revoked', f.adminToken, undefined, { method: 'DELETE' });
+  assert.equal(purged.status, 200);
+  assert.equal((await purged.json()).deleted, 2);
+  const remaining = await f.request('/v1/admin/keys', f.adminToken).then(response => response.json());
+  assert.equal(remaining.keys.some(item => ['Old A', 'Old B'].includes(item.label)), false);
+  const deletedEvents = await f.db.prepare(`SELECT label FROM access_key_events
+    WHERE event = 'deleted' AND label IN ('Old A', 'Old B') ORDER BY label`).all();
+  assert.deepEqual(deletedEvents.results.map(item => item.label), ['Old A', 'Old B']);
 });
 
 test('gateway authorizes real D1 bindings, isolates devices and namespaces MCP sessions', async t => {

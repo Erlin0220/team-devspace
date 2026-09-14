@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 import { atomicJson, randomSecret } from '../client/state.mjs';
 import { run } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
+import { downloadUpgradeBaseline, UPGRADE_BASELINES } from './upgrade-baselines.mjs';
 
 if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Run this installer test on native macOS/Linux');
 const target = `${process.platform}-${process.arch}`;
@@ -42,6 +43,7 @@ try {
   }
   await Promise.all(sockets.map(socket => new Promise(resolve => socket.close(resolve))));
   const state = { schema: 1, deviceId: randomUUID(), deviceSecret: randomSecret(), ownerToken: randomSecret(),
+    keyId: randomUUID(), bindingId: randomUUID(), accessKey: `tds_${randomSecret()}`, remoteAccess: 'suspended',
     gateway: 'https://offline-smoke.invalid', currentProjectRoot: work,
     ports: { devspace: ports[0], bridge: ports[1], metrics: ports[2] } };
   const manifestPath = join(media, 'release-manifest.json');
@@ -88,6 +90,25 @@ try {
   await uninstall();
   assert.equal(await exists(join(root, 'versions')), false, 'An unconfigured application can be uninstalled');
   await atomicJson(join(home, 'state.json'), state);
+  if (process.platform === 'linux') {
+    for (const version of Object.keys(UPGRADE_BASELINES)) {
+      const oldMedia = join(work, `baseline-${version}`);
+      await mkdir(oldMedia);
+      const archive = await downloadUpgradeBaseline(version, target);
+      await run('/usr/bin/tar', ['-xzf', archive, '-C', oldMedia]);
+      await run('/bin/sh', [join(oldMedia, 'install.sh'), '--root', root,
+        '--manifest', join(oldMedia, 'release-manifest.json'), '--offline', oldMedia, '--setup', 'none'],
+      { cwd: work, env, timeout: 240000 });
+      assert.equal(JSON.parse(await readFile(join(await active(), 'release.config.json'), 'utf8')).version, version);
+      await install();
+      await run(process.execPath, ['scripts/verify-release.mjs', '--target', target, '--installed', await active()]);
+      assert.deepEqual(JSON.parse(await readFile(join(home, 'state.json'), 'utf8')), state,
+        'Cross-version installation must retain identity, binding, project and pause');
+      console.log(JSON.stringify({ nativeUpgrade: true, target, from: version, to: release.version,
+        baselineSha256: UPGRADE_BASELINES[version][target], seededEnrollment: true }));
+      await uninstall();
+    }
+  }
   await install();
   assert.equal((await readFile(join(root, '.team-devspace-distribution'), 'utf8')).trim(), 'team-devspace-distribution-v1');
   const first = await active();

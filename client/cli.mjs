@@ -23,6 +23,7 @@ const HELP = `Team DevSpace
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
   update check | apply | status     Discover, install or inspect trusted updates
+  update repair                    Reinstall this version from its signed package
   update auto on | off              Set automatic approved-version updates
   repair                            Recreate local startup or resume pending Enrollment
   start | stop | restart            Control your user-owned runtime
@@ -74,7 +75,8 @@ export async function main(argv = process.argv.slice(2)) {
     else if (action === 'status') result = await updateStatus(home);
     else if (action === 'apply') result = await applyUpdate(home, { onProgress: message => console.error(message) });
     else if (action === 'auto' && ['on', 'off'].includes(argument)) result = await setAutomaticUpdates(argument === 'on', home);
-    else throw new Error('Use update check, apply, status, or auto on|off');
+    else if (action === 'repair') result = await applyUpdate(home, { repair: true });
+    else throw new Error('Use update check, apply, repair, status, or auto on|off');
     console.log(JSON.stringify(result, null, 2)); return;
   }
   if (command === 'run') {

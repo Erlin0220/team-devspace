@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { access, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -21,9 +21,16 @@ if (employeeWindowsInstaller && (process.platform !== 'win32' || directWindowsIn
 if (directWindowsInstaller && process.platform !== 'win32') throw new Error('Direct final-installer acceptance is Windows-only');
 if (directWindowsInstaller && process.env.CI !== 'true') throw new Error('Direct final-installer acceptance is reserved for an isolated CI runner');
 const systemMacosInstaller = Boolean(values['system-macos-installer']);
-if (systemMacosInstaller && (process.platform !== 'darwin' || process.env.CI !== 'true' || !process.env.CM_BUILD_ID)) {
-  throw new Error('System macOS acceptance is reserved for a disposable Codemagic runner');
+const disposableMacos = process.env.CI === 'true' && (process.env.CM_BUILD_ID ||
+  (process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_OS === 'macOS'));
+if (systemMacosInstaller && (process.platform !== 'darwin' || !disposableMacos)) {
+  throw new Error('System macOS acceptance is reserved for a disposable Codemagic or GitHub macOS runner');
 }
+const armHardware = process.platform === 'darwin'
+  ? spawnSync('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'], { encoding: 'utf8' }).stdout?.trim() : null;
+const nativeArchitecture = process.platform !== 'darwin' ||
+  (armHardware === '1' && process.arch === 'arm64') ||
+  (armHardware !== '1' && process.arch === 'x64' && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ARCH === 'X64');
 
 function runNode(script, args = []) {
   return new Promise((resolveRun, reject) => {
@@ -89,6 +96,9 @@ const evidence = {
     releaseLayout: true,
     installerTransaction: true,
     installedPayload: true,
+    nativeArchitecture,
+    existingInstallUpgrade: process.platform === 'win32' ? employeeWindowsInstaller
+      : process.platform === 'darwin' ? systemMacosInstaller : true,
     finalEntrypointTransaction: process.platform === 'win32' ? directWindowsInstaller || employeeWindowsInstaller
       : process.platform === 'darwin' ? systemMacosInstaller : true,
     trayProtocol: desktopTray,
@@ -100,7 +110,7 @@ const evidence = {
     ? [systemMacosInstaller
       ? 'System PKG installation, first-run UI visibility, interrupted-setup recovery, installed runtime and LaunchAgent/menu-bar lifecycle were tested; Enrollment was seeded, not submitted through the first-run form. Real employee login, Gatekeeper approval and administrator dialogs remain manual.'
       : 'Only PKG extraction and internal bootstrap transactions were tested, not system PKG installation or a LaunchAgent login session.',
-      ...(process.arch === 'x64' ? ['An x64 process may run under Rosetta; this is not proof of Intel hardware compatibility.'] : [])]
+      ...(!nativeArchitecture ? ['This process is not verified on matching native CPU architecture; Rosetta is not Intel hardware acceptance.'] : [])]
     : process.platform === 'win32' && employeeWindowsInstaller
       ? ['The unmodified final EXE upgraded, uninstalled and restored the existing employee installation. Native menu tests are separate; transient GUI/console behavior was not exhaustively observed.']
       : process.platform === 'win32' && !directWindowsInstaller

@@ -237,6 +237,10 @@ test('loopback Control Center protects reads and writes against cross-origin, re
   assert.match(html.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal(html.headers.get('cache-control'), 'no-store');
   assert.ok(!(await html.text()).includes(url.hash.slice(1)));
+  const logo = await fetch(base + '/devspace-logo-light.png');
+  assert.equal(logo.status, 200);
+  assert.equal(logo.headers.get('content-type'), 'image/png');
+  assert.ok((await logo.arrayBuffer()).byteLength > 0, 'The shared Control Center product logo is bundled with the client');
   assert.equal((await fetch(base + '/api/state')).status, 401);
   assert.equal((await api('/api/state', { headers: { Origin: 'https://evil.example' } })).status, 403);
   // Fetch normalizes Host; use a real raw HTTP request to exercise rebinding.

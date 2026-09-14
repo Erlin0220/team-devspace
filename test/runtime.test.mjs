@@ -100,6 +100,10 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   const shell = await client.callTool({ name: 'bash', arguments: { workspaceId, command: 'printf team-devspace-shell-ok', timeout: 10 } });
   assert.ok(!shell.isError && JSON.stringify(shell).includes('team-devspace-shell-ok'), JSON.stringify(shell));
   assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'GET' })).status, 401);
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'GET', headers })).status, 200);
+  assert.ok((await client.listTools()).tools.length, 'A readiness probe must not reserve the drain');
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'GET', headers: { ...headers, 'X-Team-Update-Mode': 'automatic' } })).status, 409);
   assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST', headers: { ...headers, 'X-Team-Update-Mode': 'automatic' } })).status, 409);
   const working = client.callTool({ name: 'bash', arguments: { workspaceId, command: 'sleep 2; printf completed-before-update', timeout: 10 } });
   await sleep(250);
@@ -109,6 +113,9 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   const deniedDuringUpdate = await fetch(`${endpoint}/mcp`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'initialize' }) });
   assert.equal(deniedDuringUpdate.status, 503);
+  assert.equal(deniedDuringUpdate.headers.get('X-Team-Update-State'), 'installing');
+  assert.equal(deniedDuringUpdate.headers.get('Retry-After'), '30');
+  assert.equal((await deniedDuringUpdate.json()).error.message, 'client_update_in_progress');
   assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'DELETE', headers })).status, 200);
   assert.ok((await client.listTools()).tools.some(tool => tool.name === 'open_workspace'));
 });

@@ -7,6 +7,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import release from '../release.config.json' with { type: 'json' };
 import { serviceLabel, STARTUP_COMPONENTS } from '../client/platform.mjs';
 import { redactDiagnostic } from '../client/control.mjs';
+import { compareVersions } from '../client/update-policy.mjs';
+import { downloadUpgradeBaseline } from './upgrade-baselines.mjs';
 
 const { values } = parseArgs({ options: { live: { type: 'boolean' }, installer: { type: 'string' } } });
 assert.equal(process.platform, 'win32', 'Employee installation acceptance is Windows-only');
@@ -25,6 +27,8 @@ const exists = async path => {
 const before = await readJson(stateFile);
 assert.ok(before.bindingId && before.accessKey && before.ownerToken, 'An existing enrolled employee installation is required');
 const activeBefore = await readJson(join(distribution, 'active.json'));
+const installedVersion = (await readJson(join(activeBefore.path, 'release.config.json'))).version;
+assert.ok(compareVersions(installedVersion, release.version) <= 0, 'Acceptance must not downgrade a newer employee release');
 assert.ok(resolve(activeBefore.path).toLowerCase().startsWith(`${resolve(distribution, 'v').toLowerCase()}\\`),
   'Only the default, already installed employee distribution is supported');
 await access(installer);
@@ -92,6 +96,17 @@ async function assertUninstalled() {
   assert.equal(await exists(before.currentProjectRoot), true, 'Uninstall removed the employee project');
 }
 try {
+  if (installedVersion === release.version) {
+    // A retry after a failed later lifecycle check still needs a real older
+    // baseline; never turn a same-version reinstall into upgrade evidence.
+    const baseline = await downloadUpgradeBaseline('0.2.4', 'win32-x64');
+    restoreRequired = true;
+    await run(baseline, ['/S']);
+    currentRoot = (await readJson(join(distribution, 'active.json'))).path;
+    assert.equal((await readJson(join(currentRoot, 'release.config.json'))).version, '0.2.4');
+    await checkIdentity();
+    await verifyPolicy();
+  }
   await install(); pass('unmodified final EXE upgrades the actual employee installation and verifies installed payload');
   assert.equal(await exists(await desktopShortcut()), true, 'Desktop restart entry is absent');
   assert.equal(await exists(join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Team DevSpace', 'Team DevSpace.lnk')), true);

@@ -65,9 +65,15 @@ if (JSON.stringify(runtimeDependencies) !== JSON.stringify(allowedRuntimeDepende
   throw new Error(`Employee runtime dependencies must stay thin: ${allowedRuntimeDependencies.join(', ')}`);
 }
 
-if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow.includes('macos-15') ||
+if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow.includes('acceptance:local') ||
+    retiredPackageWorkflow.includes('node scripts/package.mjs') ||
     retiredPackageWorkflow.includes('windows-2022') || retiredPackageWorkflow.includes('linux-x64')) {
   throw new Error('GitHub Actions native packaging must remain retired; macOS builds on Codemagic and Windows/Linux build locally');
+}
+if (!retiredPackageWorkflow.includes('runs-on: macos-15-intel') ||
+    !retiredPackageWorkflow.includes('node scripts/macos-accept-existing.mjs') ||
+    !retiredPackageWorkflow.includes('TEAM_DEVSPACE_PACKAGE_SHA256:')) {
+  throw new Error('The GitHub Intel exception must only accept an existing hash-pinned PKG, never build another release');
 }
 if (!release.distribution.targets.includes('darwin-arm64') || !release.distribution.targets.includes('darwin-x64') ||
     !/^[a-f0-9]{64}$/.test(binaries.node?.['darwin-x64']?.sha256 ?? '')) {

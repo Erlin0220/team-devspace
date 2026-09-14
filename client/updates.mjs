@@ -10,10 +10,14 @@ import { withDeviceOperation } from './operation.mjs';
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { boundedJson, compareVersions, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from './update-policy.mjs';
 import { DOWNLOAD_TARGETS, packageUrls } from './release-catalog.mjs';
+import { pruneUpdateCache } from './update-cache.mjs';
+import { buildUpdateReport } from './update-report.mjs';
 import release from '../release.config.json' with { type: 'json' };
 
 const exec = promisify(execFile);
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
+const FAILURE_INTERVAL = 60 * 60 * 1000;
+const BUSY_INTERVAL = 10 * 60 * 1000;
 const request = (url, options = {}) => fetch(url, { redirect: 'error', signal: AbortSignal.timeout(20000), ...options });
 const updateDirectory = home => join(home, 'updates');
 
@@ -35,17 +39,21 @@ export async function setAutomaticUpdates(enabled, home = stateHome()) {
   return updateStatus(home);
 }
 
-export async function checkForUpdates(home = stateHome(), { force = false, fetcher = request, now = Date.now() } = {}) {
+export async function checkForUpdates(home = stateHome(), { force = false, fetcher = request, now = Date.now(), signal } = {}) {
+  const baseFetcher = fetcher;
+  if (signal) fetcher = (url, options = {}) => baseFetcher(url, { ...options,
+    signal: AbortSignal.any([signal, options.signal ?? AbortSignal.timeout(20000)]) });
   const directory = updateDirectory(home);
   await privateDirectory(directory);
   let unlock;
-  try { unlock = await lockfile.lock(directory, { lockfilePath: join(directory, '.check.lock'), stale: 30000, update: 5000 }); }
+  try { unlock = await lockfile.lock(join(directory, '.check'), { realpath: false, lockfilePath: join(directory, '.check.lock'), stale: 30000, update: 5000 }); }
   catch (error) { if (error.code === 'ELOCKED') return updateStatus(home); throw error; }
   try {
     const previous = await readJson(join(directory, 'check.json'), {});
-    if (!force && previous.currentVersion === RELEASE_VERSION && previous.nextCheckAt > now) return updateStatus(home);
+    const clockMovedBack = previous.checkedAt && Date.parse(previous.checkedAt) > now;
+    if (!force && !clockMovedBack && previous.currentVersion === RELEASE_VERSION && previous.nextCheckAt > now) return updateStatus(home);
     // Repeated button clicks are bounded, but a restart cannot postpone a due check.
-    if (force && previous.checkedAt && now - Date.parse(previous.checkedAt) < 5000) return updateStatus(home);
+    if (force && !clockMovedBack && previous.checkedAt && now - Date.parse(previous.checkedAt) < 5000) return updateStatus(home);
     const nextCheckAt = now + CHECK_INTERVAL + Math.floor(Math.random() * 60 * 60 * 1000);
     try {
       const policy = validateUpdatePolicy(await boundedJson(await fetcher(`${release.gateway}/v1/update-policy`)));
@@ -53,19 +61,27 @@ export async function checkForUpdates(home = stateHome(), { force = false, fetch
       const state = await loadState(home).catch(() => null);
       if (state?.bindingId) {
         try {
+          const [attempt, result, automatic] = await Promise.all(['attempt.json', 'result.json', 'automatic-result.json']
+            .map(name => readJson(join(directory, name), null).catch(() => null)));
           const response = await fetcher(`${state.gateway}/v1/device/version`, { method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${state.deviceSecret}` },
-            body: JSON.stringify({ keyId: state.keyId, bindingId: state.bindingId, version: RELEASE_VERSION, platform: `${process.platform}-${process.arch}` }) });
+            body: JSON.stringify({ keyId: state.keyId, bindingId: state.bindingId, version: RELEASE_VERSION, platform: `${process.platform}-${process.arch}`,
+              updateReport: buildUpdateReport(RELEASE_VERSION, policy, { attempt, result, automatic }) }) });
           inventoryReported = response.ok; await response.body?.cancel();
         } catch { /* Version inventory never gates local recovery or update discovery. */ }
       }
+      signal?.throwIfAborted();
       await atomicJson(join(directory, 'check.json'), { currentVersion: RELEASE_VERSION, checkedAt: new Date(now).toISOString(), nextCheckAt,
         policy, available: compareVersions(policy.stable, RELEASE_VERSION) > 0,
         required: versionUnsupported(RELEASE_VERSION, policy, now), inventoryReported, error: null });
+      // Cleanup is local and best-effort; it must not turn a successful policy
+      // check into a failure or touch a concurrent apply operation.
+      await pruneUpdateCache(home, policy, now).catch(() => {});
     } catch (error) {
+      if (signal?.aborted) throw error;
       // No silent execution from stale policy; failed checks are visible and retryable.
-      await atomicJson(join(directory, 'check.json'), { ...previous, checkedAt: new Date(now).toISOString(),
-        nextCheckAt: now + 60 * 60 * 1000, error: '无法检查更新；已安装版本和用户状态未更改。' });
+      await atomicJson(join(directory, 'check.json'), { ...previous, currentVersion: RELEASE_VERSION, checkedAt: new Date(now).toISOString(),
+        nextCheckAt: now + Math.max(FAILURE_INTERVAL, error.retryAfterMs ?? 0), error: '无法检查更新；已安装版本和用户状态未更改。' });
       if (force) throw error;
     }
     return updateStatus(home);
@@ -108,7 +124,8 @@ export function updateBridge(state, method, automatic = false) {
       headers: { Authorization: `Bearer ${state.deviceSecret}`, 'X-Team-Binding-Id': state.bindingId,
         'X-Team-Update-Mode': automatic ? 'automatic' : 'manual' } }, response => {
       response.resume(); response.once('end', () => response.statusCode === 200 ? resolve_() :
-        reject(new Error(response.statusCode === 409 ? '远程工作仍在进行，稍后再更新。' : '无法确认连接已空闲，请暂停远程访问后再更新。')));
+        reject(Object.assign(new Error(response.statusCode === 409 ? '远程工作仍在进行，稍后再更新。' : '无法确认连接已空闲，请暂停远程访问后再更新。'),
+          { code: response.statusCode === 409 ? 'remote_work_active' : 'update_readiness_unavailable' })));
     });
     req.setTimeout(5000, () => req.destroy(new Error('Update readiness check timed out')));
     req.on('error', reject); req.end();
@@ -122,6 +139,11 @@ export async function updateTarget() {
     return stdout.trim() === '1' ? 'darwin-arm64' : `darwin-${process.arch}`;
   }
   return `${process.platform}-${process.arch}`;
+}
+
+async function automaticReadiness(home) {
+  const state = await loadState(home).catch(() => null);
+  if (state?.bindingId && state.remoteAccess !== 'suspended') await updateBridge(state, 'GET', true);
 }
 
 export async function installedDistributionRoot() {
@@ -140,6 +162,7 @@ async function detached(executable, args, options = {}) {
 
 export async function handoffInstaller(file, version, home, root, {
   launcher = join(installRoot, 'platform', 'windows', 'tds-launcher.exe'),
+  attemptId = randomUUID(),
 } = {}) {
   const directory = updateDirectory(home);
   if (process.platform === 'darwin') {
@@ -154,7 +177,7 @@ export async function handoffInstaller(file, version, home, root, {
     const updateLauncher = join(directory, 'update-launcher.exe');
     await cp(launcher, updateLauncher);
     await cp(join(installRoot, 'platform', 'windows', 'apply-update.ps1'), helper);
-    await atomicJson(requestFile, { installer: file, installRoot: root, home, version, taskName,
+    await atomicJson(requestFile, { installer: file, installRoot: root, home, version, taskName, attemptId,
       requestedAt: Date.now(), resultFile: join(directory, 'result.json') });
     await runWindowsDesktop(`
 $arguments = '--cwd "' + $env:TDS_UPDATE_DIR + '" --stdout "' + (Join-Path $env:TDS_UPDATE_DIR 'installer.log') + '" --stderr "' + (Join-Path $env:TDS_UPDATE_DIR 'installer.error.log') + '" -- "' + (Join-Path $PSHOME 'powershell.exe') + '" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $env:TDS_UPDATE_HELPER + '" -RequestFile "' + $env:TDS_UPDATE_REQUEST + '"'
@@ -168,7 +191,7 @@ Start-ScheduledTask -TaskName $env:TDS_UPDATE_TASK
   } else {
     const helper = join(directory, 'apply-update.sh');
     await cp(join(installRoot, 'platform', 'unix', 'apply-update.sh'), helper);
-    const args = [helper, file, root, home, join(directory, `stage-${randomUUID()}`), version, join(directory, 'result.json')];
+    const args = [helper, file, root, home, join(directory, `stage-${randomUUID()}`), version, join(directory, 'result.json'), attemptId];
     // A systemd service child would otherwise die with the runtime's cgroup.
     const systemd = await exec('systemctl', ['--user', 'show-environment'], { timeout: 5000 }).then(() => true, () => false);
     if (systemd) {
@@ -181,20 +204,33 @@ Start-ScheduledTask -TaskName $env:TDS_UPDATE_TASK
   return { handedOff: true, version };
 }
 
-export async function applyUpdate(home = stateHome(), { automatic = false, fetcher = request, onProgress = () => {},
+export async function applyUpdate(home = stateHome(), { automatic = false, repair = false, fetcher = request, onProgress = () => {},
   handoff = handoffInstaller, distributionRoot = installedDistributionRoot, publicKey = release.distribution.updatePublicKey,
   signal, canApply = () => true } = {}) {
+  if (repair && automatic) throw new Error('Software repair requires an explicit user request');
   const baseFetcher = fetcher;
   if (signal) fetcher = (url, options = {}) => baseFetcher(url, { ...options,
     signal: AbortSignal.any([signal, options.signal ?? AbortSignal.timeout(20000)]) });
   const directory = updateDirectory(home);
   await privateDirectory(directory);
-  const unlock = await lockfile.lock(directory, { lockfilePath: join(directory, '.apply.lock'), stale: 30000, update: 5000 });
+  const unlock = await lockfile.lock(join(directory, '.apply'), { realpath: false, lockfilePath: join(directory, '.apply.lock'), stale: 30000, update: 5000 });
+  let version;
   try {
+    // An unresolved handoff is a local fact. Reject duplicate preparation before
+    // network requests or a full cached-package hash, including after restart.
+    const previous = await readJson(join(directory, 'attempt.json'), null);
+    const completed = await readJson(join(directory, 'result.json'), null);
+    const matchingResult = completed && completed.version === previous?.version &&
+      (!previous?.attemptId || completed.attemptId === previous.attemptId);
+    if (previous && !matchingResult && Date.now() - previous.startedAt < FAILURE_INTERVAL) {
+      throw Object.assign(new Error('安装器已启动，请完成系统安装操作；未启动时可在一小时后重试。'),
+        { code: 'installer_pending', version: previous.version });
+    }
     // Always re-read authoritative policy before execution, even after a cached notification.
     const policy = validateUpdatePolicy(await boundedJson(await fetcher(`${release.gateway}/v1/update-policy`)));
-    const version = automatic ? policy.auto : policy.stable;
-    if (!version || compareVersions(version, RELEASE_VERSION) <= 0) return { changed: false };
+    version = repair ? RELEASE_VERSION : automatic ? policy.auto : policy.stable;
+    if (!version || (!repair && compareVersions(version, RELEASE_VERSION) <= 0)) return { changed: false };
+    if (automatic && !(await updateStatus(home)).automatic) return { changed: false };
     const target = await updateTarget();
     if (!DOWNLOAD_TARGETS.includes(target)) throw new Error('No update package for this platform');
     const catalog = await verifySignedCatalog(await boundedJson(await fetcher(`${release.distribution.origin}/releases/${version}/update.json`)), publicKey, version);
@@ -202,21 +238,21 @@ export async function applyUpdate(home = stateHome(), { automatic = false, fetch
     onProgress('正在校验并准备更新…');
     const file = await downloadVerifiedPackage(packageUrls(catalog, release.distribution.origin)[target], catalog.targets[target],
       join(directory, version, catalog.targets[target].file), { fetcher, onProgress });
-    if (automatic && process.platform === 'darwin') return { ready: true, version, requiresAuthorization: true };
     // Downloads may take a while. Re-check withdrawal and local opt-out before applying.
     const latest = validateUpdatePolicy(await boundedJson(await fetcher(`${release.gateway}/v1/update-policy`)));
-    if ((automatic ? latest.auto : latest.stable) !== version) throw new Error('管理员已调整推广版本，请重新检查更新。');
+    if (!repair && (automatic ? latest.auto : latest.stable) !== version) throw new Error('管理员已调整推广版本，请重新检查更新。');
     if (automatic && !(await updateStatus(home)).automatic) return { changed: false };
     signal?.throwIfAborted();
-    if (!canApply()) return { changed: false, deferred: true };
-    return withDeviceOperation(home, async () => {
+    if (automatic && process.platform === 'darwin') return { ready: true, version, requiresAuthorization: true };
+    const busy = () => ({ changed: false, deferred: true, version, code: 'local_operation_active',
+      message: '更新已下载并校验；本机操作完成后会再次尝试安装。' });
+    if (!canApply()) return busy();
+    // Await here is essential: finally must retain the apply lock throughout
+    // the device operation and OS handoff, not only until its Promise exists.
+    return await withDeviceOperation(home, async () => {
       signal?.throwIfAborted();
-      if (!canApply()) return { changed: false, deferred: true };
-      const previous = await readJson(join(directory, 'attempt.json'), null);
-      const completed = await readJson(join(directory, 'result.json'), null);
-      if (previous && !completed && Date.now() - previous.startedAt < 60 * 60 * 1000) {
-        throw new Error('安装器已启动，请完成系统安装操作；未启动时可在一小时后重试。');
-      }
+      if (!canApply()) return busy();
+      if (await distributionRoot() !== root) throw new Error('Installed application changed while preparing the update');
       const stored = await readJson(join(home, 'state.json'), null);
       const state = stored ? await loadState(home) : null;
       let drained = false;
@@ -224,8 +260,9 @@ export async function applyUpdate(home = stateHome(), { automatic = false, fetch
       try {
         onProgress('已验证更新，正在交给安装器；连接将短暂重启…');
         await rm(join(directory, 'result.json'), { force: true });
-        await atomicJson(join(directory, 'attempt.json'), { version, startedAt: Date.now() });
-        const result = await handoff(file, version, home, root);
+        const attemptId = randomUUID();
+        await atomicJson(join(directory, 'attempt.json'), { version, startedAt: Date.now(), attemptId });
+        const result = await handoff(file, version, home, root, { attemptId });
         // A cancelled macOS authorization window must not pause remote access.
         // macOS is user-confirmed installation, never unattended activation.
         if (process.platform === 'darwin') {
@@ -240,30 +277,71 @@ export async function applyUpdate(home = stateHome(), { automatic = false, fetch
         throw error;
       }
     });
+  } catch (error) {
+    if (version && error && typeof error === 'object' && !error.version) error.version = version;
+    throw error;
   } finally { await unlock(); }
 }
 
-export function startUpdateChecks(home, onChange = () => {}, canApply = () => true) {
+export function startUpdateChecks(home, onChange = () => {}, canApply = () => true, {
+  check = checkForUpdates, apply = applyUpdate, now = Date.now,
+  schedule = setTimeout, cancel = clearTimeout, readiness = automaticReadiness,
+} = {}) {
   let timer, stopped = false;
   const controller = new AbortController();
   const tick = async () => {
+    let status, outcome;
     try {
-      const status = await checkForUpdates(home);
-      if (!stopped && canApply() && !status.error && status.automatic && status.policy?.auto && compareVersions(status.policy.auto, RELEASE_VERSION) > 0) {
-        await applyUpdate(home, { automatic: true, signal: controller.signal, canApply: () => !stopped && canApply() });
+      status = await check(home, { signal: controller.signal });
+      if (stopped) return;
+      const approved = !status.error && status.automatic && status.policy?.auto && compareVersions(status.policy.auto, RELEASE_VERSION) > 0;
+      outcome = status.automaticResult?.version === status.policy?.auto ? status.automaticResult : null;
+      if (approved && !(outcome?.ready && outcome.requiresAuthorization) && !(outcome?.nextAttemptAt > now())) {
+        // Reconsider a busy device locally; do not re-fetch policy or re-hash a
+        // large cached package on every retry while the same work is active.
+        if (outcome?.code === 'remote_work_active') await readiness(home);
+        if (outcome?.code === 'local_operation_active' && !canApply()) {
+          outcome = { ...outcome, nextAttemptAt: now() + BUSY_INTERVAL };
+          await atomicJson(join(updateDirectory(home), 'automatic-result.json'), outcome);
+          return;
+        }
+        // A local settings operation can defer activation, not safe preparation.
+        // Remote work admission remains the Bridge's responsibility.
+        const result = await apply(home, { automatic: true, signal: controller.signal, canApply: () => !stopped && canApply() });
+        if (stopped) return;
+        if (result.deferred || result.requiresAuthorization || result.handedOff) {
+          outcome = { ...result, version: result.version ?? status.policy.auto, checkedAt: new Date(now()).toISOString(),
+            ...(result.deferred ? { nextAttemptAt: now() + BUSY_INTERVAL } : {}) };
+          await atomicJson(join(updateDirectory(home), 'automatic-result.json'), outcome);
+        } else {
+          outcome = null;
+          await rm(join(updateDirectory(home), 'automatic-result.json'), { force: true });
+        }
+      } else if (!approved && !status.error) {
+        outcome = null;
+        await rm(join(updateDirectory(home), 'automatic-result.json'), { force: true });
       }
-      await rm(join(updateDirectory(home), 'automatic-result.json'), { force: true });
-    } catch {
-      await atomicJson(join(updateDirectory(home), 'automatic-result.json'), {
-        checkedAt: new Date().toISOString(), deferred: true,
-        message: '自动更新暂未执行。远程工作进行中、安装器等待完成或网络不可用时会保留当前版本；可手动检查并更新。',
-      }).catch(() => {});
+    } catch (error) {
+      if (stopped) return;
+      const busy = error.code === 'remote_work_active';
+      outcome = { version: error.version ?? status?.policy?.auto, checkedAt: new Date(now()).toISOString(), deferred: true,
+        code: busy ? 'remote_work_active' : error.code === 'installer_pending' ? 'installer_pending' : 'update_failed',
+        nextAttemptAt: now() + (busy ? BUSY_INTERVAL : Math.max(FAILURE_INTERVAL, error.retryAfterMs ?? 0)),
+        message: busy ? '更新已准备；远程工作结束后会再次尝试安装。'
+          : '自动更新暂未完成；已保留当前版本，将稍后重试。可查看安装结果或手动检查更新。' };
+      await atomicJson(join(updateDirectory(home), 'automatic-result.json'), outcome).catch(() => {});
     }
     finally {
-      onChange();
-      if (!stopped) { timer = setTimeout(tick, CHECK_INTERVAL + Math.random() * 60 * 60 * 1000); timer.unref(); }
+      if (!stopped) {
+        // There is one persisted check deadline; do not add another 6-hour delay
+        // after a cache hit, restart, manual check or failed hourly retry.
+        const deadlines = [Number.isFinite(status?.nextCheckAt) ? status.nextCheckAt : now() + FAILURE_INTERVAL];
+        if (Number.isFinite(outcome?.nextAttemptAt) && status?.automatic && !status.error) deadlines.push(outcome.nextAttemptAt);
+        timer = schedule(tick, Math.max(1000, Math.min(...deadlines) - now())); timer.unref?.();
+        try { onChange(); } catch { /* A presentation failure cannot stop update scheduling. */ }
+      }
     }
   };
-  timer = setTimeout(tick, 15000 + Math.random() * 15000); timer.unref();
-  return () => { stopped = true; controller.abort(); clearTimeout(timer); };
+  timer = schedule(tick, 15000 + Math.random() * 15000); timer.unref?.();
+  return () => { stopped = true; controller.abort(); cancel(timer); };
 }

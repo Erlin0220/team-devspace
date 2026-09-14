@@ -40,11 +40,20 @@ export function clearPendingCredential(storage) {
   storage.removeItem(PENDING_KEY);
 }
 
+export function confirmMinimumPolicyChange(previousMinimum, nextMinimum, ask = globalThis.confirm) {
+  if (previousMinimum && !nextMinimum) {
+    return ask('本次保存会解除最低支持版本限制，旧客户端将不再被该门槛阻止。暂停自动推广不会保留现有最低版本限制，确认同时解除吗？');
+  }
+  return !nextMinimum || ask('到期后，低于最低支持版本或尚未上报版本的设备将不能开始新的远程工作。确认已通知员工并保留升级恢复入口吗？');
+}
+
 function errorText(code) {
   return ({
     key_label_or_id_conflict: '名称或密钥 ID 已存在',
+    deleted_key_id_cannot_be_reused: '该密钥 ID 已被永久删除，必须生成新的访问密钥',
     key_not_found: '未找到该访问密钥',
     revoked_key_cannot_be_reset: '已吊销的密钥不能重置设备',
+    revoked_key_not_ready_for_delete: '只有已吊销且云端资源已清理完成的记录才能删除',
     connectivity_cleanup_pending: '远程连接已禁用，但云端清理尚未完成',
     access_lifecycle_changed: '访问密钥状态已发生变化，请刷新页面后重试',
     invalid_key_request: '访问密钥请求无效',
@@ -257,7 +266,7 @@ function initialize() {
       const minimumSupported = minimumSelect.value || null;
       const date = document.querySelector('#policy-deadline').value;
       if (minimumSupported && !date) { showNotice(policyDialogNotice, '请设置最低版本生效时间，为员工留出更新时间。'); return; }
-      if (minimumSupported && !confirm('到期后，低于最低支持版本或尚未上报版本的设备将不能开始新的远程工作。确认已通知员工并保留升级恢复入口吗？')) return;
+      if (!confirmMinimumPolicyChange(policy.minimumSupported, minimumSupported)) return;
       fields.disabled = true;
       showNotice(policyDialogNotice, '正在验证签名发布产物并保存策略…');
       try {
@@ -415,6 +424,17 @@ function initialize() {
         actionDescription.textContent = `吊销后，“${label}”将立即失效，当前设备无法继续连接。此操作不可恢复。`;
         confirmAction.textContent = '吊销密钥';
         confirmAction.classList.add('danger');
+      } else if (action === 'delete') {
+        actionTitle.textContent = '删除吊销记录';
+        actionDescription.textContent = `永久删除“${label}”的已吊销记录。连接资源已经清理完成；删除后这个名称可以重新用于新密钥。`;
+        confirmAction.textContent = '删除记录';
+        confirmAction.classList.add('danger');
+      } else if (action === 'purge') {
+        const count = Number(button.dataset.keyCount ?? 0);
+        actionTitle.textContent = '清理全部吊销记录';
+        actionDescription.textContent = `永久删除 ${count} 条已吊销且已完成资源清理的历史记录。删除后这些名称可以重新使用。`;
+        confirmAction.textContent = '清理全部';
+        confirmAction.classList.add('danger');
       } else {
         actionTitle.textContent = '重置设备绑定';
         actionDescription.textContent = `将解除“${label}”当前设备的绑定并清理对应连接资源。访问密钥不会被吊销，可用于重新绑定设备。`;
@@ -430,13 +450,19 @@ function initialize() {
     const { action, id } = actionContext;
     clearNotice(pageNotice);
     clearNotice(actionNotice);
-    setBusy(confirmAction, true, action === 'revoke' ? '吊销中…' : '重置中…');
+    setBusy(confirmAction, true, action === 'revoke' ? '吊销中…'
+      : action === 'delete' ? '删除中…' : action === 'purge' ? '清理中…' : '重置中…');
     try {
-      const { response, result } = await adminJson(`/admin/keys/${encodeURIComponent(id)}/${action}`, {
+      const path = action === 'purge' ? '/admin/keys/purge-revoked' : `/admin/keys/${encodeURIComponent(id)}/${action}`;
+      const { response, result } = await adminJson(path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
       });
       if (!response.ok && !result.retryable) throw new Error(errorText(result.error));
-      if (result.retryable) {
+      if (action === 'delete') {
+        flash('已吊销记录已删除，该名称现在可以重新用于新密钥。');
+      } else if (action === 'purge') {
+        flash(`已清理 ${result.deleted ?? 0} 条吊销历史记录。`);
+      } else if (result.retryable) {
         flash(action === 'revoke'
           ? '访问密钥已吊销，云端连接资源暂未清理完成，系统会自动继续清理。'
           : '设备绑定已进入重置，云端连接资源暂未清理完成，系统会自动继续清理。');

@@ -5,25 +5,39 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { AdminService } from '../gateway/admin-service.mjs';
 import { adminWeb, escapeHtml, renderAdmin } from '../gateway/admin-web.mjs';
 import { adminJson, clearPendingCredential, createPendingCredential, credentialRequest,
-  loadPendingCredential, savePendingCredential } from '../assets/admin/admin.js';
+  loadPendingCredential, savePendingCredential, confirmMinimumPolicyChange } from '../assets/admin/admin.js';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const bindingId = '22222222-2222-4222-8222-222222222222';
 const row = { id, label: 'Alice', state: 'active', device_id: 'device-id', binding_id: bindingId,
-  cleanup_pending: 0, updated_at: '2026-09-10T00:00:00.000Z' };
+  cleanup_pending: 0, created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-10T00:00:00.000Z' };
 
-test('Admin Service is the single issue/list/revoke/reset lifecycle owner', async () => {
+test('pausing promotion cannot silently remove an existing minimum support requirement', () => {
+  const messages = [];
+  assert.equal(confirmMinimumPolicyChange('0.2.4', null, message => { messages.push(message); return false; }), false);
+  assert.match(messages[0], /解除最低支持版本限制/);
+  assert.equal(confirmMinimumPolicyChange('0.2.4', null, () => true), true);
+  assert.equal(confirmMinimumPolicyChange(null, null, () => assert.fail('No support policy is being changed')), true);
+  assert.equal(confirmMinimumPolicyChange(null, '0.2.5', () => false), false);
+});
+
+test('Admin Service is the single issue/list/revoke/reset/delete lifecycle owner', async () => {
   const trace = [];
   const store = {
     list: async () => [row],
+    listEvents: async () => [{ id: 1, keyId: id, label: 'Alice', event: 'created', occurredAt: row.created_at }],
     issue: async input => ({ ...row, ...input, state: 'issued', device_id: null, binding_id: null }),
+    wasDeleted: async () => false,
     byId: async () => row,
     disable: async (_id, operation) => { trace.push(`disable:${operation}`); return { ...row, state: operation === 'revoke' ? 'revoked' : 'resetting' }; },
     finishCleanup: async (_id, _binding, operation) => { trace.push(`finish:${operation}`); return true; },
+    deleteRevoked: async keyId => { trace.push(`delete:${keyId}`); return true; },
+    deleteAllRevoked: async () => { trace.push('delete:all'); return 3; },
   };
   const cloud = { remove: async () => { trace.push('cloud:remove'); } };
   const service = new AdminService(store, cloud);
   assert.equal((await service.listKeys())[0].deviceId, 'device-id');
+  assert.equal((await service.listKeyEvents())[0].event, 'created');
   assert.equal((await service.issueKey({ id, label: 'Alice', keyHash: 'a'.repeat(64) })).state, 'issued');
   assert.equal((await service.revokeKey(id)).cleanup, 'complete');
   assert.deepEqual(trace, ['disable:revoke', 'cloud:remove', 'finish:revoke']);
@@ -34,12 +48,23 @@ test('Admin Service is the single issue/list/revoke/reset lifecycle owner', asyn
   const pending = new AdminService(store, { remove: async () => { throw new Error('offline'); } });
   assert.deepEqual(await pending.revokeKey(id), {
     key: { id, label: 'Alice', state: 'revoked', deviceId: 'device-id', bindingId,
-      updatedAt: '2026-09-10T00:00:00.000Z', cleanupPending: false,
-      clientVersion: null, clientPlatform: null, versionReportedAt: null },
+      createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-10T00:00:00.000Z', revokedAt: null,
+      cleanupCompletedAt: null, cleanupPending: false,
+      clientVersion: null, clientPlatform: null, versionReportedAt: null, updateReport: null },
     cleanup: 'pending', error: 'connectivity_cleanup_pending', retryable: true,
   });
   const revoked = new AdminService({ ...store, disable: async () => null }, cloud);
   await assert.rejects(revoked.resetDevice(id), error => error.status === 409 && error.code === 'revoked_key_cannot_be_reset');
+  const archivedStore = { ...store, byId: async () => ({ ...row, state: 'revoked', cleanup_pending: 0 }) };
+  const archived = new AdminService(archivedStore, cloud);
+  assert.deepEqual(await archived.deleteRevokedKey(id), { deleted: id });
+  assert.deepEqual(await archived.deleteAllRevokedKeys(), { deleted: 3 });
+  assert.deepEqual(trace.slice(-2), [`delete:${id}`, 'delete:all']);
+  const pendingDelete = new AdminService({ ...store, byId: async () => ({ ...row, state: 'revoked', cleanup_pending: 1 }) }, cloud);
+  await assert.rejects(pendingDelete.deleteRevokedKey(id), error => error.status === 409 && error.code === 'revoked_key_not_ready_for_delete');
+  const tombstoned = new AdminService({ ...store, issue: async () => null, wasDeleted: async () => true }, cloud);
+  await assert.rejects(tombstoned.issueKey({ id, label: 'Alice', keyHash: 'a'.repeat(64) }),
+    error => error.status === 409 && error.code === 'deleted_key_id_cannot_be_reused');
 });
 
 const ACCESS_ISSUER = 'https://admin-access.example.test';
@@ -71,9 +96,12 @@ function webService() {
   return { calls,
     service: {
       listKeys: async () => [{ ...row, label: '<img src=x onerror=alert(1)>', keyHash: 'secret-hash' }],
+      listKeyEvents: async () => [{ id: 1, keyId: id, label: '<event>', event: 'deleted', occurredAt: row.updated_at }],
       issueKey: async input => { calls.push(['issue', input]); return { ...row, ...input, keyHash: undefined }; },
       revokeKey: async keyId => { calls.push(['revoke', keyId]); return { key: row, cleanup: 'complete' }; },
       resetDevice: async keyId => { calls.push(['reset', keyId]); return { key: row, cleanup: 'complete' }; },
+      deleteRevokedKey: async keyId => { calls.push(['delete', keyId]); return { deleted: keyId }; },
+      deleteAllRevokedKeys: async () => { calls.push(['purge']); return { deleted: 2 }; },
     } };
 }
 
@@ -90,6 +118,7 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
+  assert.ok(html.includes('&lt;event&gt;'));
   assert.ok(!html.includes('secret-hash') && !/ADMIN_TOKEN|MASTER_KEY|device_secret/i.test(html));
   assert.match(response.headers.get('Content-Security-Policy'), /default-src 'none'/);
   assert.match(response.headers.get('Content-Security-Policy'), /img-src 'self' data:/);
@@ -111,17 +140,24 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   assert.ok(!emptyAdmin.includes('class="admin-shell"'));
 
   const lifecycleAdmin = renderAdmin([
-    { id, label: 'Active', state: 'active', deviceId: 'device-active', bindingId, updatedAt: row.updated_at, cleanupPending: false },
-    { id: '33333333-3333-4333-8333-333333333333', label: 'Paused', state: 'suspended', deviceId: 'device-paused', bindingId, updatedAt: row.updated_at, cleanupPending: false },
-    { id: '44444444-4444-4444-8444-444444444444', label: 'Waiting', state: 'issued', deviceId: null, bindingId: null, updatedAt: row.updated_at, cleanupPending: false },
-    { id: '55555555-5555-4555-8555-555555555555', label: 'Revoked pending', state: 'revoked', deviceId: 'device-old', bindingId, updatedAt: row.updated_at, cleanupPending: true },
-    { id: '66666666-6666-4666-8666-666666666666', label: 'Revoked archived', state: 'revoked', deviceId: 'device-old', bindingId, updatedAt: row.updated_at, cleanupPending: false },
-  ]);
+    { id, label: 'Active', state: 'active', deviceId: 'device-active', bindingId, createdAt: row.created_at, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '33333333-3333-4333-8333-333333333333', label: 'Paused', state: 'suspended', deviceId: 'device-paused', bindingId, createdAt: row.created_at, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '44444444-4444-4444-8444-444444444444', label: 'Waiting', state: 'issued', deviceId: null, bindingId: null, createdAt: row.created_at, updatedAt: row.updated_at, cleanupPending: false },
+    { id: '55555555-5555-4555-8555-555555555555', label: 'Revoked pending', state: 'revoked', deviceId: 'device-old', bindingId, createdAt: row.created_at, revokedAt: row.updated_at, updatedAt: row.updated_at, cleanupPending: true },
+    { id: '66666666-6666-4666-8666-666666666666', label: 'Revoked archived', state: 'revoked', deviceId: 'device-old', bindingId, createdAt: row.created_at, revokedAt: '2026-09-09T00:00:00.000Z', cleanupCompletedAt: row.updated_at, updatedAt: row.updated_at, cleanupPending: false },
+  ], [{ keyId: id, label: 'Active', event: 'created', occurredAt: row.created_at }]);
   assert.ok(lifecycleAdmin.includes('设备端已暂停'));
   assert.ok(lifecycleAdmin.includes('待绑定'));
   assert.ok(lifecycleAdmin.includes('已吊销 · 待清理'));
-  assert.ok(lifecycleAdmin.includes('<summary>已吊销（1）</summary>'));
+  assert.ok(lifecycleAdmin.includes('<summary>已吊销历史（1）</summary>'));
+  assert.ok(lifecycleAdmin.includes('data-key-action="delete"'));
+  assert.ok(lifecycleAdmin.includes('data-key-action="purge"'));
+  assert.equal((lifecycleAdmin.match(/data-key-action="delete"/g) ?? []).length, 1,
+    'Only cleanup-complete revoked rows are deletable');
   assert.ok(lifecycleAdmin.includes('<th>设备 ID</th>'));
+  assert.ok(lifecycleAdmin.includes('<th>生命周期</th>'));
+  assert.ok(lifecycleAdmin.includes('最近操作记录（1）'));
+  assert.ok(lifecycleAdmin.includes('清理完成'));
   assert.ok(!lifecycleAdmin.includes('<th>清理状态</th>'));
 });
 
@@ -156,6 +192,17 @@ test('Admin Web accepts only same-origin hash-only POSTs and never performs life
   }), env, fixture.service);
   assert.equal(revoke.status, 200);
   assert.deepEqual(fixture.calls.at(-1), ['revoke', id]);
+  const remove = await adminWeb(new Request(`https://team.example.test/admin/keys/${id}/delete`, {
+    method: 'POST', headers: mutationHeaders, body: '{}',
+  }), env, fixture.service);
+  assert.equal(remove.status, 200);
+  assert.deepEqual(fixture.calls.at(-1), ['delete', id]);
+  const purge = await adminWeb(new Request('https://team.example.test/admin/keys/purge-revoked', {
+    method: 'POST', headers: mutationHeaders, body: '{}',
+  }), env, fixture.service);
+  assert.equal(purge.status, 200);
+  assert.deepEqual(await purge.json(), { deleted: 2 });
+  assert.deepEqual(fixture.calls.at(-1), ['purge']);
 });
 
 test('Admin browser requests time out with an uncertain-result diagnostic instead of remaining busy forever', async t => {

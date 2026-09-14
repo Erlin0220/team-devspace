@@ -48,9 +48,11 @@ Unregister-ScheduledTask -TaskName $env:TDS_TEST_TASK -Confirm:$false -ErrorActi
     const completed = await waitFor(async () => JSON.parse(await readFile(join(directory, 'result.json'), 'utf8')),
       value => Number.isInteger(value.exitCode), 'The one-shot update task did not finish after its parent exited');
     assert.equal(completed.exitCode, 0, JSON.stringify(completed));
+    assert.match(completed.attemptId, /^[a-f0-9-]{36}$/);
     const proof = await readFile(join(home, 'installer-proof.txt'), 'utf8');
     assert.ok(proof.endsWith(`/S /D=${root}`), proof);
     const request = JSON.parse(await readFile(join(directory, 'install-request.json'), 'utf8'));
+    assert.equal(completed.attemptId, request.attemptId);
     await waitFor(() => runWindowsDesktop(`if (-not (Get-ScheduledTask -TaskName $env:TDS_TEST_TASK -ErrorAction SilentlyContinue)) { 'absent' }`,
       { env: { TDS_TEST_TASK: request.taskName } }), value => value.trim() === 'absent', 'Completed task was not removed');
   });
@@ -72,6 +74,7 @@ test('Linux update reuses bootstrap in an independent installer process and clea
     const completed = await waitFor(async () => JSON.parse(await readFile(join(directory, 'result.json'), 'utf8')),
       value => Number.isInteger(value.exitCode), 'Detached Linux installer did not report completion');
     assert.equal(completed.exitCode, 0);
+    assert.match(completed.attemptId, /^[a-f0-9-]{36}$/);
     const proof = await readFile(join(home, 'installer-proof.txt'), 'utf8');
     assert.ok(proof.includes(`--root ${root} --setup none`));
   });

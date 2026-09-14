@@ -2,8 +2,8 @@
 // failures, never credentials, paths, labels, request bodies or tool output.
 const LIFECYCLE = new Set([
   'enroll', 'device_suspend', 'device_resume', 'device_release',
-  'admin_issue_key', 'admin_revoke', 'admin_reset',
-  'admin_web_issue', 'admin_web_revoke', 'admin_web_reset',
+  'admin_issue_key', 'admin_revoke', 'admin_reset', 'admin_delete_revoked', 'admin_purge_revoked',
+  'admin_web_issue', 'admin_web_revoke', 'admin_web_reset', 'admin_web_delete', 'admin_web_purge_revoked',
 ]);
 
 export function requestLogLevel(operation, status, code) {

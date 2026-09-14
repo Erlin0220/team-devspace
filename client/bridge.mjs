@@ -11,9 +11,9 @@ function matchesSecret(value, expected) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function fail(res, status, message) {
+function fail(res, status, message, headers = {}) {
   if (res.headersSent) { res.destroy(); return; }
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32000, message } }));
 }
 
@@ -60,7 +60,7 @@ export function createBridge(state, home) {
       res.end(JSON.stringify({ service: 'team-devspace-bridge', deviceId: state.deviceId, bindingId: state.bindingId }));
       return;
     }
-    if (req.url === '/update-drain' && ['POST', 'DELETE'].includes(req.method)) {
+    if (req.url === '/update-drain' && ['GET', 'POST', 'DELETE'].includes(req.method)) {
       req.resume();
       if (req.method === 'DELETE') updateDrainUntil = 0;
       else {
@@ -68,7 +68,7 @@ export function createBridge(state, home) {
         if (activeWork || (automatic && Date.now() - lastWorkAt < 10 * 60 * 1000)) { fail(res, 409, 'remote_work_active'); return; }
         // A bounded admission pause, not another installer/rollback state machine.
         // Failed handoffs release it; process restart or expiry also recovers it.
-        updateDrainUntil = Date.now() + 10 * 60 * 1000;
+        if (req.method === 'POST') updateDrainUntil = Date.now() + 10 * 60 * 1000;
       }
       res.writeHead(200, { 'Cache-Control': 'no-store' }); res.end(); return;
     }
@@ -79,7 +79,9 @@ export function createBridge(state, home) {
       fail(res, 413, 'body_too_large'); return;
     }
     if (req.method === 'POST') {
-      if (Date.now() < updateDrainUntil) { fail(res, 503, 'client_update_in_progress'); return; }
+      if (Date.now() < updateDrainUntil) {
+        fail(res, 503, 'client_update_in_progress', { 'X-Team-Update-State': 'installing', 'Retry-After': '30' }); return;
+      }
       activeWork++; lastWorkAt = Date.now();
       res.once('close', () => { activeWork--; lastWorkAt = Date.now(); });
     }

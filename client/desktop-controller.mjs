@@ -39,7 +39,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
     'project-root': ({ projectRoot, onProgress }) => changeProjectRoot(projectRoot, home, { onProgress }),
     'choose-folder': ({ signal, projectRoot }) => promptProjectRoot(projectRoot, { signal, home }),
     logs: () => openLogs(home), diagnostics: () => diagnosticReport(home),
-    'update-check': () => checkForUpdates(home, { force: true }),
+    'update-check': ({ signal }) => checkForUpdates(home, { force: true, signal }),
     'update-apply': ({ onProgress, signal }) => applyUpdate(home, { onProgress, signal }),
     'update-auto': ({ enabled }) => setAutomaticUpdates(enabled, home),
     exit: () => stopTeamDevSpace(home),
@@ -83,7 +83,11 @@ export function createDesktopController(home = stateHome(), options = {}) {
     if (action === 'check') {
       if (!pending) { notice = undefined; activity = '正在检查连接…'; publish(); }
       await refresh(true);
-      if (!pending && !closing) { activity = undefined; publish(); }
+      if (!pending && !closing) {
+        activity = undefined;
+        notice = snapshot().status === 'ready' ? '连接检查完成，一切正常' : '连接检查完成，请查看当前状态';
+        publish();
+      }
       return snapshot();
     }
     if (action === 'exit') {

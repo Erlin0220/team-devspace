@@ -15,7 +15,7 @@ try {
   $process.WaitForExit()
   $code = $process.ExitCode
 } finally {
-  $result = @{ version=$request.version; exitCode=$code; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+  $result = @{ version=$request.version; attemptId=$request.attemptId; exitCode=$code; completedAt=[DateTime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
   $temporary = $request.resultFile + '.tmp'
   [IO.File]::WriteAllText($temporary, $result, [Text.UTF8Encoding]::new($false))
   Move-Item -LiteralPath $temporary -Destination $request.resultFile -Force

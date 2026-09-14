@@ -30,6 +30,8 @@ async function fixture(t, version = '1.0.0') {
       release: version, target, commit, sourceDirty: false,
       entrypoint: { name: catalog.targets[target].file, sha256: catalog.targets[target].sha256 },
       checks: { releaseLayout: true, installerTransaction: true, installedPayload: true, zeroResidue: true,
+        existingInstallUpgrade: true,
+        nativeArchitecture: true,
         finalEntrypointTransaction: true, nativeStartup: true, trayProtocol: true, traySingleInstance: true },
       limitations: ['Synthetic test fixture, not installer execution evidence.'] }));
   }
@@ -135,7 +137,8 @@ test('homepage preview cannot publish and oversized pages fail before replacing 
 
 test('publication requires final installer evidence for exact commit and exact bytes', async t => {
   const f = await fixture(t);
-  const args = { version: f.version, root: f.input, expectedCommit: commit, requireFinalWindows: true };
+  const args = { version: f.version, root: f.input, expectedCommit: commit,
+    requireFinalWindows: true, requireInstalledUpgrade: true, requireNativeArchitecture: true };
   await verifyAcceptance(args);
   await assert.rejects(verifyAcceptance({ ...args, expectedCommit: 'b'.repeat(40) }), /another commit/);
   const path = join(f.input, 'win32-x64', 'acceptance.json');
@@ -144,6 +147,10 @@ test('publication requires final installer evidence for exact commit and exact b
   await assert.rejects(verifyAcceptance(args), /dirty source/);
   await writeFile(path, JSON.stringify({ ...evidence, checks: { ...evidence.checks, finalEntrypointTransaction: false } }));
   await assert.rejects(verifyAcceptance(args), /final Windows installer/);
+  await writeFile(path, JSON.stringify({ ...evidence, checks: { ...evidence.checks, existingInstallUpgrade: false } }));
+  await assert.rejects(verifyAcceptance(args), /not cross-version upgrade acceptance/);
+  await writeFile(path, JSON.stringify({ ...evidence, checks: { ...evidence.checks, nativeArchitecture: false } }));
+  await assert.rejects(verifyAcceptance(args), /not Rosetta-only evidence/);
   await writeFile(path, JSON.stringify(evidence));
   await writeFile(join(f.input, 'win32-x64', evidence.entrypoint.name), 'corrupt');
   await assert.rejects(verifyAcceptance(args), /differs from the accepted bytes/);

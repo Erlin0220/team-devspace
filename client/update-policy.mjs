@@ -53,12 +53,19 @@ export async function verifySignedCatalog(envelope, publicKey, expectedVersion) 
     throw new Error('Update signature verification failed');
   }
   const catalog = validateCatalog(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(unbase64url(envelope.payload))));
-  if (!UPDATE_VERSION.test(catalog.version) || catalog.version !== expectedVersion) throw new Error('Signed update release identity differs from the requested version');
+  if (!UPDATE_VERSION.test(catalog.version) || (expectedVersion !== undefined && catalog.version !== expectedVersion)) throw new Error('Signed update release identity differs from the requested version');
   return catalog;
 }
 
 export async function boundedJson(response, limit = 65536) {
-  if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error(`Update service returned HTTP ${response.status}`); }
+  if (!response.ok || !response.body) {
+    await response.body?.cancel();
+    const value = response.headers.get('Retry-After') ?? '';
+    const seconds = /^\d+$/.test(value) ? Number(value) : (Date.parse(value) - Date.now()) / 1000;
+    const retryAfterMs = [429, 503].includes(response.status) && Number.isFinite(seconds) && seconds > 0
+      ? Math.min(seconds, 86400) * 1000 : 0;
+    throw Object.assign(new Error(`Update service returned HTTP ${response.status}`), { retryAfterMs });
+  }
   const chunks = []; let size = 0;
   for await (const chunk of response.body) {
     size += chunk.byteLength;

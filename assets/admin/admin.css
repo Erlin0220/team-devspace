@@ -146,6 +146,70 @@ tbody tr:last-child td {
   margin: 0;
 }
 
+.lifecycle-times {
+  display: grid;
+  gap: .18rem;
+  min-width: 11rem;
+}
+
+.lifecycle-times span {
+  display: grid;
+  grid-template-columns: 4.25rem minmax(0, 1fr);
+  gap: .45rem;
+  align-items: baseline;
+  font-size: .82rem;
+}
+
+.lifecycle-times b {
+  color: var(--pico-muted-color);
+  font-weight: 500;
+}
+
+.revoked-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .7rem 1rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  color: var(--pico-muted-color);
+  font-size: .86rem;
+}
+
+.revoked-toolbar .danger-link {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.audit-section {
+  margin: 1rem 0 0;
+  overflow: hidden;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: calc(var(--pico-border-radius) * 1.2);
+  background: var(--pico-card-background-color);
+}
+
+.audit-section > summary {
+  margin: 0;
+  padding: .8rem 1rem;
+  font-weight: 600;
+}
+
+.audit-section[open] > summary,
+.audit-hint {
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.audit-hint {
+  padding: .7rem 1rem;
+  color: var(--pico-muted-color);
+  font-size: .86rem;
+}
+
+.audit-section .table-wrap {
+  margin: 0;
+}
+
 .notice {
   margin-block: 1rem;
   padding: .75rem .9rem;

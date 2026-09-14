@@ -44,7 +44,9 @@ test('observability retains unsampled diagnostic logs, not automatic invocation 
   assert.equal(config.observability.logs.head_sampling_rate, 1);
   assert.equal(config.observability.logs.invocation_logs, false);
   assert.equal(config.observability.redact_query_string, true);
-  assert.deepEqual(config.assets.run_worker_first, ['/*', '!/mcp-app-assets/*', '!/v1/device/status']);
+  // Expand keeps both authenticated status routes Worker-first. A static
+  // legacy tombstone is a later Contract change, not a logging optimization.
+  assert.deepEqual(config.assets.run_worker_first, ['/*', '!/mcp-app-assets/*']);
   const headers = await readFile('assets/_headers', 'utf8');
   assert.match(headers, /Access-Control-Allow-Origin: \*/);
   assert.match(headers, /Cross-Origin-Resource-Policy: cross-origin/);

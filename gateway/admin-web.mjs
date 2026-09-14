@@ -84,6 +84,39 @@ function stateText(key) {
   })[key.state] ?? '未知';
 }
 
+function localTime(value, fallback = '—') {
+  return value
+    ? `<time class="local-time" datetime="${escapeHtml(value)}">${escapeHtml(value)}</time>`
+    : `<span class="muted">${escapeHtml(fallback)}</span>`;
+}
+
+function lifecycleTimes(key) {
+  const rows = [`<span><b>创建</b>${localTime(key.createdAt)}</span>`];
+  if (key.state === 'revoked') {
+    rows.push(`<span><b>吊销</b>${localTime(key.revokedAt, '旧记录未记录')}</span>`);
+    rows.push(`<span><b>清理完成</b>${key.cleanupPending ? '<span class="muted">等待清理</span>' : localTime(key.cleanupCompletedAt)}</span>`);
+  } else if (key.updatedAt && key.updatedAt !== key.createdAt) {
+    rows.push(`<span><b>最近变更</b>${localTime(key.updatedAt)}</span>`);
+  }
+  return `<div class="lifecycle-times">${rows.join('')}</div>`;
+}
+
+function eventText(value) {
+  return ({ created: '创建密钥', revoked: '吊销密钥', revoked_cleanup_completed: '连接资源清理完成',
+    reset: '重置设备绑定', deleted: '删除吊销记录' })[value] ?? value;
+}
+
+function renderAudit(events) {
+  if (!events.length) return '';
+  const rows = events.map(event => `<tr><td class="key-name">${escapeHtml(event.label)}</td>` +
+    `<td>${escapeHtml(eventText(event.event))}</td>` +
+    `<td><code title="${escapeHtml(event.keyId)}">${escapeHtml(`${String(event.keyId).slice(0, 8)}…`)}</code></td>` +
+    `<td>${localTime(event.occurredAt)}</td></tr>`).join('');
+  return `<details class="audit-section"><summary>最近操作记录（${events.length}）</summary>` +
+    `<div class="audit-hint">只保留密钥生命周期元数据，不保存 Access Key、密钥哈希、设备密钥或项目数据。最多显示最近 100 条。</div>` +
+    `<div class="table-wrap"><table><thead><tr><th>名称</th><th>操作</th><th>Key ID</th><th>时间</th></tr></thead><tbody>${rows}</tbody></table></div></details>`;
+}
+
 function renderKeyRow(key) {
   const id = escapeHtml(key.id);
   const label = escapeHtml(key.label);
@@ -91,6 +124,14 @@ function renderKeyRow(key) {
   const fullDevice = key.deviceId ? escapeHtml(key.deviceId) : '';
   const device = key.deviceId ? `${String(key.deviceId).slice(0, 8)}…` : '';
   const status = `${stateText(key)}${key.cleanupPending ? ' · 待清理' : ''}`;
+  const report = key.updateReport;
+  const updateText = report && ({ installed: '安装完成', restart_required: '等待重启确认', failed: '安装未完成',
+    deferred: '更新已延后', awaiting_authorization: '等待系统授权', installer_pending: '安装器结果待确认' })[report.status];
+  const updateSnapshot = updateText ? `<br><small title="低频更新快照，不代表实时在线状态">${escapeHtml(report.targetVersion)} · ${updateText}` +
+    `${key.versionReportedAt ? ` · <time class="local-time" datetime="${escapeHtml(key.versionReportedAt)}">${escapeHtml(key.versionReportedAt)}</time>` : ''}</small>` : '';
+  const clientReport = key.versionReportedAt
+    ? `<br><small title="客户端低频上报时间，不代表实时在线状态">最近客户端上报 · ${localTime(key.versionReportedAt)}</small>`
+    : '';
   const buttons = [];
   if (key.bindingId && ['active', 'suspended'].includes(key.state)) {
     buttons.push(`<button type="button" class="secondary outline" data-key-action="reset" data-key-id="${id}" data-key-label="${label}">重置设备</button>`);
@@ -98,24 +139,30 @@ function renderKeyRow(key) {
   if (!['revoked', 'resetting'].includes(key.state)) {
     buttons.push(`<button type="button" class="danger-link" data-key-action="revoke" data-key-id="${id}" data-key-label="${label}">吊销</button>`);
   }
+  if (key.state === 'revoked' && !key.cleanupPending) {
+    buttons.push(`<button type="button" class="danger-link" data-key-action="delete" data-key-id="${id}" data-key-label="${label}">删除记录</button>`);
+  }
   return `<tr><td class="key-name">${label}</td><td><span class="state state-${state}${key.cleanupPending ? ' state-cleanup' : ''}">${escapeHtml(status)}</span></td>` +
-    `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code><br><small>${key.clientVersion ? `v${escapeHtml(key.clientVersion)} · ${escapeHtml(key.clientPlatform)}` : '版本未上报；旧客户端需先手动安装一次新版'}</small>` : '<span class="muted">未绑定</span>'}</td>` +
-    `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
+    `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code><br><small>${key.clientVersion ? `v${escapeHtml(key.clientVersion)} · ${escapeHtml(key.clientPlatform)}` : '版本未上报；旧客户端需先手动安装一次新版'}</small>${clientReport}` : '<span class="muted">未绑定</span>'}</td>` +
+    `<td>${lifecycleTimes(key)}${updateSnapshot}</td>` +
     `<td class="actions"><div class="action-buttons">${buttons.join(' ') || '—'}</div></td></tr>`;
 }
 
 function keyTable(rows, emptyText) {
-  return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>设备 ID</th><th>最近变更</th><th>操作</th></tr></thead>` +
+  return `<div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>设备 ID</th><th>生命周期</th><th>操作</th></tr></thead>` +
     `<tbody>${rows || `<tr class="empty-row"><td colspan="5">${escapeHtml(emptyText)}</td></tr>`}</tbody></table></div>`;
 }
 
-export function renderAdmin(keys) {
+export function renderAdmin(keys, events = []) {
   const activeKeys = keys.filter(key => key.state !== 'revoked' || key.cleanupPending);
   const revokedKeys = keys.filter(key => key.state === 'revoked' && !key.cleanupPending);
   const rows = activeKeys.map(renderKeyRow).join('');
   const revokedRows = revokedKeys.map(renderKeyRow).join('');
   const revokedSection = revokedKeys.length
-    ? `<details class="revoked-section"><summary>已吊销（${revokedKeys.length}）</summary>${keyTable(revokedRows, '暂无已吊销记录')}</details>` : '';
+    ? `<details class="revoked-section"><summary>已吊销历史（${revokedKeys.length}）</summary>` +
+      `<div class="revoked-toolbar"><span>这些记录已完成连接资源清理。删除后名称可以重新用于新密钥。</span>` +
+      `<button type="button" class="danger-link" data-key-action="purge" data-key-count="${revokedKeys.length}">清理全部</button></div>` +
+      `${keyTable(revokedRows, '暂无已吊销记录')}</details>` : '';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<title>Team DevSpace 管理后台</title><link rel="stylesheet" href="/admin/assets/pico.min.css">` +
     `<link rel="stylesheet" href="/admin/assets/admin.css">` +
@@ -126,6 +173,7 @@ export function renderAdmin(keys) {
     `<p id="notice" class="notice" role="alert" hidden></p>` +
     `<section class="table-card" aria-label="访问密钥列表">${keyTable(rows, revokedKeys.length ? '暂无有效或待处理的访问密钥' : '暂无访问密钥')}</section>` +
     revokedSection +
+    renderAudit(events) +
     `<dialog id="policy-dialog" aria-labelledby="policy-dialog-title"><article class="policy-dialog-card">` +
     `<header class="dialog-header"><div><h2 id="policy-dialog-title">编辑版本策略</h2>` +
     `<p>调整自动推广与最低支持版本，不会远程强制执行安装器。</p></div>` +
@@ -174,7 +222,8 @@ export async function adminWeb(request, env, service, updates) {
     return new Response(request.method === 'HEAD' ? null : asset.body, { status: asset.status, headers: output });
   }
   if ((pathname === '/admin' || pathname === '/admin/') && request.method === 'GET') {
-    return new Response(renderAdmin(await service.listKeys()), { headers: headers('text/html; charset=utf-8') });
+    const [keys, events] = await Promise.all([service.listKeys(), service.listKeyEvents(100)]);
+    return new Response(renderAdmin(keys, events), { headers: headers('text/html; charset=utf-8') });
   }
   if (pathname === '/admin/update-policy' && updates) {
     if (request.method === 'GET') return json(await updates.read());
@@ -191,11 +240,17 @@ export async function adminWeb(request, env, service, updates) {
     throw new AdminWebError(410, 'download_commands_retired');
   }
   const createKey = pathname === '/admin/keys' && request.method === 'POST';
-  const lifecycleMatch = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
+  const purgeRevoked = pathname === '/admin/keys/purge-revoked' && request.method === 'POST';
+  const lifecycleMatch = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset|delete)$/.exec(pathname);
   const lifecycleAction = request.method === 'POST' && lifecycleMatch && UUID.test(lifecycleMatch[1]);
-  if (!createKey && !lifecycleAction) throw new AdminWebError(404, 'not_found');
+  if (!createKey && !purgeRevoked && !lifecycleAction) throw new AdminWebError(404, 'not_found');
 
   requireMutation(request, env);
+  if (purgeRevoked) {
+    const body = await smallJson(request);
+    if (Object.keys(body).length) throw new AdminWebError(400, 'invalid_key_request');
+    return json(await service.deleteAllRevokedKeys());
+  }
   if (createKey) {
     const body = await smallJson(request);
     if (Object.keys(body).sort().join(',') !== 'id,keyHash,label' || !UUID.test(body.id ?? '') ||
@@ -203,6 +258,7 @@ export async function adminWeb(request, env, service, updates) {
         body.label.length > 100 || /[\x00-\x1f]/.test(body.label)) throw new AdminWebError(400, 'invalid_key_request');
     return json(await service.issueKey({ id: body.id, label: body.label.trim(), keyHash: body.keyHash }), 201);
   }
+  if (lifecycleMatch[2] === 'delete') return json(await service.deleteRevokedKey(lifecycleMatch[1]));
   const result = lifecycleMatch[2] === 'revoke'
     ? await service.revokeKey(lifecycleMatch[1])
     : await service.resetDevice(lifecycleMatch[1]);

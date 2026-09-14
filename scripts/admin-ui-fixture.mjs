@@ -47,9 +47,32 @@ if (command === 'start') {
     ['/admin/assets/admin.css', ['assets/admin/admin.css', 'text/css']],
     ['/admin/assets/pico.min.css', ['assets/admin/pico.min.css', 'text/css']],
   ]);
-  const keys = [{ id: '12345678-1234-4234-8234-123456789abc', label: 'Browser acceptance fixture',
-    state: 'active', deviceId: '12345678-1234-4234-8234-123456789def',
-    bindingId: '12345678-1234-4234-8234-123456789fed', updatedAt: new Date().toISOString() }];
+  const keys = [
+    { id: '12345678-1234-4234-8234-123456789abc', label: 'Browser acceptance fixture',
+      state: 'active', deviceId: '12345678-1234-4234-8234-123456789def',
+      bindingId: '12345678-1234-4234-8234-123456789fed', createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
+      updatedAt: new Date().toISOString() },
+    { id: '22345678-1234-4234-8234-123456789abc', label: '待清理示例',
+      state: 'revoked', deviceId: '22345678-1234-4234-8234-123456789def',
+      bindingId: '22345678-1234-4234-8234-123456789fed', cleanupPending: true,
+      createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+      revokedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      updatedAt: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+    { id: '32345678-1234-4234-8234-123456789abc', label: '已吊销历史示例',
+      state: 'revoked', deviceId: '32345678-1234-4234-8234-123456789def',
+      bindingId: '32345678-1234-4234-8234-123456789fed', cleanupPending: false,
+      createdAt: new Date(Date.now() - 9 * 86400000).toISOString(),
+      revokedAt: new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString(),
+      cleanupCompletedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() },
+  ];
+  const events = [
+    { keyId: '42345678-1234-4234-8234-123456789abc', label: '已删除旧记录示例', event: 'deleted',
+      occurredAt: new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString() },
+    { keyId: keys[2].id, label: keys[2].label, event: 'revoked_cleanup_completed', occurredAt: keys[2].cleanupCompletedAt },
+    { keyId: keys[2].id, label: keys[2].label, event: 'revoked', occurredAt: keys[2].revokedAt },
+    { keyId: keys[0].id, label: keys[0].label, event: 'created', occurredAt: keys[0].createdAt },
+  ];
   let timer;
   const stop = () => {
     clearTimeout(timer);
@@ -71,7 +94,7 @@ if (command === 'start') {
         setImmediate(stop);
       } else if (request.url === '/admin' && request.method === 'GET') {
         response.setHeader('Content-Type', 'text/html; charset=utf-8');
-        response.end(renderAdmin(keys));
+        response.end(renderAdmin(keys, events));
       } else if (assets.has(request.url) && request.method === 'GET') {
         const [path, type] = assets.get(request.url);
         response.setHeader('Content-Type', `${type}; charset=utf-8`);

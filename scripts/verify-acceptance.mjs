@@ -8,7 +8,7 @@ import { sha256File } from './build-utils.mjs';
 
 export async function verifyAcceptance({ version = release.version, targets = release.distribution.targets,
   root = resolve('release', 'offline', version), expectedCommit,
-  requireFinalWindows = false } = {}) {
+  requireFinalWindows = false, requireInstalledUpgrade = false, requireNativeArchitecture = false } = {}) {
 for (const target of targets) {
   const path = join(root, target, 'acceptance.json');
   const evidence = JSON.parse(await readFile(path, 'utf8'));
@@ -23,6 +23,10 @@ for (const target of targets) {
   assert.equal(evidence.checks?.releaseLayout, true, `${target}: release layout was not accepted`);
   assert.equal(evidence.checks?.installerTransaction, true, `${target}: installer transaction was not accepted`);
   assert.equal(evidence.checks?.installedPayload, true, `${target}: extracted/installed payload contents were not accepted`);
+  if (requireInstalledUpgrade) assert.equal(evidence.checks?.existingInstallUpgrade, true,
+    `${target}: a same-version reinstall or clean install is not cross-version upgrade acceptance`);
+  if (requireNativeArchitecture) assert.equal(evidence.checks?.nativeArchitecture, true,
+    `${target}: native CPU architecture acceptance is required, not Rosetta-only evidence`);
   assert.equal(evidence.checks?.zeroResidue, true, `${target}: acceptance did not prove cleanup of its own lifecycle/install residue`);
   assert.ok(evidence.entrypoint?.name && /^[a-f0-9]{64}$/.test(evidence.entrypoint.sha256 ?? ''), `${target}: invalid accepted entrypoint identity`);
   assert.equal(evidence.entrypoint.name, packageName(version, target), `${target}: unexpected installer filename`);

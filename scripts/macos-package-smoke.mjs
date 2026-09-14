@@ -7,12 +7,14 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { run } from './build-utils.mjs';
 import release from '../release.config.json' with { type: 'json' };
+import { downloadUpgradeBaseline, UPGRADE_BASELINES } from './upgrade-baselines.mjs';
 
 // This test installs the actual package-owned paths. Never run it on an employee
 // Mac, or disguise a developer workstation as CI to bypass this boundary.
 if (process.platform !== 'darwin' || process.getuid() === 0 ||
-    process.env.CI !== 'true' || !process.env.CM_BUILD_ID) {
-  throw new Error('System PKG acceptance requires a disposable, non-root Codemagic build session');
+    process.env.CI !== 'true' || !(process.env.CM_BUILD_ID ||
+      (process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_OS === 'macOS'))) {
+  throw new Error('System PKG acceptance requires a disposable, non-root Codemagic or GitHub macOS session');
 }
 const app = '/Applications/Team DevSpace.app';
 const command = '/usr/local/bin/team-devspace';
@@ -46,7 +48,7 @@ await mkdir(project);
 await writeFile(join(project, 'keep.txt'), 'employee project must survive');
 const environment = { NODE_OPTIONS: '', TEAM_DEVSPACE_HOME: home };
 const active = async () => (await readFile(join(distribution, 'active-path'), 'utf8')).trim();
-const install = () => run('/usr/bin/sudo', ['-n', '/usr/sbin/installer', '-pkg', pkg, '-target', '/'], { timeout: 240000 });
+const install = (installer = pkg) => run('/usr/bin/sudo', ['-n', '/usr/sbin/installer', '-pkg', installer, '-target', '/'], { timeout: 240000 });
 const screenshots = [];
 async function captureVisibleUI(name) {
   // Capture the real installed app, not a recreated design. Screen-recording
@@ -128,7 +130,7 @@ try {
   await cancelPostinstallFirstRun();
   await run('/bin/sh', [bootstrap, '--root', distribution, '--manifest', manifest, '--setup', 'none'],
     { env: environment, timeout: 240000 });
-  const first = await active();
+  let first = await active();
   assert.ok(first.startsWith(`${distribution}/versions/`));
   await run(process.execPath, ['scripts/verify-release.mjs', '--target', target, '--installed', first]);
   // Reuse the existing runtime/MCP lifecycle test, now against the installed
@@ -147,6 +149,30 @@ try {
   await openAndWait();
   await captureVisibleUI('paused-menu-bar');
   await run(command, ['project-root', 'show'], { env: environment });
+  const identityFields = ['deviceId', 'keyId', 'bindingId', 'accessKey', 'deviceSecret', 'ownerToken',
+    'currentProjectRoot', 'remoteAccess'];
+  const verifyIdentity = async () => {
+    const actual = JSON.parse(await readFile(join(home, 'state.json'), 'utf8'));
+    for (const key of identityFields) assert.equal(actual[key], state[key], `Upgrade changed ${key}`);
+    assert.equal(await readFile(join(project, 'keep.txt'), 'utf8'), 'employee project must survive');
+  };
+  for (const version of Object.keys(UPGRADE_BASELINES)) {
+    const baseline = await downloadUpgradeBaseline(version, target);
+    // The disposable runner owns these paths. Remove current binaries using
+    // the real uninstall path; retain enrolled state for the older real PKG.
+    await run('/bin/sh', [bootstrap, '--mode', 'uninstall', '--root', distribution], { env: environment });
+    await install(baseline);
+    await openAndWait();
+    assert.equal(JSON.parse(await readFile(join(await active(), 'release.config.json'), 'utf8')).version, version);
+    await verifyIdentity();
+    await install();
+    await openAndWait();
+    await verifyIdentity();
+    await run(process.execPath, ['scripts/verify-release.mjs', '--target', target, '--installed', await active()]);
+    console.log(JSON.stringify({ nativeUpgrade: true, target, from: version, to: release.version,
+      baselineSha256: UPGRADE_BASELINES[version][target], seededEnrollment: true }));
+  }
+  first = await active();
   await install();
   await openAndWait();
   assert.equal(await active(), first, 'Reopening the same release must not unnecessarily unpack it');

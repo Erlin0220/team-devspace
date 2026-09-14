@@ -8,6 +8,7 @@ import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
 import { adminUpdatePolicy, publicUpdatePolicy, saveUpdatePolicy, updateRules, publicationLease } from './update-policy.mjs';
 import { UPDATE_VERSION, versionUnsupported } from '../client/update-policy.mjs';
 import { DOWNLOAD_TARGETS } from '../client/release-catalog.mjs';
+import { validateUpdateReport } from '../client/update-report.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/;
@@ -142,7 +143,10 @@ async function deviceStatus(request, store) {
 async function reportDeviceVersion(request, store) {
   const { row, body } = await deviceIdentity(request, store);
   validateClientInventory(body, true);
-  await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
+  let report;
+  try { if (body.updateReport !== undefined) report = validateUpdateReport(body.updateReport); }
+  catch { throw new HttpError(400, 'invalid_update_report'); }
+  await store.reportVersion(row.id, row.binding_id, body.version, body.platform, report);
   return json({ reported: true });
 }
 
@@ -203,6 +207,13 @@ async function admin(request, env, store, pathname) {
     }
     return json(await service.issueKey({ ...body, label: body.label.trim() }), 201);
   }
+  if (pathname === '/v1/admin/keys/revoked' && request.method === 'DELETE') {
+    return json(await service.deleteAllRevokedKeys());
+  }
+  const deleteMatch = /^\/v1\/admin\/keys\/([a-f0-9-]+)$/.exec(pathname);
+  if (deleteMatch && request.method === 'DELETE' && UUID.test(deleteMatch[1])) {
+    return json(await service.deleteRevokedKey(deleteMatch[1]));
+  }
   const match = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
   if (!match || request.method !== 'POST' || !UUID.test(match[1])) throw new HttpError(404, 'not_found');
   const [, id, operation] = match;
@@ -254,6 +265,12 @@ async function proxyMcp(request, env, store) {
       signal: request.signal,
     });
   } catch { throw new HttpError(503, 'device_offline'); }
+  // Only the authenticated per-binding Bridge may mark this condition. Never
+  // forward an arbitrary upstream error body/header as an actionable response.
+  if (upstream.status === 503 && upstream.headers.get('X-Team-Update-State') === 'installing') {
+    await upstream.body?.cancel();
+    throw new HttpError(503, 'client_update_in_progress');
+  }
   if (upstream.status >= 500 || upstream.status === 530) {
     await upstream.body?.cancel();
     throw new HttpError(503, 'device_offline');
@@ -300,7 +317,8 @@ export function requestOperation(method, pathname) {
   if (pathname.startsWith('/admin/assets/')) return 'admin_web_asset';
   if ((pathname === '/admin' || pathname === '/admin/') && method === 'GET') return 'admin_web_list';
   if (pathname === '/admin/keys' && method === 'POST') return 'admin_web_issue';
-  const webAction = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
+  if (pathname === '/admin/keys/purge-revoked' && method === 'POST') return 'admin_web_purge_revoked';
+  const webAction = /^\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset|delete)$/.exec(pathname);
   if (method === 'POST' && webAction && UUID.test(webAction[1])) return `admin_web_${webAction[2]}`;
   if (pathname.startsWith('/mcp-app-assets/')) return 'assets';
   if (pathname === '/health' && method === 'GET') return 'health';
@@ -321,6 +339,9 @@ export function requestOperation(method, pathname) {
   if (pathname === '/v1/device/release' && method === 'POST') return 'device_release';
   if (pathname === '/v1/admin/keys' && method === 'GET') return 'admin_list_keys';
   if (pathname === '/v1/admin/keys' && method === 'POST') return 'admin_issue_key';
+  if (pathname === '/v1/admin/keys/revoked' && method === 'DELETE') return 'admin_purge_revoked';
+  const deleteKey = /^\/v1\/admin\/keys\/([a-f0-9-]+)$/.exec(pathname);
+  if (method === 'DELETE' && deleteKey && UUID.test(deleteKey[1])) return 'admin_delete_revoked';
   const action = /^\/v1\/admin\/keys\/([a-f0-9-]+)\/(revoke|reset)$/.exec(pathname);
   if (method === 'POST' && action && UUID.test(action[1])) return `admin_${action[2]}`;
   return 'not_found';
@@ -378,6 +399,7 @@ export default {
       if (status === 401) response.headers.set('WWW-Authenticate', 'Bearer realm="Team DevSpace"');
     }
     response.headers.set('X-Request-Id', requestId);
+    if (errorCode === 'client_update_in_progress') response.headers.set('Retry-After', '30');
     if (env.RELEASE_VERSION) response.headers.set('X-Team-Release', env.RELEASE_VERSION);
     if (!errorCode && response.status >= 400) {
       errorCode = response.status === 503 && ['admin_revoke', 'admin_reset'].includes(operation)

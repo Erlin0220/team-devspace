@@ -1,4 +1,5 @@
 import { readFile, readdir, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { run as runCommand, sha256File } from './build-utils.mjs';
 import { restoreDeployment, waitForReadiness } from './deploy-checks.mjs';
 import { resolve, join, sep } from 'node:path';
@@ -147,12 +148,31 @@ if (values['dry-run']) {
   const probes = { gateway, release, adminToken: admin.adminToken };
   let uploadAttempted = false;
   let readiness;
+  const bindingSnapshot = async () => {
+    const path = `/accounts/${accountId}/d1/database/${database.uuid}/query`;
+    const table = await api(path, 'POST', { sql: "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'access_keys'" });
+    if (!table[0]?.results?.length) return null; // First deployment, before schema creation.
+    const result = await api(path, 'POST', { sql: 'SELECT id, key_hash, state, device_id, binding_id, device_secret_hash, tunnel_id FROM access_keys ORDER BY id' });
+    const rows = result[0]?.results;
+    if (!Array.isArray(rows)) throw new Error('Cannot record pre/post-migration device identity');
+    // Never persist or log credentials, employee labels or raw binding rows.
+    return { count: rows.length, sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex') };
+  };
   const secretsFile = join(directory, 'worker-secrets.json');
   await atomicJson(secretsFile, { ADMIN_TOKEN: admin.adminToken, MASTER_KEY: admin.masterKey, CF_API_TOKEN: config.runtimeToken });
   try {
     // Migrations must remain backward compatible with the previous release.
     // Worker version recovery cannot undo D1 schema/data changes.
+    await run(wrangler, ['d1', 'time-travel', 'info', 'DB', '--json', '--config', generatedFile]);
+    const beforeMigration = await bindingSnapshot();
     await run(wrangler, ['d1', 'migrations', 'apply', 'DB', '--remote', '--config', generatedFile]);
+    const afterMigration = await bindingSnapshot();
+    const identitiesPreserved = beforeMigration === null || beforeMigration.sha256 === afterMigration?.sha256;
+    const migrationReceipt = { databaseId: database.uuid, checkedAt: new Date().toISOString(),
+      before: beforeMigration, after: afterMigration, identitiesPreserved, timeTravelBookmarkLogged: true };
+    await atomicJson(join(directory, 'd1-migration-receipt.json'), migrationReceipt);
+    console.log(JSON.stringify({ migrationReceipt }));
+    if (!identitiesPreserved) throw new Error('Device identity or authorization changed during migration; the previous Worker remains active. Reconcile concurrent lifecycle changes before retrying.');
     uploadAttempted = true;
     await run(wrangler, ['deploy', '--config', generatedFile, '--secrets-file', secretsFile, '--minify', '--autoconfig=false']);
     await waitForReadiness(probes);

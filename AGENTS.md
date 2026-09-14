@@ -14,6 +14,12 @@ Use the single-context domain documentation layout. See `docs/agents/domain.md`.
 
 ## Team DevSpace durable decisions
 
+### Release acceptance freeze (2026-09-15)
+
+- New publication must include real cross-version installer acceptance and matching native CPU evidence, not just same-version reinstall, extracted payload checks or Rosetta. Retained 0.2.3/0.2.4 package hashes in `scripts/upgrade-baselines.mjs` are test fixtures, never automatic downgrade targets.
+- Keep builds on the existing local Windows/WSL and Codemagic paths. The GitHub Intel workflow only re-accepts the exact already-built x64 PKG from a private draft, checks its original source/hash receipt, and returns native acceptance. It must never rebuild or silently replace that package.
+- Capture the D1 Time Travel bookmark and compare redacted pre/post-migration binding summaries before switching the Worker. An unexpected lifecycle/identity change stops deployment before Worker upload; reconcile rather than bypass this guard.
+
 These are long-lived product and architecture constraints that are easy to miss when reading one source file. Current code, tests, release metadata, and real runtime behavior remain authoritative when they conflict with this section.
 
 ### Thin architecture
@@ -49,9 +55,11 @@ The update controller is a thin control layer over the existing installers. Veri
 - The updater should resolve the immutable package for its platform, verify its expected identity, and then hand off to the existing installation path. Do not build another updater-owned activation/rollback state machine.
 - Preserve Device identity, Access Key/binding, Current Project Root, and the user's desired remote-access pause state across upgrades.
 - Before unattended automatic installation is broadly enabled, use independently signed update metadata verified by a client-embedded public key. HTTPS plus a package hash served by the same download origin is not an independent trust boundary.
-- Once automatic rollout exists, retain the releases referenced by `stable`, `auto`, and at least one recent known-good predecessor. Do not immediately prune every previous server release after promotion.
+- Once automatic rollout exists, retain the releases referenced by `stable`, `auto`, `minimumSupported`, and at least one recent known-good predecessor. Do not immediately prune every previous server release after promotion.
 - Keep fleet policy small until scale justifies more: no percentage rollout, department cohorts, per-device pins, maintenance calendars, or update queue service by default.
-- If the Admin UI later shows client versions, update that inventory at startup, after a successful upgrade, and/or with a low-frequency heartbeat rather than continuous database writes.
+- Fleet inventory reuses enrollment/resume and low-frequency update checks, not a new heartbeat. Reports describe observed version/attempt outcomes, not real-time health or proof of migration; an installer exit code alone does not establish the running version. A changed version/platform must not inherit an older report.
+- Check and apply use distinct locks. Persist failure backoff for the running version, cancel in-flight checks on exit, and reject unresolved installer attempts before network/download work. Record the actual apply target rather than a stale cached channel value.
+- Preserve the current client policy contract when changing Admin controls. Removing a minimum support requirement must be explicit, including when pausing automatic promotion would clear it; see `docs/updates.md` for the existing ordering constraint and safe pause alternative.
 
 ### Desktop and lifecycle invariants
 
@@ -75,6 +83,16 @@ The update controller is a thin control layer over the existing installers. Veri
 - Gateway is the authorization/control plane, not a duplicate software-distribution service. Keep release packages and immutable package metadata on the download origin rather than copying them into D1/Worker state.
 - Local UI can refresh frequently, but external Gateway/D1/Cloudflare reads and writes should be cached, event-driven, or low-frequency where possible.
 - Device lifecycle remains fail-closed. Update convenience must not weaken per-binding authorization, reset/revoke semantics, or MCP session isolation.
+- Device display caching is not authorization caching: MCP requests continue to read current binding state from primary D1. Only fleet policy/stable discovery has a bounded cache; concurrent reads coalesce and invalidated reads cannot refill it later.
+- Apply backward-compatible D1 migrations before switching to a Worker that reads the new schema. Verify cleanup indexes with query plans and rows read, not merely their existence; keep migrations out of review-only runs.
+
+### Status API migration
+
+When changing status routes, publishing a client, retiring legacy polling, or selecting a Gateway rollback, read the Expand/Migrate/Contract section in `docs/updates.md`.
+
+- Expand: deploy a Gateway that authenticates and serves both legacy `/v1/device/status` and replacement `/v1/device/status-v2` before shipping clients that require v2. Both routes remain Worker-first during migration; an in-Worker rejection does not remove Worker request usage.
+- Migrate: publish and verify actual installed clients, including the recovery plan for offline/legacy devices. Updating source, the release alias, or a low-frequency inventory row alone is not evidence that every client migrated.
+- Contract: retire legacy polling in a separate approved change only after migration evidence and recovery paths exist. Preserve a v2-capable Gateway rollback after clients migrate; do not combine the first v2 client release with a static bypass/tombstone for the old endpoint.
 
 ### Release verification
 
