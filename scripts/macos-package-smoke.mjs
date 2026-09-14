@@ -103,6 +103,20 @@ async function cancelPostinstallFirstRun() {
   await sleep(250);
 }
 async function openAndWait() {
+  // Postinstall can see the existing tray before the transactional upgrade
+  // releases app-launch.lock. Never delete its ready marker and then ask a
+  // concurrent launcher to recreate it: that launcher correctly exits while
+  // the first owner is still running, leaving an artificial missing marker.
+  const previousDeadline = Date.now() + 120000;
+  while (await exists(join(home, 'app-launch.lock'))) {
+    const owner = await lockPid(join(home, 'app-launch.lock', 'pid'));
+    if (owner) {
+      try { process.kill(owner, 0); }
+      catch (error) { if (error.code === 'ESRCH') break; throw error; }
+    }
+    if (Date.now() >= previousDeadline) throw new Error('Previous native app launch did not finish');
+    await sleep(250);
+  }
   await rm(join(home, '.ui-ready'), { force: true });
   await run('/usr/bin/open', [app]);
   const deadline = Date.now() + 120000;
