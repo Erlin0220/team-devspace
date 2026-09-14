@@ -33,14 +33,20 @@ export class Cloudflare {
         signal: AbortSignal.timeout(15000),
       });
     } catch {
+      console.error(JSON.stringify({ event: 'cloudflare_api_failed', method, status: 0, reason: 'network' }));
       throw new CloudflareError(503);
     }
     if (missingOk && response.status === 404) return null;
     if (response.status >= 300 && response.status < 400) throw new CloudflareError(502, 'cloudflare_redirect_rejected');
     let envelope;
-    try { envelope = await response.json(); } catch { throw new CloudflareError(response.status); }
+    try { envelope = await response.json(); } catch {
+      console.error(JSON.stringify({ event: 'cloudflare_api_failed', method, status: response.status, reason: 'invalid_response' }));
+      throw new CloudflareError(response.status);
+    }
     if (!response.ok || envelope.success === false) {
-      // Never include the API's response body; it can contain tunnel credentials.
+      // Only numeric provider codes are safe to log; response messages/body can contain credentials.
+      const codes = Array.isArray(envelope.errors) ? envelope.errors.map(item => item?.code).filter(Number.isInteger).slice(0, 3) : [];
+      console.error(JSON.stringify({ event: 'cloudflare_api_failed', method, status: response.status, codes }));
       throw new CloudflareError(response.status);
     }
     return envelope.result;

@@ -45,6 +45,11 @@ test('mobile, desktop-mode iPad, ChromeOS and unknown platforms never get a gues
   ]) assert.ok(!resolve(browser, { architecture: 'x86', bitness: '64' }).target);
 });
 
+test('postinstall recovery alert cannot hold the native Installer open indefinitely', async () => {
+  const script = await readFile('platform/macos/postinstall', 'utf8');
+  assert.match(script, /display alert[^\n]+giving up after 30/);
+});
+
 test('both AppKit project pickers enable folder creation without a custom file manager', async () => {
   const swift = await readFile('native/macos/TeamDevSpaceUI.swift', 'utf8');
   const panels = swift.split('let picker = NSOpenPanel()').slice(1);

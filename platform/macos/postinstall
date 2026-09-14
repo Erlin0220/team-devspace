@@ -20,7 +20,8 @@ case "$USER_ID" in
     ;;
 esac
 show_launch_help() {
-  if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/osascript -e 'display alert "Team DevSpace 需要完成设置" message "Team DevSpace 已安装，但安装后的应用启动未能确认。请从“应用程序”手动打开 Team DevSpace。若 macOS 阻止打开，请前往“系统设置 → 隐私与安全性”，对 Team DevSpace 选择“仍要打开”，然后再次打开。随后会弹出 Access Key，并在设置完成后显示菜单栏图标。" as warning buttons {"好"} default button "好"'; then
+  # A recovery hint must not hold Installer open while nobody can dismiss it.
+  if ! /bin/launchctl asuser "$USER_ID" /usr/bin/sudo -u "$USER_NAME" /usr/bin/osascript -e 'display alert "Team DevSpace 需要完成设置" message "Team DevSpace 已安装，但安装后的应用启动未能确认。请从“应用程序”手动打开 Team DevSpace。若 macOS 阻止打开，请前往“系统设置 → 隐私与安全性”，对 Team DevSpace 选择“仍要打开”，然后再次打开。随后会弹出 Access Key，并在设置完成后显示菜单栏图标。" as warning buttons {"好"} default button "好" giving up after 30'; then
     log 'WARN code=USER_ALERT_FAILED'
   fi
 }
