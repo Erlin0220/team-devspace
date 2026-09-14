@@ -10,7 +10,7 @@ workflows:
           - x64
         default: arm64
     labels:
-      - macOS ${{ inputs.architecture }}
+      - macOS package
     instance_type: mac_mini_m2
     max_build_duration: 45
     environment:
@@ -26,7 +26,15 @@ workflows:
         script: |
           set -euo pipefail
 
-          requested_arch="${{ inputs.architecture }}"
+          # REST builds use documented environment variables; UI builds retain
+          # the existing architecture input. Never silently build another ref.
+          requested_arch="${TEAM_DEVSPACE_BUILD_ARCHITECTURE:-${{ inputs.architecture }}}"
+          expected_commit="${TEAM_DEVSPACE_EXPECTED_COMMIT:-}"
+          if [ -n "$expected_commit" ]; then
+            [[ "$expected_commit" =~ ^[a-f0-9]{40}$ ]]
+            test "$(git rev-parse HEAD)" = "$expected_commit"
+            git diff --quiet HEAD --
+          fi
           case "$requested_arch" in
             arm64) go_arch=arm64; macho_arch=arm64 ;;
             x64) go_arch=amd64; macho_arch=x86_64 ;;

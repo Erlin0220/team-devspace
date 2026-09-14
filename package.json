@@ -23,6 +23,7 @@
     "downloads:deploy": "node scripts/publish-downloads.mjs --init-server",
     "downloads:site": "node scripts/publish-downloads.mjs --site-only",
     "downloads:preview": "node scripts/publish-downloads.mjs --preview",
+    "macos:ci": "node scripts/codemagic.mjs",
     "acceptance:platform": "node scripts/platform-acceptance.mjs",
     "acceptance:local": "npm run check && npm test && npm run test:distribution && npm run deploy -- --dry-run && npm run package -- --reuse-dependencies && npm run acceptance:platform",
     "acceptance:linux:wsl": "pwsh -NoProfile -File scripts/linux-wsl.ps1",
