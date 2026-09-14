@@ -375,6 +375,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         picker.canChooseFiles = false
         picker.canChooseDirectories = true
         picker.allowsMultipleSelection = false
+        picker.canCreateDirectories = true
         picker.prompt = "选择"
         picker.message = "选择 Team DevSpace 当前项目目录"
         if !formProjectRoot.isEmpty, FileManager.default.fileExists(atPath: formProjectRoot) {
@@ -491,7 +492,7 @@ struct Main {
             picker.canChooseFiles = false
             picker.canChooseDirectories = true
             picker.allowsMultipleSelection = false
-            picker.canCreateDirectories = false
+            picker.canCreateDirectories = true
             picker.prompt = "选择"
             picker.message = "选择 Team DevSpace 当前项目目录"
             if let root = ProcessInfo.processInfo.environment["TEAM_DEVSPACE_CURRENT_PROJECT_ROOT"],
@@ -508,7 +509,8 @@ struct Main {
             }
             withExtendedLifetime(instance) {
                 let result = picker.runModal()
-                var fields: [String: Any] = ["projectRoot": NSNull(), "visible": visiblyPresented]
+                var fields: [String: Any] = ["projectRoot": NSNull(), "visible": visiblyPresented,
+                                           "canCreateDirectories": picker.canCreateDirectories]
                 if result == .OK, let path = picker.url?.path { fields["projectRoot"] = path }
                 emit("folder-result", fields)
             }

@@ -2,6 +2,7 @@ import { equalSecret, seal, sha256, unseal } from './crypto.mjs';
 import { KeyStore } from './store.mjs';
 import { Cloudflare, CloudflareError } from './cloudflare.mjs';
 import assets from './assets.mjs';
+import { logRequest } from './observability.mjs';
 import { AdminService, AdminServiceError } from './admin-service.mjs';
 import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
 
@@ -260,11 +261,11 @@ export async function reconcileCleanup(env, dependencies = {}) {
       await cloud.remove(row);
       if (await store.finishCleanup(row.id, row.binding_id, operation)) completed++;
     } catch (error) {
-      console.log(JSON.stringify({ event: 'cleanup_retry_failed', keyId: row.id,
+      console.error(JSON.stringify({ event: 'cleanup_retry_failed', keyId: row.id,
         code: error instanceof CloudflareError ? error.code : 'cloudflare_unavailable' }));
     }
   }
-  console.log(JSON.stringify({ event: 'cleanup_reconciled', completed }));
+  if (completed) console.info(JSON.stringify({ event: 'cleanup_reconciled', completed }));
 }
 
 // Return only internal enum values. Never log dynamic paths, labels or IDs.
@@ -345,8 +346,9 @@ export default {
         ? 'connectivity_cleanup_pending' : 'request_rejected';
     }
     // Deliberately no URL query, headers, credentials, input, output, or exception text.
-    console.log(JSON.stringify({ event: 'request', requestId, operation, status: response.status,
-      ...(errorCode ? { code: errorCode } : {}), durationMs: Date.now() - started }));
+    // This ends when response headers are ready, not when an MCP stream finishes.
+    logRequest({ requestId, operation, status: response.status, code: errorCode,
+      gatewayDurationMs: Date.now() - started });
     return response;
   },
   scheduled(controller, env, ctx) {

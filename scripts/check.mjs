@@ -44,10 +44,12 @@ if (Object.keys(deployment).some(key => !['databaseId', 'accessApplicationId'].i
   throw new Error('deployment.config.json stores only owned D1 and Access Application resource IDs');
 }
 
-if (wrangler.assets?.binding !== 'ASSETS' || wrangler.assets?.run_worker_first !== true) {
-  throw new Error('The single gateway Worker must serve static assets through its ASSETS binding');
+if (wrangler.assets?.binding !== 'ASSETS' ||
+    JSON.stringify(wrangler.assets?.run_worker_first) !== JSON.stringify(['/*', '!/mcp-app-assets/*'])) {
+  throw new Error('Only public MCP assets may bypass the Worker; authenticated routes must remain Worker-first');
 }
-if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string) {
+if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string ||
+    wrangler.observability.logs.invocation_logs !== false || wrangler.observability.logs.head_sampling_rate !== 1) {
   throw new Error('Gateway must keep privacy-aware Workers Logs enabled');
 }
 if (wrangler.workers_dev !== false || wrangler.preview_urls !== false) {

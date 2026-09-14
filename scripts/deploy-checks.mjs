@@ -18,7 +18,10 @@ export async function probeDeployment({ gateway, release, adminToken, asset, fet
   if (asset) {
     const response = await get(asset.path);
     if (!response.ok || response.headers.get('Access-Control-Allow-Origin') !== '*' ||
-        response.headers.get('X-Team-Release') !== release.version ||
+        response.headers.get('Cross-Origin-Resource-Policy') !== 'cross-origin' ||
+        response.headers.get('X-Content-Type-Options') !== 'nosniff' ||
+        !/immutable/.test(response.headers.get('Cache-Control') ?? '') ||
+        response.headers.has('X-Request-Id') ||
         createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex') !== asset.sha256) {
       throw new Error('readiness_assets_failed');
     }

@@ -87,7 +87,7 @@ export function downloadPage(catalog, origin, { stable = false } = {}) {
       <div class="platform-head">${platformIcon(target)}<span class="file-format">${meta.format}</span></div>
       <h3>${meta.name}</h3><p class="arch">${meta.arch}</p><p class="platform-note">${meta.note}</p>
       <div class="package-meta"><span>v${catalog.version}</span><span>${sizeMiB(catalog.targets[target].size)}</span></div>
-      <a class="button package-button" href="${urls[target]}" aria-label="下载 ${meta.label} 安装包">下载安装包 ${arrow}</a>
+      <a class="button package-button" data-download-target="${target}" data-download-label="${meta.label}" href="${urls[target]}" aria-label="下载 ${meta.label} 安装包">下载安装包 ${arrow}</a>
       <a class="checksum" href="${urls[target]}.sha256" aria-label="${meta.label} 的 SHA-256 校验值">SHA-256 校验值 <span aria-hidden="true">↗</span></a>
     </article>`;
   }).join('\n');
@@ -169,7 +169,8 @@ ${stable ? '' : `<div class="historical">固定版本 ${catalog.version} · 安�
     <span class="release-pill"><span class="dot" aria-hidden="true"></span>${versionLabel}<span aria-hidden="true"> / </span>Team DevSpace</span>
     <h1 id="hero-title"><span class="headline-top">把开发现场，</span><span class="headline-bottom">带进 <em class="hero-word">ChatGPT</em>。</span></h1>
     <p class="hero-lead">让网页 ChatGPT 连接<strong>你自己的开发环境</strong>。<br>同一个下载网址，安装后输入 Access Key，<br>从你选择的项目目录开始工作。</p>
-    <div class="hero-actions"><a class="button button-primary" href="${urls['win32-x64']}">${platformIcon('win32-x64')}下载 Windows x64 ${arrow}</a><a class="button button-secondary" href="#download">macOS / Linux <span aria-hidden="true">↗</span></a></div>
+    <div class="hero-actions"><a class="button button-primary" data-primary-download href="#download"><span data-download-title>选择平台下载</span> ${arrow}</a><a class="button button-secondary" href="#download">所有平台 <span aria-hidden="true">↗</span></a></div>
+    <p class="hero-note" id="platform-guidance" aria-live="polite">支持 Windows、macOS 与 Linux，请选择适合的安装包。</p>
     <p class="hero-note">无需 GitHub 登录 · 无需临时票据<br><b>安装完成后</b>，再输入管理员发放的 Access Key。</p>
   </div></div>
 </section>
@@ -192,7 +193,7 @@ ${stable ? '' : `<div class="historical">固定版本 ${catalog.version} · 安�
 </div></section>
 <section class="section faq-section" id="faq" aria-labelledby="faq-title"><div class="shell faq-layout"><div class="faq-intro"><p class="section-kicker">03 / BEFORE YOU CONNECT</p><h2 id="faq-title">开始之前，<br>你可能还想知道。</h2><p>下载、授权和日常使用，各自清楚。<br>不隐藏限制，也不增加多余步骤。</p></div><div class="faq-list">
   <details><summary>还没有 Access Key，可以先下载吗？</summary><div class="faq-answer"><p>可以。所有员工使用同一个固定下载站，无需 GitHub 登录、临时票据或管理员生成下载链接。下载和安装不等于获得远程访问权限。</p><p>安装后向管理员获取 Access Key，在 Team DevSpace 内完成设备绑定。下载站不接收 Access Key，也不要把它写进下载链接或发到公开群聊。</p></div></details>
-  <details><summary>Mac 应该选 Apple Silicon 还是 Intel？</summary><div class="faq-answer"><p>在 Mac 左上角的 Apple 菜单中打开“关于本机”。显示 Apple M 系列芯片，选择 Apple Silicon；显示 Intel 处理器，选择 Intel。</p><p>不确定时可使用上方 macOS / Linux 安装命令。脚本会识别芯片架构，包括 Apple Silicon 上的 Rosetta 环境。</p></div></details>
+  <details><summary>Mac 应该选 Apple Silicon 还是 Intel？</summary><div class="faq-answer"><p>在 Mac 左上角的 Apple 菜单中打开“关于本机”。显示 Apple M 系列芯片，选择 Apple Silicon；显示 Intel 处理器，选择 Intel。</p><p>浏览器能提供可靠芯片信息时，首页会自动选择；Safari 等无法提供架构信息时，请手动选择，不会仅凭“Intel Mac”浏览器标识猜测。也可使用上方 macOS / Linux 安装命令，脚本会识别芯片架构，包括 Apple Silicon 上的 Rosetta 环境。</p></div></details>
   <details open><summary>安装时出现系统安全提示，怎么办？</summary><div class="faq-answer" id="security"><p>当前采用 internal-free 团队内部分发模式，不提供 Windows 公共代码签名信誉，也未提供 Apple Developer ID 签名与公证。首次安装可能被系统提示或阻止，这不是已经通过商店认证的软件。</p><p>先确认安装包来自本站，核对对应版本的 SHA-256；仍被阻止时，请联系管理员确认安装方式。不要关闭 Gatekeeper、导入陌生根证书或关闭系统防护。</p><p>SHA-256 可检查文件损坏和版本混用，但其信任来自同一个 HTTPS 下载站，不能替代独立数字签名或担保服务器未被入侵。</p></div></details>
   <details><summary>安装 Linux 离线包后，怎样开始配置？</summary><div class="faq-answer"><p>Linux 包面向 x86_64、glibc 2.34 及以上环境。推荐使用上方安装命令，由脚本完成下载、校验与安装；手动下载时，解压后按包内说明安装。</p><p>安装完成后运行 <code>~/.local/bin/team-devspace setup</code>，按提示输入 Access Key 并选择项目目录。支持现有 systemd 与无 systemd 安装流程。</p></div></details>
   <details><summary>可以更换项目、暂停连接或更换 Key 吗？</summary><div class="faq-answer"><p>可以，在 Team DevSpace 的本地设置中操作，无需重新下载软件。远程开发时，运行客户端的开发机需要保持在线；关机或暂停远程访问后，ChatGPT 无法继续连接。</p><p>一个 Access Key 绑定一台设备。要把同一 Key 移到另一台设备，请先联系管理员重置绑定。</p></div></details>

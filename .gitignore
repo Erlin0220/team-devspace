@@ -6,6 +6,7 @@ assets/
 !assets/
 assets/*
 !assets/download-site.js
+!assets/_headers
 !assets/admin/
 !assets/admin/**
 release/

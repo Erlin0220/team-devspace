@@ -5,6 +5,8 @@ import { healthMatches, probeDeployment, restoreDeployment, waitForReadiness } f
 
 const release = { version: '9.2.1', devspaceVersion: '2.3.4', controlApiVersion: 1 };
 const content = 'export const asset = true;';
+const assetHeaders = { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin',
+  'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=31536000, immutable' };
 const asset = { path: '/mcp-app-assets/test.js', sha256: createHash('sha256').update(content).digest('hex') };
 function fixture(overrides = {}) {
   const trace = [];
@@ -16,7 +18,7 @@ function fixture(overrides = {}) {
       if (path === '/health') return Response.json({ service: 'team-devspace', release: release.version,
         devspace: release.devspaceVersion, controlApi: release.controlApiVersion });
       if (path === '/v1/admin/keys') return Response.json({ keys: [] });
-      return new Response(content, { headers: { 'Access-Control-Allow-Origin': '*', 'X-Team-Release': release.version } });
+      return new Response(content, { headers: assetHeaders });
     } } };
 }
 
@@ -40,7 +42,7 @@ test('deployment readiness follows both canonical versions, not a baked-in upstr
 test('green health alone cannot hide broken D1/admin or stale static assets', async () => {
   await assert.rejects(probeDeployment(fixture({ '/v1/admin/keys': () => new Response('unavailable', { status: 503 }) }).options), /admin_or_d1/);
   await assert.rejects(probeDeployment(fixture({ '/mcp-app-assets/test.js': () => new Response('stale', {
-    headers: { 'Access-Control-Allow-Origin': '*', 'X-Team-Release': release.version },
+    headers: assetHeaders,
   }) }).options), /assets_failed/);
   let attempts = 0;
   const f = fixture({ '/health': () => ++attempts === 1 ? new Response('', { status: 503 })

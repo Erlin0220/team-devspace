@@ -127,6 +127,7 @@ if (process.platform === 'darwin') {
   assert.equal(selected.event, 'folder-result');
   assert.equal(selected.visible, true, 'The real AppKit directory picker must be visibly presented');
   assert.equal(selected.projectRoot, null, 'Cancelling the directory picker must not mutate settings');
+  assert.equal(selected.canCreateDirectories, true, 'The real AppKit picker must allow native folder creation');
 }
 child.stdin.end();
 const code = await new Promise((resolveExit, reject) => {
