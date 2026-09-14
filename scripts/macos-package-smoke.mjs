@@ -161,6 +161,10 @@ try {
     // The disposable runner owns these paths. Remove current binaries using
     // the real uninstall path; retain enrolled state for the older real PKG.
     await run('/bin/sh', [bootstrap, '--mode', 'uninstall', '--root', distribution], { env: environment });
+    // Apple Installer does not replace a newer version-checked application
+    // bundle with an older one. Remove our owned app and receipt as well so
+    // this really establishes the old baseline, not a disguised current app.
+    await removePackageFiles();
     await install(baseline);
     await openAndWait();
     assert.equal(JSON.parse(await readFile(join(await active(), 'release.config.json'), 'utf8')).version, version);
