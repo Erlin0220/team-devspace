@@ -45,8 +45,8 @@ if (Object.keys(deployment).some(key => !['databaseId', 'accessApplicationId'].i
 }
 
 if (wrangler.assets?.binding !== 'ASSETS' ||
-    JSON.stringify(wrangler.assets?.run_worker_first) !== JSON.stringify(['/*', '!/mcp-app-assets/*', '!/v1/device/status'])) {
-  throw new Error('Only public MCP assets and the retired legacy status endpoint may bypass the Worker; active authenticated routes must remain Worker-first');
+    JSON.stringify(wrangler.assets?.run_worker_first) !== JSON.stringify(['/*', '!/mcp-app-assets/*'])) {
+  throw new Error('Only public MCP assets may bypass the Worker during the status API migration; both legacy and replacement authenticated status routes must remain Worker-first');
 }
 if (!wrangler.observability?.enabled || !wrangler.observability?.logs?.enabled || !wrangler.observability?.redact_query_string ||
     wrangler.observability.logs.invocation_logs !== false || wrangler.observability.logs.head_sampling_rate !== 1) {

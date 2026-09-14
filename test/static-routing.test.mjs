@@ -15,13 +15,11 @@ test('public MCP assets bypass the Worker while all control/admin routes remain 
   const directory = await mkdtemp(join(tmpdir(), 'tds-static-routing-'));
   await mkdir(join(directory, 'mcp-app-assets', 'assets'), { recursive: true });
   await mkdir(join(directory, 'admin'));
-  await mkdir(join(directory, 'v1', 'device'), { recursive: true });
   await writeFile(join(directory, '_headers'), await readFile('assets/_headers'));
   const content = 'export const asset = true;';
   await writeFile(join(directory, 'mcp-app-assets', 'assets', 'fixture-123.js'), content);
   await writeFile(join(directory, 'mcp-app-assets', 'workspace-app.html'), '<!doctype html><title>fixture</title>');
   await writeFile(join(directory, 'admin', 'admin.js'), '/* must require Access */');
-  await writeFile(join(directory, 'v1', 'device', 'status'), '{"error":"client_upgrade_required"}');
   const mf = new Miniflare({ modules: true, script, compatibilityDate: config.compatibility_date,
     d1Databases: { DB: 'static-routing-test' }, log: new Log(LogLevel.ERROR),
     bindings: { RELEASE_VERSION: 'test', DEVSPACE_VERSION: '1.0.8', CONTROL_API_VERSION: '1',
@@ -53,8 +51,8 @@ test('public MCP assets bypass the Worker while all control/admin routes remain 
   assert.equal(html.status, 200, 'Public HTML does not add a redirect request');
   assert.equal(html.headers.has('X-Request-Id'), false);
   const legacyStatus = await mf.dispatchFetch('https://team.example.test/v1/device/status', { method: 'POST' });
-  assert.equal(legacyStatus.status, 405, 'Legacy five-second status polling terminates in the asset router');
-  assert.equal(legacyStatus.headers.has('X-Request-Id'), false, 'Legacy status must not invoke the Worker');
+  assert.equal(legacyStatus.status, 401, 'Legacy status remains authenticated Worker traffic during migration');
+  assert.ok(legacyStatus.headers.get('X-Request-Id'));
   const currentStatus = await mf.dispatchFetch('https://team.example.test/v1/device/status-v2', { method: 'POST' });
   assert.equal(currentStatus.status, 401, 'Current status endpoint remains authenticated Worker traffic');
   assert.ok(currentStatus.headers.get('X-Request-Id'));

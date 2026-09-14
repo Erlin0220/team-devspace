@@ -312,7 +312,10 @@ export function requestOperation(method, pathname) {
   if (pathname === '/v1/admin/update-policy') return 'admin_update_policy';
   if (pathname === '/v1/admin/publication') return 'admin_publication';
   if (pathname === '/admin/update-policy') return 'admin_web_update_policy';
-  if (pathname === '/v1/device/status-v2' && method === 'POST') return 'device_status';
+  // Expand phase for the control-plane migration: keep the legacy endpoint
+  // available while new clients move to status-v2. Retire the legacy route only
+  // after the replacement client is published and observed in the fleet.
+  if ((pathname === '/v1/device/status' || pathname === '/v1/device/status-v2') && method === 'POST') return 'device_status';
   if (pathname === '/v1/device/suspend' && method === 'POST') return 'device_suspend';
   if (pathname === '/v1/device/resume' && method === 'POST') return 'device_resume';
   if (pathname === '/v1/device/release' && method === 'POST') return 'device_release';
