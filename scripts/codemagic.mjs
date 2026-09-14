@@ -116,9 +116,10 @@ export function publicBuild(build) {
 
 async function loadConfig(path, env = process.env) {
   const stored = await readJson(path, {});
-  const config = { appId: env.CODEMAGIC_APP_ID ?? stored.appId, teamId: env.CODEMAGIC_TEAM_ID ?? stored.teamId,
-    token: env.CM_API_TOKEN ?? env.CODEMAGIC_API_TOKEN ?? stored.token };
-  if (!ID.test(config.appId ?? '') || !/^[A-Za-z0-9_-]{1,128}$/.test(config.teamId ?? '') ||
+  const teamId = env.CODEMAGIC_TEAM_ID ?? stored.teamId;
+  const config = { appId: env.CODEMAGIC_APP_ID ?? stored.appId,
+    ...(teamId ? { teamId } : {}), token: env.CM_API_TOKEN ?? env.CODEMAGIC_API_TOKEN ?? stored.token };
+  if (!ID.test(config.appId ?? '') || (config.teamId && !/^[A-Za-z0-9_-]{1,128}$/.test(config.teamId)) ||
       typeof config.token !== 'string' || !config.token.trim() || /[\r\n]/.test(config.token)) {
     throw new Error('Codemagic credentials are missing or invalid. Run macos:ci -- configure --help; never put credentials in the repository.');
   }
@@ -134,11 +135,17 @@ async function getBuild(config, id) {
   return build;
 }
 
-async function listBuilds(config) {
-  const query = new URLSearchParams({ app_id: config.appId, workflow_id: WORKFLOW, page_size: '100' });
-  const result = await apiRequest(`/teams/${config.teamId}/builds?${query}`, config);
-  if (!Array.isArray(result.data)) throw new Error('Unexpected Codemagic build-list response');
-  return result.data;
+export async function listBuilds(config) {
+  if (config.teamId) {
+    const query = new URLSearchParams({ app_id: config.appId, workflow_id: WORKFLOW, page_size: '100' });
+    const result = await apiRequest(`/teams/${config.teamId}/builds?${query}`, config);
+    if (!Array.isArray(result.data)) throw new Error('Unexpected Codemagic build-list response');
+    return result.data;
+  }
+  const result = await apiRequest('/user/apps?page_size=100', config);
+  const app = result.data?.find(item => item.id === config.appId);
+  if (!app) throw new Error('Configured Codemagic app is not visible to this API token');
+  return app.last_build_id ? [await getBuild(config, app.last_build_id)] : [];
 }
 
 async function ensureRemoteTag(commit) {
@@ -232,7 +239,7 @@ export async function main(argv = process.argv.slice(2)) {
   } });
   const [action] = positionals;
   if (values.help || !action) {
-    console.log('Codemagic manual macOS builds\n  configure --app-id <id> --team-id <id>  Save CM_API_TOKEN in the protected per-user directory\n  start [--arch both|arm64|x64]          Reuse matching builds; start only missing targets\n  status                              Read current cloud state (no waiting/daemon)\n  collect                             Download and verify final PKGs, SHA256 and acceptance\n  status|collect --arch <arch> --build-id <id>  Inspect/reuse an existing build\n  --commit <full-sha>                  Default: current HEAD\n  --directory <path>                   Default: release/offline/<version>\n  --retry                             Explicitly retry a failed/ambiguous submission AFTER checking the cloud\n\nUse CM_API_TOKEN/CODEMAGIC_API_TOKEN, CODEMAGIC_APP_ID and CODEMAGIC_TEAM_ID, or configure once. Never pass the token as a command argument. A start creates an immutable ci/macos-<sha> tag; no push triggers are added. Build IDs only are saved under ignored build/codemagic/. Collection never promotes stable or changes update policy.');
+    console.log('Codemagic manual macOS builds\n  configure --app-id <id> [--team-id <id>]  Save CM_API_TOKEN in the protected per-user directory\n  start [--arch both|arm64|x64]          Reuse matching builds; start only missing targets\n  status                              Read current cloud state (no waiting/daemon)\n  collect                             Download and verify final PKGs, SHA256 and acceptance\n  status|collect --arch <arch> --build-id <id>  Inspect/reuse an existing build\n  --commit <full-sha>                  Default: current HEAD\n  --directory <path>                   Default: release/offline/<version>\n  --retry                             Explicitly retry a failed/ambiguous submission AFTER checking the cloud\n\nUse CM_API_TOKEN/CODEMAGIC_API_TOKEN and CODEMAGIC_APP_ID; CODEMAGIC_TEAM_ID is optional for team-owned apps. Or configure once. Never pass the token as a command argument. A start creates an immutable ci/macos-<sha> tag; no push triggers are added. Build IDs only are saved under ignored build/codemagic/. Collection never promotes stable or changes update policy.');
     return;
   }
   if (positionals.length !== 1 || !['configure', 'start', 'status', 'collect'].includes(action)) throw new Error('Unknown Codemagic command');
@@ -243,7 +250,7 @@ export async function main(argv = process.argv.slice(2)) {
     const config = await loadConfig(path, { ...process.env,
       CODEMAGIC_APP_ID: values['app-id'] ?? process.env.CODEMAGIC_APP_ID,
       CODEMAGIC_TEAM_ID: values['team-id'] ?? process.env.CODEMAGIC_TEAM_ID });
-    await listBuilds(config); // Validate the account/app/team boundary before saving.
+    await listBuilds(config); // Validate the app, and the team boundary when one is configured.
     await secureStateDirectory(dirname(path));
     await atomicJson(path, config);
     console.log(JSON.stringify({ configured: true, appId: config.appId, teamId: config.teamId, credentialFile: path }));

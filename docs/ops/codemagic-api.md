@@ -16,7 +16,7 @@ No push/tag trigger is added to Codemagic. The command creates a non-moving `ci/
 
 ## One-time operator credentials
 
-Use the existing Codemagic account's API token from **User settings / Integrations / Codemagic API**, and that application's App ID and owning Team ID. This may require interactive GitHub/SSO login once. Do not extract unrelated browser profiles or send a password/token to chat. A GitHub API token is not a Codemagic API token.
+Use the existing Codemagic account's API token from **User settings / Integrations / Codemagic API** and the application's App ID. `Team ID` is optional and only needed for a team-owned app. Personal-account apps are validated through `/api/v3/user/apps`; the latest visible app build is enough for opportunistic reuse, while build IDs created by this command remain the primary status source. Do not create a Codemagic team just to satisfy this operator command. This may require interactive GitHub/SSO login once. Do not extract unrelated browser profiles or send a password/token to chat. A GitHub API token is not a Codemagic API token.
 
 The default protected file is `~/.team-devspace-admin/codemagic.json`, outside the repository. Configuration uses the existing current-user/SYSTEM Windows ACL helper (0700 directory and 0600 file on Unix). It never adds credentials to Git, the package, Gateway or the download server. This is a bearer credential protected by OS permissions, not a claim of hardware-backed encrypted storage. Rotate/revoke it in Codemagic when necessary.
 
@@ -26,14 +26,14 @@ In a local PowerShell 7 terminal, with the project as the working directory:
 $secret = Read-Host 'Codemagic API Token' -AsSecureString
 $env:CM_API_TOKEN = [System.Net.NetworkCredential]::new('', $secret).Password
 try {
-  npm run macos:ci -- configure --app-id <app-id> --team-id <team-id>
+  npm run macos:ci -- configure --app-id <app-id>
 } finally {
   Remove-Item Env:CM_API_TOKEN -ErrorAction SilentlyContinue
   $secret.Dispose()
 }
 ```
 
-`configure` validates a read request before saving. A controlled CI/agent environment can instead supply `CM_API_TOKEN` (or `CODEMAGIC_API_TOKEN`), `CODEMAGIC_APP_ID` and `CODEMAGIC_TEAM_ID`. Never put the token in command arguments. `--config` may point to another operator-owned location outside the repository.
+`configure` validates a read request before saving. For a team-owned app add `--team-id <team-id>`. A controlled CI/agent environment can instead supply `CM_API_TOKEN` (or `CODEMAGIC_API_TOKEN`) and `CODEMAGIC_APP_ID`; `CODEMAGIC_TEAM_ID` is optional. Never put the token in command arguments. `--config` may point to another operator-owned location outside the repository.
 
 ## Normal DevSpace commands
 
@@ -45,7 +45,7 @@ npm run macos:ci -- status
 npm run macos:ci -- collect
 ```
 
-`start` defaults to both architectures. `--arch arm64` or `--arch x64` selects one. It first looks for matching cloud builds and reuses queued/running/successful ones. Recent-build discovery is bounded to the latest 100 workflow builds; a known older eligible build can be selected explicitly. The command verifies full build details before concluding that a UI-triggered architecture is missing.
+`start` defaults to both architectures. `--arch arm64` or `--arch x64` selects one. For team-owned apps it can scan the latest 100 workflow builds; for personal-account apps the official v3 API currently exposes the app's latest build, while build IDs created by this command are saved locally and queried directly. A known older eligible build can always be selected explicitly with `--build-id`. The command verifies full build details before reuse.
 
 `status` performs a bounded query and exits; the agent can inspect it again while doing other work. There is no daemon, background delivery promise or long-held browser/DevSpace request. Build IDs and an unresolved submission marker are saved under ignored `build/codemagic/<commit>.json`. The existing `proper-lockfile` dependency prevents concurrent local submissions. Cloud build status remains authoritative.
 

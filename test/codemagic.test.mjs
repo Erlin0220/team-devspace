@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { apiRequest, buildRequest, buildArchitecture, matchesBuild, requiredArtifacts,
-  publicBuild, collectBuild, findReusableBuild } from '../scripts/codemagic.mjs';
+  publicBuild, collectBuild, findReusableBuild, listBuilds } from '../scripts/codemagic.mjs';
 
 const appId = 'a'.repeat(24), commit = 'b'.repeat(40), id = 'c'.repeat(24);
 const token = 'private-test-token';
@@ -85,6 +85,36 @@ test('authentication failures are not retried or echoed, and oversized metadata 
   } }), error => /HTTP 401/.test(error.message) && !error.message.includes(token));
   assert.equal(calls, 1);
   await assert.rejects(apiRequest('/builds', { token, fetcher: async () => new Response('x'.repeat(4 * 1024 * 1024 + 1)) }), /size limit/);
+});
+
+test('personal accounts discover only the latest app build without requiring a team id', async () => {
+  const seen = [];
+  const builds = await listBuilds({ appId, token, fetcher: async url => {
+    seen.push(url);
+    if (url === 'https://codemagic.io/api/v3/user/apps?page_size=100') {
+      return Response.json({ data: [{ id: appId, name: 'team-devspace', last_build_id: id }] });
+    }
+    if (url === `https://codemagic.io/api/v3/builds/${id}`) return Response.json({ data: baseBuild() });
+    return new Response(null, { status: 404 });
+  } });
+  assert.deepEqual(seen, [
+    'https://codemagic.io/api/v3/user/apps?page_size=100',
+    `https://codemagic.io/api/v3/builds/${id}`,
+  ]);
+  assert.equal(builds.length, 1);
+  assert.equal(builds[0].id, id);
+});
+
+test('personal account validation accepts an app with no previous builds', async () => {
+  const builds = await listBuilds({ appId, token, fetcher: async url => {
+    assert.equal(url, 'https://codemagic.io/api/v3/user/apps?page_size=100');
+    return Response.json({ data: [{ id: appId, name: 'team-devspace', last_build_id: null }] });
+  } });
+  assert.deepEqual(builds, []);
+});
+
+test('personal account validation rejects an app not visible to the token', async () => {
+  await assert.rejects(listBuilds({ appId, token, fetcher: async () => Response.json({ data: [] }) }), /not visible/);
 });
 
 test('reuse requires exact app, workflow, actual commit and architecture', () => {
