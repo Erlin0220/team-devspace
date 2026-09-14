@@ -259,7 +259,7 @@ test('Device suspend is fail-closed before local stop and resume waits for the e
   const denied = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'initialize' });
   assert.equal(denied.status, 403);
   assert.equal((await denied.json()).error.message, 'remote_access_suspended');
-  const status = await f.request('/v1/device/status', device.deviceSecret, identity);
+  const status = await f.request('/v1/device/status-v2', device.deviceSecret, identity);
   assert.equal((await status.json()).state, 'suspended');
   assert.equal((await f.request('/v1/device/resume', secret(), identity)).status, 403);
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -328,7 +328,7 @@ test('offline is explicit; revoke fails closed even when cloud cleanup fails and
   assert.equal(failed.status, 503);
   assert.equal((await failed.json()).cleanup, 'pending');
   assert.equal((await f.request('/mcp', key.accessKey)).status, 401);
-  assert.equal((await f.request('/v1/device/status', device.deviceSecret, { keyId: key.id, bindingId: binding.bindingId })).status, 403);
+  assert.equal((await f.request('/v1/device/status-v2', device.deviceSecret, { keyId: key.id, bindingId: binding.bindingId })).status, 403);
   f.switches.cleanupFailure = false;
   assert.equal((await f.request(`/v1/admin/keys/${key.id}/revoke`, f.adminToken, {})).status, 200);
   assert.equal(f.tunnels.size, 0); assert.equal(f.records.size, 0);
@@ -469,7 +469,7 @@ test('minimum support blocks only new unsupported work and retains version repor
   assert.equal(blocked.status, 426); assert.equal((await blocked.json()).error.message, 'client_upgrade_required');
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp', { headers: {
     Authorization: `Bearer ${key.accessKey}`, 'mcp-session-id': session } })).status, 200);
-  assert.equal((await f.request('/v1/device/status', device.deviceSecret, identity)).status, 200);
+  assert.equal((await f.request('/v1/device/status-v2', device.deviceSecret, identity)).status, 200);
   assert.equal((await f.request('/v1/device/version', key.accessKey, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 403);
   assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: 'bad', platform: 'win32-x64' })).status, 400);
   assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 200);

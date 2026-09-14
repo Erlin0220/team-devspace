@@ -76,7 +76,7 @@ const server = http.createServer(async (request, response) => {
       controlApiVersion: release.controlApiVersion, state: 'suspended',
       hostname: 'not-a-real-tunnel.invalid', tunnelToken: 'not-a-valid-cloudflare-token',
       endpoint: `http://127.0.0.1:${server.address().port}/mcp` }));
-  } else if (request.url === '/v1/device/status') {
+  } else if (request.url === '/v1/device/status-v2') {
     response.end(JSON.stringify({ state: 'active', bindingId, deviceId: value.deviceId }));
   } else { response.statusCode = 404; response.end('{}'); }
 });

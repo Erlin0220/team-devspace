@@ -11,7 +11,9 @@ import { applyUpdate, checkForUpdates, downloadVerifiedPackage, setAutomaticUpda
 import { atomicJson, RELEASE_VERSION } from '../client/state.mjs';
 import { updateTestCatalog, updateTestBytes, updateTestPublicKey, signUpdateFixture } from './update-fixture.mjs';
 
-const policy = overrides => ({ schema: 1, stable: '0.2.5', auto: null, minimumSupported: null, enforceAfter: null, revision: 0, ...overrides });
+const NEXT_VERSION = '0.2.6';
+const policy = overrides => ({ schema: 1, stable: NEXT_VERSION, auto: null, minimumSupported: null, enforceAfter: null, revision: 0, ...overrides });
+const nextCatalog = () => updateTestCatalog(NEXT_VERSION);
 async function temporary(t) {
   const home = await mkdtemp(join(tmpdir(), 'tds-updates-test-'));
   t.after(() => rm(home, { recursive: true, force: true })); return home;
@@ -23,21 +25,21 @@ test('update metadata APIs work in the actual Workers runtime without Node-only 
       return Response.json(await boundedJson(response)); } catch (error) { return Response.json({ name: error.name, message: error.message, stack: error.stack }, { status: 500 }); } } };`,
     resolveDir: resolve('.') }, bundle: true, platform: 'browser', format: 'esm', write: false })).outputFiles[0].text;
   const mf = new Miniflare({ modules: true, script, compatibilityDate: '2026-06-01', log: new Log(LogLevel.ERROR),
-    outboundService: () => Response.json(updateTestCatalog()) });
+    outboundService: () => Response.json(nextCatalog()) });
   t.after(() => mf.dispose());
   const response = await mf.dispatchFetch('https://worker.test');
   const body = await response.json(); assert.equal(response.status, 200, JSON.stringify(body));
-  assert.deepEqual(body, updateTestCatalog());
+  assert.deepEqual(body, nextCatalog());
 });
 
 test('version policy uses numeric ordering and explicit grace, never aliases or unsupported prereleases', () => {
   assert.equal(compareVersions('0.2.10', '0.2.9'), 1);
   assert.equal(compareVersions('1.0.0', '1.0.0'), 0);
   for (const invalid of ['latest', '0.2.4-rc1', '00.2.4', '../0.2.4', '1.2']) assert.throws(() => compareVersions(invalid, '0.2.4'));
-  assert.throws(() => validateUpdatePolicy(policy({ auto: '0.2.6' })));
+  assert.throws(() => validateUpdatePolicy(policy({ auto: '0.2.7' })));
   assert.throws(() => validateUpdatePolicy(policy({ minimumSupported: '0.2.4', enforceAfter: new Date().toISOString() })));
-  assert.throws(() => validateUpdatePolicy(policy({ auto: '0.2.5', minimumSupported: '0.2.4', enforceAfter: 'tomorrow' })));
-  const p = validateUpdatePolicy(policy({ auto: '0.2.5', minimumSupported: '0.2.4', enforceAfter: '2026-09-15T00:00:00.000Z' }));
+  assert.throws(() => validateUpdatePolicy(policy({ auto: NEXT_VERSION, minimumSupported: '0.2.4', enforceAfter: 'tomorrow' })));
+  const p = validateUpdatePolicy(policy({ auto: NEXT_VERSION, minimumSupported: '0.2.4', enforceAfter: '2026-09-15T00:00:00.000Z' }));
   assert.equal(versionUnsupported('0.2.3', p, Date.parse('2026-09-14T00:00:00Z')), false);
   assert.equal(versionUnsupported('0.2.3', p, Date.parse('2026-09-16T00:00:00Z')), true);
   assert.equal(versionUnsupported(null, p, Date.parse('2026-09-16T00:00:00Z')), true);
@@ -45,10 +47,10 @@ test('version policy uses numeric ordering and explicit grace, never aliases or 
 });
 
 test('signed catalogs bind all package bytes, target identities and release version to the independent key', async () => {
-  const catalog = updateTestCatalog(), signed = await signUpdateFixture(catalog);
+  const catalog = nextCatalog(), signed = await signUpdateFixture(catalog);
   assert.deepEqual(await verifySignedCatalog(signed, updateTestPublicKey, catalog.version), catalog);
   await assert.rejects(verifySignedCatalog({ ...signed, signature: 'a'.repeat(86) }, updateTestPublicKey, catalog.version), /signature/);
-  await assert.rejects(verifySignedCatalog(signed, updateTestPublicKey, '0.2.6'), /identity/);
+  await assert.rejects(verifySignedCatalog(signed, updateTestPublicKey, '0.2.7'), /identity/);
   const changed = { ...catalog, targets: { ...catalog.targets, 'win32-x64': { ...catalog.targets['win32-x64'], sha256: 'b'.repeat(64) } } };
   await assert.rejects(verifySignedCatalog({ ...signed, payload: Buffer.from(JSON.stringify(changed)).toString('base64url') }, updateTestPublicKey, catalog.version), /signature/);
   const partial = await signUpdateFixture({ ...catalog, targets: { 'win32-x64': catalog.targets['win32-x64'] } });
@@ -101,7 +103,7 @@ test('signed package downloads verify exact size and hash, reuse cache, and remo
 });
 
 test('verified upgrade handoff preserves binding, key, project and pause, and refuses duplicate installer execution', async t => {
-  const home = await temporary(t), catalog = updateTestCatalog(), signed = await signUpdateFixture(catalog);
+  const home = await temporary(t), catalog = nextCatalog(), signed = await signUpdateFixture(catalog);
   const state = { schema: 1, deviceId: 'fixture-device', deviceSecret: 'a'.repeat(43), ownerToken: 'b'.repeat(43),
     keyId: 'fixture-key', bindingId: 'fixture-binding', accessKey: `tds_${'c'.repeat(43)}`,
     gateway: 'https://team.example.test', currentProjectRoot: home, remoteAccess: 'suspended',
@@ -113,7 +115,7 @@ test('verified upgrade handoff preserves binding, key, project and pause, and re
     : url.endsWith('/update.json') ? Response.json(signed) : new Response(updateTestBytes);
   const options = { fetcher, publicKey: updateTestPublicKey, distributionRoot: async () => home,
     handoff: async (file, version, actualHome, root) => {
-      calls++; assert.equal(version, '0.2.5'); assert.equal(actualHome, home); assert.equal(root, home);
+      calls++; assert.equal(version, NEXT_VERSION); assert.equal(actualHome, home); assert.equal(root, home);
       assert.deepEqual(await readFile(file), updateTestBytes); return { handedOff: true };
     } };
   assert.equal((await applyUpdate(home, options)).handedOff, true);
@@ -133,5 +135,5 @@ test('installed versions never automatically downgrade or execute an unsigned up
     assert.equal(result.changed, false);
   }
   let calls = 0;
-  await assert.rejects(applyUpdate(home, { fetcher: async () => Response.json(++calls === 1 ? policy() : updateTestCatalog()), handoff: noHandoff }), /Signed update metadata/);
+  await assert.rejects(applyUpdate(home, { fetcher: async () => Response.json(++calls === 1 ? policy() : nextCatalog()), handoff: noHandoff }), /Signed update metadata/);
 });

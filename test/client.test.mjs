@@ -31,7 +31,7 @@ async function fixture(t) {
     requests.push({ path: request.url, body: data, authorization: request.headers.authorization });
     response.setHeader('Content-Type', 'application/json');
     if (flags.reject) { response.writeHead(503); response.end(JSON.stringify({ error: 'temporary_failure' })); return; }
-    if (request.url === '/v1/device/status') {
+    if (request.url === '/v1/device/status-v2') {
       response.end(JSON.stringify({ state: flags.deviceState, bindingId })); return;
     }
     if (request.url === '/v1/enrollment/preflight') {

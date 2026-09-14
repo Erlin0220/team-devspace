@@ -48,7 +48,7 @@ const server = http.createServer(async (req, res) => {
       tunnelToken: 'fixture-only-not-a-cloudflare-token', endpoint: `http://127.0.0.1:${server.address().port}/mcp`,
       devspaceVersion: release.devspaceVersion, controlApiVersion: release.controlApiVersion, state: remoteAccess };
     result = binding;
-  } else if (req.url === '/v1/device/status') result = { state: remoteAccess, bindingId: binding.bindingId };
+  } else if (req.url === '/v1/device/status-v2') result = { state: remoteAccess, bindingId: binding.bindingId };
   else if (req.url === '/v1/device/suspend') { remoteAccess = 'suspended'; result = { state: remoteAccess }; }
   else if (req.url === '/v1/device/resume') { remoteAccess = 'active'; result = { state: remoteAccess }; }
   else { res.writeHead(404); res.end('{}'); return; }

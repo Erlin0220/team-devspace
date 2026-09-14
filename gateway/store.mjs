@@ -145,10 +145,18 @@ export class KeyStore {
       .bind(version, platform, id, bindingId, version, platform).run();
   }
 
-  async cleanupCandidates(limit = 10) {
-    const rows = await this.db.prepare(`SELECT * FROM access_keys
-      WHERE cleanup_pending = 1 OR (state = 'provisioning' AND julianday(updated_at) < julianday('now', '-15 minutes'))
-      ORDER BY updated_at LIMIT ?`).bind(limit).all();
-    return rows.results;
+  async cleanupCandidates(limit = 10, now = Date.now()) {
+    const cutoff = new Date(now - 15 * 60 * 1000).toISOString();
+    // Keep both predicates indexable. A single OR query forced a full-table scan
+    // every five minutes and grew linearly with retained revoked keys.
+    const [pending, staleProvisioning] = await Promise.all([
+      this.db.prepare(`SELECT * FROM access_keys WHERE cleanup_pending = 1
+        ORDER BY updated_at LIMIT ?`).bind(limit).all(),
+      this.db.prepare(`SELECT * FROM access_keys WHERE state = 'provisioning' AND updated_at < ?
+        ORDER BY updated_at LIMIT ?`).bind(cutoff, limit).all(),
+    ]);
+    const unique = new Map();
+    for (const row of [...pending.results, ...staleProvisioning.results]) unique.set(row.id, row);
+    return [...unique.values()].sort((left, right) => left.updated_at.localeCompare(right.updated_at)).slice(0, limit);
   }
 }
