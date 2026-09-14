@@ -4,7 +4,7 @@ export async function readGatewayStatus(state, { request = control, now = Date.n
   if (!state.bindingId) return { state: 'not-enrolled', checkedAt: null };
   const value = await request(state.gateway, '/v1/device/status', state.deviceSecret, {
     body: { keyId: state.keyId, bindingId: state.bindingId }, timeout: 5000,
-  }).then(result => ['active', 'suspended'].includes(result.state) && result.bindingId === state.bindingId
+  }).then(result => ['active', 'suspended'].includes(result?.state) && result.bindingId === state.bindingId
     ? result.state : 'invalid-response', error => error.status === 403 ? 'disabled' : 'unreachable');
   return { state: value, checkedAt: new Date(now()).toISOString() };
 }

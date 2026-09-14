@@ -68,3 +68,15 @@ test('unreachable and invalid responses use a short retry window, not a five-sec
   time = 90000; assert.equal((await probe(device)).state, 'disabled');
   assert.equal(calls, 3);
 });
+
+test('an empty JSON response is retryable and cannot poison the display cache', async () => {
+  let time = 0, calls = 0;
+  const probe = createGatewayStatusProbe({ now: () => time, request: async () => {
+    calls++;
+    return calls === 1 ? null : { state: 'active', bindingId: device.bindingId };
+  } });
+  assert.equal((await probe(device)).state, 'invalid-response');
+  time = 30000;
+  assert.equal((await probe(device)).state, 'active');
+  assert.equal(calls, 2);
+});
