@@ -138,10 +138,29 @@ test('queued builds can be reconciled by immutable tag and labels, never after a
   assert.equal(matchesBuild({ ...build, status: 'finished' }, context, { pending: true }), false);
 });
 
+test('Codemagic bundle is accepted as the metadata carrier when direct files are not listed', () => {
+  const build = baseBuild();
+  const pkg = 'Team-DevSpace-0.2.4-macos-arm64.pkg';
+  build.artifacts = [
+    { name: pkg, size_in_bytes: 100, short_lived_download_url: 'https://artifacts.example/pkg' },
+    { name: 'team-devspace_46_artifacts.zip', size_in_bytes: 200, short_lived_download_url: 'https://artifacts.example/bundle' },
+  ];
+  const selected = requiredArtifacts(build, '0.2.4', 'arm64');
+  assert.equal(selected.pkg.name, pkg);
+  assert.equal(selected.checksum, null);
+  assert.equal(selected.receipt, null);
+  assert.equal(selected.bundle.name, 'team-devspace_46_artifacts.zip');
+  build.artifacts.push(
+    { name: `${pkg}.sha256`, size_in_bytes: 64, short_lived_download_url: 'https://artifacts.example/sha' },
+    { name: 'acceptance.json', size_in_bytes: 100, short_lived_download_url: 'https://artifacts.example/acceptance' },
+  );
+  assert.equal(requiredArtifacts(build, '0.2.4', 'arm64').bundle, null);
+});
+
 test('artifact selection is unique and normalizes CI paths to allowlisted filenames', async t => {
   const f = await fixture(t);
   f.build.artifacts[0].name = `../../release/${f.name}`;
-  assert.equal(requiredArtifacts(f.build, '0.2.4', 'arm64')[0].name, f.name);
+  assert.equal(requiredArtifacts(f.build, '0.2.4', 'arm64').pkg.name, f.name);
   const result = await collectBuild(f.build, f.options);
   assert.equal(result.sha256, f.hash);
   assert.deepEqual(await readFile(join(f.directory, 'darwin-arm64', f.name)), f.bytes);

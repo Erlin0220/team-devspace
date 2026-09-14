@@ -1,9 +1,10 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pipeline } from 'node:stream/promises';
 import lockfile from 'proper-lockfile';
@@ -79,16 +80,37 @@ export function matchesBuild(build, { appId, commit, architecture }, { pending =
 }
 
 export function requiredArtifacts(build, version, architecture) {
-  const names = [packageName(version, `darwin-${architecture}`), `${packageName(version, `darwin-${architecture}`)}.sha256`, 'acceptance.json'];
-  return names.map(name => {
-    const found = (build.artifacts ?? []).filter(item => typeof item.name === 'string' && basename(item.name.replaceAll('\\', '/')) === name);
+  const expected = packageName(version, `darwin-${architecture}`);
+  const artifacts = build.artifacts ?? [];
+  const one = (name, optional = false) => {
+    const found = artifacts.filter(item => typeof item.name === 'string' && basename(item.name.replaceAll('\\', '/')) === name);
+    if (found.length === 0 && optional) return null;
     if (found.length !== 1 || !Number.isSafeInteger(found[0].size_in_bytes) || found[0].size_in_bytes < 1) {
       throw new Error(`Build ${build.id} does not contain exactly one valid ${name}`);
     }
-    // API artifact names may contain CI-relative paths. Only our canonical
-    // allowlisted filename is ever used as a local destination.
     return { ...found[0], name };
-  });
+  };
+  const pkg = one(expected);
+  const checksum = one(`${expected}.sha256`, true);
+  const receipt = one('acceptance.json', true);
+  const bundles = artifacts.filter(item => typeof item.name === 'string' && /_artifacts\.zip$/.test(basename(item.name.replaceAll('\\', '/'))) &&
+    Number.isSafeInteger(item.size_in_bytes) && item.size_in_bytes > 0 && item.size_in_bytes <= 16 * 1024 * 1024);
+  const bundle = (!checksum || !receipt) && bundles.length === 1 ? bundles[0] : null;
+  if ((!checksum || !receipt) && !bundle) throw new Error(`Build ${build.id} is missing its acceptance artifact bundle`);
+  return { pkg, checksum, receipt, bundle };
+}
+
+export function readBundleText(archive, entry, limit = 65536) {
+  if (!entry || entry.startsWith('/') || entry.includes('..') || /[\r\n\x00]/.test(entry)) throw new Error('Unsafe artifact bundle entry');
+  const commands = process.platform === 'win32'
+    ? [[join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-xOf', archive, entry]]]
+    : [['tar', ['-xOf', archive, entry]], ['unzip', ['-p', archive, entry]]];
+  for (const [command, args] of commands) {
+    try {
+      return execFileSync(command, args, { encoding: 'utf8', windowsHide: true, timeout: 30000, maxBuffer: limit });
+    } catch {}
+  }
+  throw new Error(`Cannot read required Codemagic artifact bundle entry: ${entry}`);
 }
 
 export async function findReusableBuild(listed, context, version, load) {
@@ -198,19 +220,29 @@ async function downloadArtifact(artifact, path, limit, fetcher) {
 export async function collectBuild(build, { appId, commit, architecture, version, directory, fetcher = fetch }) {
   if (build.status !== 'finished' || !matchesBuild(build, { appId, commit, architecture })) throw new Error('Only a successful exact-commit/architecture build can be collected');
   const target = `darwin-${architecture}`;
-  const [pkg, checksum, receipt] = requiredArtifacts(build, version, architecture);
+  const { pkg, checksum, receipt, bundle } = requiredArtifacts(build, version, architecture);
   await mkdir(directory, { recursive: true });
   const staging = await mkdtemp(join(directory, '.codemagic-'));
   const candidate = join(staging, target);
   await mkdir(candidate);
   try {
-    await downloadArtifact(receipt, join(candidate, 'acceptance.json'), 65536, fetcher);
-    const evidence = await readJson(join(candidate, 'acceptance.json'));
+    let bundlePath;
+    if (bundle) {
+      bundlePath = join(staging, 'artifacts.zip');
+      await downloadArtifact(bundle, bundlePath, 16 * 1024 * 1024, fetcher);
+    }
+    const receiptPath = join(candidate, 'acceptance.json');
+    if (receipt) await downloadArtifact(receipt, receiptPath, 65536, fetcher);
+    else await writeFile(receiptPath, readBundleText(bundlePath, `release/offline/${version}/${target}/acceptance.json`, 65536), { flag: 'wx', mode: 0o600 });
+    const evidence = await readJson(receiptPath);
     if (evidence.passed !== true || evidence.commit !== commit || evidence.sourceDirty !== false ||
         evidence.release !== version || evidence.target !== target || evidence.entrypoint?.name !== pkg.name ||
         !/^[a-f0-9]{64}$/.test(evidence.entrypoint?.sha256 ?? '')) throw new Error('Downloaded acceptance does not describe the requested final source/package');
-    await downloadArtifact(checksum, join(candidate, checksum.name), 4096, fetcher);
-    const hashText = (await readFile(join(candidate, checksum.name), 'utf8')).trim();
+    const checksumName = `${pkg.name}.sha256`;
+    const checksumPath = join(candidate, checksumName);
+    if (checksum) await downloadArtifact(checksum, checksumPath, 4096, fetcher);
+    else await writeFile(checksumPath, readBundleText(bundlePath, `release/${checksumName}`, 4096), { flag: 'wx', mode: 0o600 });
+    const hashText = (await readFile(checksumPath, 'utf8')).trim();
     const hashMatch = /^([a-f0-9]{64})(?:\s+\*?([^\r\n]+))?$/.exec(hashText);
     if (!hashMatch || hashMatch[1] !== evidence.entrypoint.sha256 || (hashMatch[2] && hashMatch[2] !== pkg.name)) throw new Error('PKG checksum and acceptance disagree');
     const destination = join(directory, target);
