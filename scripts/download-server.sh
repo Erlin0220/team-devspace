@@ -57,7 +57,7 @@ $ARG {
     }
     @home path /
     rewrite @home /index.html
-    @entry path /install.sh /install.ps1 /catalog.json
+    @entry path /install.sh /install.ps1 /catalog.json /update.json
     rewrite @entry /stable{path}
     @immutable path /releases/*
     header @immutable Cache-Control "public, max-age=31536000, immutable"

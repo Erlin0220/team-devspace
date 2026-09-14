@@ -52,6 +52,7 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   const f = await fixture(t);
   const ps = await readFile(join(f.site, 'install.ps1'), 'utf8');
   const sh = await readFile(join(f.site, 'install.sh'), 'utf8');
+  const serverScript = await readFile(resolve('scripts/download-server.sh'), 'utf8');
   const page = await readFile(join(f.site, 'index.html'), 'utf8');
   const home = join(f.root, 'home');
   await prepareHomepage(home, f.catalog, origin);
@@ -76,6 +77,8 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   assert.ok(homepage.includes('<h1 id="hero-title">') && homepage.includes('你自己的开发环境'));
   assert.ok(homepage.includes('Team DevSpace') && !homepage.includes('tailscale.com'));
   assert.ok(!renderAdmin([]).includes('issue-downloads'));
+  assert.match(serverScript, /@entry path [^\n]*\/update\.json/,
+    'Stable signed update metadata must be reachable from /update.json');
   assert.equal(spawnSync('bash', ['-n', join(f.site, 'install.sh').replaceAll('\\', '/')]).status, 0);
   assert.equal(spawnSync('bash', ['-n', resolve('scripts/download-server.sh').replaceAll('\\', '/')]).status, 0);
   if (process.platform === 'win32') {
