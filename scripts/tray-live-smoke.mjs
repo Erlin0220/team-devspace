@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -8,7 +8,8 @@ import { stateHome } from '../client/state.mjs';
 import release from '../release.config.json' with { type: 'json' };
 import { run } from './build-utils.mjs';
 import { pathToFileURL } from 'node:url';
-import { randomUUID, createHash } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { withDeviceOperation } from '../client/operation.mjs';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { administrator, createAccessKey } from '../client/admin.mjs';
@@ -16,8 +17,9 @@ import { control } from '../client/http.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-// Explicitly opt in: this creates and revokes two test-only keys in the live
-// Gateway. Employee credentials/state/tasks are never modified by this test.
+// Explicit opt-in: reuse two host/platform-scoped test keys in the live Gateway.
+// Reset removes their Tunnel/DNS/binding without accumulating revoked rows.
+// The existing file lock prevents concurrent tests from resetting each other.
 const { values } = parseArgs({ options: { live: { type: 'boolean' }, 'runtime-root': { type: 'string' }, output: { type: 'string' } } });
 if (!['win32', 'linux'].includes(process.platform) || !values.live) {
   throw new Error('Run on Windows/Linux with --live to exercise an isolated real Gateway/Tunnel lifecycle');
@@ -42,6 +44,7 @@ const employeeFingerprint = () => readFile(employeeStatePath)
   });
 const employeeBefore = await employeeFingerprint();
 const config = await administrator();
+await withDeviceOperation(join(config.directory, 'live-tests', `${process.platform}-${process.arch}`), async () => {
 const home = await mkdtemp(join(tmpdir(), 'tds-tray-live-'));
 const project = join(home, 'project');
 await mkdir(project);
@@ -70,7 +73,7 @@ const setup = await moduleAt('client/setup.mjs');
 const lifecycle = await moduleAt('client/platform.mjs');
 const actions = await moduleAt('client/control.mjs');
 const stateApi = await moduleAt('client/state.mjs');
-const suffix = randomUUID().slice(0, 8);
+const suffix = createHash('sha256').update(`${hostname()}:${process.platform}:${process.arch}`).digest('hex').slice(0, 12);
 const keys = [];
 const checks = [];
 let state;
@@ -127,7 +130,15 @@ async function remoteMcp(key) {
   } while (true);
 }
 try {
-  for (const letter of ['a', 'b']) keys.push(await createAccessKey(config, `tray-live-${suffix}-${letter}`));
+  for (const letter of ['a', 'b']) {
+    const key = await createAccessKey(config, `tray-e2e-${process.platform}-${suffix}-${letter}`);
+    keys.push(key);
+    if (key.state !== 'issued') {
+      const reset = await control(config.gateway, `/v1/admin/keys/${key.id}/reset`, config.adminToken, { body: {} });
+      assert.equal(reset.cleanup, 'complete');
+      assert.equal(reset.state, 'issued');
+    }
+  }
   await setup.configureDevice({ gateway: config.gateway, accessKey: keys[0].accessKey,
     currentProjectRoot: project }, { home, startup: false });
   state = await stateApi.loadState(home);
@@ -184,7 +195,12 @@ try {
     console.error(`Test-only native startup cleanup: ${actions.redactDiagnostic(error.message)}`); cleanupFailed = true; process.exitCode = 1;
   });
   for (const key of keys) {
-    try { await control(config.gateway, `/v1/admin/keys/${key.id}/revoke`, config.adminToken, { body: {}, timeout: 30000 }); }
+    try {
+      const reset = await control(config.gateway, `/v1/admin/keys/${key.id}/reset`, config.adminToken, { body: {}, timeout: 30000 });
+      assert.equal(reset.cleanup, 'complete');
+      assert.equal(reset.state, 'issued');
+      assert.equal(reset.bindingId, null);
+    }
     catch (error) { console.error(`Test-only key cleanup failed (${key.id}): ${error.code ?? 'unknown'}`); cleanupFailed = true; process.exitCode = 1; }
   }
   if (await employeeFingerprint() !== employeeBefore) {
@@ -197,14 +213,15 @@ try {
     });
   }
   // Keep a failed cleanup scope available for repair rather than deleting binaries
-  // beneath an owned process or losing the credentials needed to finish revocation.
+  // beneath an owned process or losing the credentials needed to finish reset.
   if (!cleanupFailed) await rm(home, { recursive: true, force: true });
   const employeeStateUntouched = await employeeFingerprint() === employeeBefore;
   const report = { passed: completed && !cleanupFailed && employeeStateUntouched, checks,
     target: `${process.platform}-${process.arch}`, realGateway: true, realCloudflare: true,
     finalLinuxArchiveInstalled: process.platform === 'linux', candidateRuntime: Boolean(values['runtime-root']),
     runtimeManifestSha256, cleanupCompleted: !cleanupFailed,
-    testKeys: keys.length, employeeStateUntouched, ...(failure ? { failure } : {}) };
+    testKeys: keys.length, reusableTestKeys: true, employeeStateUntouched, ...(failure ? { failure } : {}) };
   if (output) await writeFile(output, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report));
 }
+});

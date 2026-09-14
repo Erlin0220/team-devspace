@@ -80,26 +80,51 @@ async function smallBody(response) {
 const request = (url, options = {}) => fetch(url, { redirect: 'error',
   signal: AbortSignal.timeout(1800000), headers: { 'Accept-Encoding': 'identity' }, ...options });
 
-export async function verifyRemote(origin, catalog) {
+// Server-side full SHA256 verification is a prerequisite in main(). Normal
+// publication probes the delivery path with bounded ranges, not four full GETs.
+// A full independent HTTPS hash check remains available for incident diagnosis.
+export async function verifyRemote(origin, catalog, { fetcher = request, full = false } = {}) {
   const urls = packageUrls(catalog, origin);
-  const remoteText = await smallBody(await request(`${origin}/releases/${catalog.version}/catalog.json`));
+  const remoteText = await smallBody(await fetcher(`${origin}/releases/${catalog.version}/catalog.json`));
   if (remoteText !== `${JSON.stringify(catalog, null, 2)}\n`) throw new Error('Published catalog differs from the staged catalog');
   for (const target of DOWNLOAD_TARGETS) {
     const item = catalog.targets[target];
-    const response = await request(urls[target]);
-    if (response.status !== 200 || Number(response.headers.get('Content-Length')) !== item.size) throw new Error(`Download failed or has an unexpected size: ${target}`);
-    const hash = createHash('sha256'); let size = 0;
-    for await (const chunk of response.body) {
-      size += chunk.length;
-      if (size > item.size) throw new Error(`Oversized download: ${target}`);
-      hash.update(chunk);
+    const head = await fetcher(urls[target], { method: 'HEAD' });
+    if (head.status !== 200 || Number(head.headers.get('Content-Length')) !== item.size ||
+        !head.headers.get('ETag') || head.headers.get('Accept-Ranges') !== 'bytes') throw new Error(`HEAD/ETag verification failed: ${target}`);
+    const checksum = await smallBody(await fetcher(`${urls[target]}.sha256`));
+    if (checksum.trim() !== item.sha256) throw new Error(`Published checksum differs: ${target}`);
+    const ranges = [[0, Math.min(65535, item.size - 1)]];
+    if (item.size > 65536) ranges.push([Math.max(65536, item.size - 65536), item.size - 1]);
+    for (const [start, end] of ranges) {
+      const partial = await fetcher(urls[target], { headers: { Range: `bytes=${start}-${end}`, 'Accept-Encoding': 'identity' } });
+      if (partial.status !== 206 || partial.headers.get('Content-Range') !== `bytes ${start}-${end}/${item.size}` ||
+          partial.headers.get('ETag') !== head.headers.get('ETag')) {
+        await partial.body?.cancel();
+        throw new Error(`Resumable download failed: ${target}`);
+      }
+      let received = 0;
+      for await (const chunk of partial.body) {
+        received += chunk.length;
+        if (received > end - start + 1) throw new Error(`Oversized range: ${target}`);
+      }
+      if (received !== end - start + 1) throw new Error(`Truncated range: ${target}`);
     }
-    if (size !== item.size || hash.digest('hex') !== item.sha256) throw new Error(`HTTPS package checksum mismatch: ${target}`);
-    const head = await request(urls[target], { method: 'HEAD' });
-    if (head.status !== 200 || Number(head.headers.get('Content-Length')) !== item.size || !head.headers.get('ETag')) throw new Error(`HEAD/ETag verification failed: ${target}`);
-    const partial = await request(urls[target], { headers: { Range: 'bytes=0-15', 'Accept-Encoding': 'identity' } });
-    if (partial.status !== 206 || partial.headers.get('Content-Range') !== `bytes 0-15/${item.size}` || (await partial.arrayBuffer()).byteLength !== 16) throw new Error(`Resumable download failed: ${target}`);
-    console.log(JSON.stringify({ httpsVerified: true, target, size, sha256: item.sha256, head: true, range: true }));
+    if (full) {
+      const response = await fetcher(urls[target]);
+      if (response.status !== 200 || Number(response.headers.get('Content-Length')) !== item.size) {
+        await response.body?.cancel(); throw new Error(`Download failed or has an unexpected size: ${target}`);
+      }
+      const hash = createHash('sha256'); let received = 0;
+      for await (const chunk of response.body) {
+        received += chunk.length;
+        if (received > item.size) throw new Error(`Oversized download: ${target}`);
+        hash.update(chunk);
+      }
+      if (received !== item.size || hash.digest('hex') !== item.sha256) throw new Error(`HTTPS package checksum mismatch: ${target}`);
+    }
+    console.log(JSON.stringify({ httpsDeliveryVerified: true, target, size: item.size,
+      fullHttpsHash: full, head: true, ranges: ranges.length }));
   }
 }
 
@@ -127,7 +152,7 @@ async function publishHomepage({ origin, catalog, server, command }) {
       relative(process.cwd(), join(output, 'download-site.js')).replaceAll('\\', '/'),
       relative(process.cwd(), join(output, 'devspace-logo-light.png')).replaceAll('\\', '/'),
       `${server.sshHost}:${server.serverRoot}/.incoming/site-${uploadId}/`], { timeout: 120000 });
-    await command('site-publish', uploadId);
+    await command('site-publish', uploadId, catalog.version);
   } catch (error) {
     await command('site-discard', uploadId).catch(() => {});
     throw error;
@@ -149,12 +174,12 @@ async function publishHomepage({ origin, catalog, server, command }) {
 
 export async function main(argv = process.argv.slice(2)) {
   const { values } = parseArgs({ args: argv, options: {
-    publish: { type: 'boolean' }, activate: { type: 'string' }, 'init-server': { type: 'boolean' }, 'site-only': { type: 'boolean' }, preview: { type: 'boolean' },
+    publish: { type: 'boolean' }, 'full-https-verify': { type: 'boolean' }, activate: { type: 'string' }, 'init-server': { type: 'boolean' }, 'site-only': { type: 'boolean' }, preview: { type: 'boolean' },
     config: { type: 'string', default: 'downloads.config.json' }, version: { type: 'string' },
     commit: { type: 'string' }, directory: { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help) {
-    console.log('Prepare accepted release: npm run downloads:publish\nInitialize existing Caddy site (DNS must be ready): npm run downloads:deploy\nPublish + verify HTTPS + activate: npm run downloads:publish -- --publish\nPreview the homepage locally from the active catalog: npm run downloads:preview\nRefresh only the public homepage: npm run downloads:site\nRollback: npm run downloads:publish -- --activate <version>\nImport accepted historical artifacts: add --version <version> --commit <source-commit> --directory <four-target-directory>\nNo Access Key, download ticket, R2 or HTTP publishing credentials. Uses existing SSH.');
+    console.log('Prepare accepted release: npm run downloads:publish\nInitialize existing Caddy site (DNS must be ready): npm run downloads:deploy\nPublish + verify HTTPS + activate: npm run downloads:publish -- --publish\nPreview the homepage locally from the active catalog: npm run downloads:preview\nRefresh only the public homepage: npm run downloads:site\nRecover an unpruned staged release: npm run downloads:publish -- --activate <version>\nOptional full HTTPS hash verification: add --full-https-verify\nImport accepted artifacts: add --version <version> --commit <source-commit> --directory <four-target-directory>\nNo Access Key, download ticket, R2 or HTTP publishing credentials. Uses existing SSH.');
     return;
   }
   const origin = httpsOrigin(release.distribution.origin);
@@ -231,14 +256,17 @@ export async function main(argv = process.argv.slice(2)) {
       await command('publish', version, uploadId);
       uploadId = null;
     }
-    // Never activate merely because SCP succeeded. Read all four final files back
-    // through public HTTPS from the operator's current network, then change one pointer.
-    await verifyRemote(origin, catalog);
+    // Verify final server bytes before bounded public HTTPS delivery probes.
+    // No pruning happens until activation, scripts AND homepage verify successfully.
+    await command('verify', version);
+    await verifyRemote(origin, catalog, { full: Boolean(values['full-https-verify']) });
     await command('activate', version, initialStable);
     await stableCheck(origin, catalog);
     await publishHomepage({ origin, catalog, server, command });
+    await command('prune', version);
     console.log(JSON.stringify({ activated: true, version, commit: catalog.commit, origin,
-      previous: initialStable, rollbackChangesInstalledClients: false, verifiedAllFourHttpsPackages: true, homepagePublished: true }));
+      previous: initialStable, rollbackChangesInstalledClients: false, verifiedAllFourHttpsDeliveryPaths: true,
+      fullHttpsHash: Boolean(values['full-https-verify']), homepagePublished: true, retainedCurrentReleaseOnly: true }));
   } finally {
     if (uploadId && command) await command('discard', version, uploadId).catch(() => console.error(`Staging cleanup needs inspection: ${uploadId}`));
     if (remoteScript && server) await run('ssh', ['-o', 'BatchMode=yes', server.sshHost, `rm -f -- ${quote(remoteScript)}`]).catch(() => {});

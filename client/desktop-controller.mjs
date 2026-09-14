@@ -5,6 +5,7 @@ import { changeProjectRoot, configureFromDesktop, desktopLocalState, deviceStatu
 import { desktopErrorText, macProgress } from './desktop.mjs';
 import { stateHome } from './state.mjs';
 import { desktopState } from './desktop-state.mjs';
+import { createGatewayStatusProbe } from './gateway-status.mjs';
 export { desktopState } from './desktop-state.mjs';
 
 const ACTIVITY = {
@@ -19,9 +20,10 @@ const SUCCESS = {
 };
 
 export function createDesktopController(home = stateHome(), options = {}) {
+  const gatewayStatus = createGatewayStatusProbe();
   const operations = options.operations ?? {
-    status: async () => {
-      try { return await deviceStatus(home); }
+    status: async ({ forceGateway = false } = {}) => {
+      try { return await deviceStatus(home, { gatewayStatus, forceGateway }); }
       catch (error) { if (!(await desktopLocalState(home)).configured) return null; throw error; }
     }, localState: () => desktopLocalState(home),
     suspend: ({ onProgress }) => suspendRemoteAccess(home, { onProgress }),
@@ -38,7 +40,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
   };
   let status = null, local = {}, activity = '正在启动…', notice, failure, probeFailure;
   let revision = 0, pending = null, refreshPromise = null, closing = false, disposed = false, interval;
-  let started = false, checkedAt = null;
+  let started = false, checkedAt = null, refreshForced = false;
   const listeners = new Set();
   const utilities = new Map();
   let prompts = new AbortController();
@@ -52,11 +54,13 @@ export function createDesktopController(home = stateHome(), options = {}) {
     const value = await operations.localState();
     if (generation === revision && !disposed) local = value;
   };
-  const refresh = () => {
+  const refresh = (forceGateway = false) => {
     if (pending || closing || disposed) return Promise.resolve(snapshot());
-    if (refreshPromise) return refreshPromise;
+    if (refreshPromise) return forceGateway && !refreshForced
+      ? refreshPromise.then(() => refresh(true)) : refreshPromise;
+    refreshForced = forceGateway;
     const generation = revision;
-    refreshPromise = Promise.resolve().then(() => operations.status()).then(value => {
+    refreshPromise = Promise.resolve().then(() => operations.status({ forceGateway })).then(value => {
       if (generation === revision && !disposed) { status = value; probeFailure = undefined; checkedAt = new Date().toISOString(); }
     }, error => {
       if (generation === revision && !disposed) { status = null; probeFailure = desktopErrorText(error); }
@@ -70,7 +74,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
     if (disposed || closing) throw Object.assign(new Error('正在退出 Team DevSpace'), { status: 409 });
     if (action === 'check') {
       if (!pending) { notice = undefined; activity = '正在检查连接…'; publish(); }
-      await refresh();
+      await refresh(true);
       if (!pending && !closing) { activity = undefined; publish(); }
       return snapshot();
     }
@@ -102,7 +106,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
     }
     if (!Object.hasOwn(ACTIVITY, action) || !operations[action]) throw Object.assign(new Error('未知控制操作'), { status: 400 });
     if (pending || utilities.has('choose-folder')) throw Object.assign(new Error('已有操作正在进行，请等待完成'), { status: 409 });
-    revision++; failure = undefined; notice = undefined; activity = ACTIVITY[action];
+    revision++; gatewayStatus.invalidate(); failure = undefined; notice = undefined; activity = ACTIVITY[action];
     pending = Promise.resolve().then(async () => {
       let parameters = input;
       // Selecting a replacement is one controller operation. Cancellation never
@@ -124,7 +128,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
         try {
           // An Enrollment acknowledgement is not a runtime health snapshot.
           status = typeof result?.devspace === 'boolean' && typeof result?.gateway === 'string'
-            ? result : await operations.status();
+            ? result : await operations.status({ forceGateway: true });
           probeFailure = undefined;
         } catch (error) { status = null; probeFailure = desktopErrorText(error); }
         if (!result?.cancelled) notice = action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action];
@@ -136,10 +140,11 @@ export function createDesktopController(home = stateHome(), options = {}) {
       // A failed operation may still persist a safety intent or partial binding.
       await readLocal().catch(() => {});
       if (!closing) {
-        try { status = await operations.status(); } catch { status = null; }
+        try { status = await operations.status({ forceGateway: true }); } catch { status = null; }
       }
       throw error;
     }).finally(() => {
+      gatewayStatus.invalidate();
       pending = null;
       if (!closing) { activity = undefined; publish(); }
     });
@@ -153,7 +158,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
       if (started) return;
       started = true;
       void readLocal().then(publish, error => { failure = desktopErrorText(error); publish(); });
-      void refresh();
+      void refresh(true);
       interval = setInterval(() => void refresh(), options.refreshInterval ?? 5000);
       interval.unref();
     },

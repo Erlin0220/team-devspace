@@ -68,7 +68,8 @@ test('stable scripts pin immutable package URLs and hashes, with no enrollment o
   assert.ok(sh.includes('--setup none'));
   assert.ok(!sh.includes('xattr -d') && !sh.includes('spctl --master-disable'));
   assert.ok(page.includes(`${origin}/releases/1.0.0/install.ps1`));
-  assert.ok(page.includes(`${origin}/releases/`));
+  assert.ok(!page.includes('历史版本'));
+  assert.ok(!homepage.includes(`href="${origin}/releases/"`));
   assert.ok(homepage.includes(`${origin}/install.ps1`));
   assert.ok(homepage.includes(`${origin}/stable/windows-x64.exe`));
   assert.ok(homepage.includes('<h1 id="hero-title">') && homepage.includes('你自己的开发环境'));
@@ -187,4 +188,14 @@ test('server publication is immutable, all-or-nothing, CAS guarded and genuinely
   assert.equal(run('current').trim(), 'releases/1.0.0');
   run('discard', first.version, '4'.repeat(32));
   assert.throws(() => run('stage', '../bad', '5'.repeat(32)));
+  run('verify', first.version);
+  assert.throws(() => run('prune', second.version), /Stable changed/);
+  await mkdir(join(server, 'public/releases/operator-notes'));
+  run('prune', first.version);
+  assert.equal(run('current').trim(), 'releases/1.0.0');
+  assert.equal(await readFile(join(server, 'public/stable/windows-x64.exe.sha256'), 'utf8'), `${first.catalog.targets['win32-x64'].sha256}\n`);
+  await assert.rejects(readFile(join(server, 'public/releases/1.0.1/catalog.json')), { code: 'ENOENT' });
+  await writeFile(join(server, 'public/releases/operator-notes/kept.txt'), 'outside version ownership');
+  run('prune', first.version); // Idempotent and never removes non-version operator data.
+  assert.equal(await readFile(join(server, 'public/releases/operator-notes/kept.txt'), 'utf8'), 'outside version ownership');
 });

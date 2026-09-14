@@ -46,7 +46,7 @@ function render(state) {
   $('version').textContent = `Team DevSpace ${state.version} · DevSpace ${state.devspaceVersion}`;
   $('author').textContent = `作者：${state.author.name} · ${state.author.email}`;
   $('summary').textContent = state.summary.replace(/^Team DevSpace /, '');
-  $('checked-at').textContent = state.checkedAt ? `最近检查：${new Date(state.checkedAt).toLocaleTimeString()}` : '尚未完成状态检查';
+  $('checked-at').textContent = state.checkedAt ? `本机检查：${new Date(state.checkedAt).toLocaleTimeString()}${state.gatewayCheckedAt ? ` · 服务端检查：${new Date(state.gatewayCheckedAt).toLocaleTimeString()}` : ''}` : '尚未完成状态检查';
   $('connection').textContent = state.activity ? '操作进行中' : state.status === 'ready' ? '已连接' : state.status === 'suspended' ? '已暂停' : '需要检查';
   $('connection').dataset.state = state.activity ? 'busy' : state.status;
   const entries = [['本机运行时', state.health?.devspace], ['本机桥接', state.health?.bridge], ['连接通道', state.health?.tunnel],

@@ -8,6 +8,7 @@ import net from 'node:net';
 import { approvedProjectRoot, atomicJson, atomicText, DEVSPACE_VERSION, installRoot, loadState, normalizeGateway,
   projectRootAvailable, projectRootFromState, randomSecret, readJson, secureStateDirectory, stateHome, writeUpstreamConfig } from './state.mjs';
 import { control, loopbackRequest } from './http.mjs';
+import { readGatewayStatus } from './gateway-status.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
 import { chooseWindowsProject } from './windows-desktop.mjs';
@@ -356,28 +357,26 @@ async function repairDeviceUnlocked(home = stateHome(), { preserveTray = false, 
     deviceId: state.deviceId, bindingId: state.bindingId, startup: 'installed' };
 }
 
-export async function deviceStatus(home = stateHome()) {
+export async function deviceStatus(home = stateHome(), { gatewayStatus = readGatewayStatus, forceGateway = false } = {}) {
   const state = await loadState(home);
   const local = async (port, path, headers = {}) => {
     try { return (await loopbackRequest(port, path, { headers, timeout: 3000 })).status === 200; }
     catch { return false; }
   };
-  const [devspace, bridge, tunnel, gateway, currentProjectRootAvailable] = await Promise.all([
+  const [devspace, bridge, tunnel, remote, currentProjectRootAvailable] = await Promise.all([
     local(state.ports.devspace, '/healthz'),
     local(state.ports.bridge, '/healthz', { Authorization: `Bearer ${state.deviceSecret}`, 'X-Team-Binding-Id': state.bindingId }),
     local(state.ports.metrics, '/ready'),
-    state.bindingId ? control(state.gateway, '/v1/device/status', state.deviceSecret, {
-      body: { keyId: state.keyId, bindingId: state.bindingId }, timeout: 5000,
-    }).then(result => ['active', 'suspended'].includes(result.state) && result.bindingId === state.bindingId
-      ? result.state : 'invalid-response',
-      error => error.status === 403 ? 'disabled' : 'unreachable') : Promise.resolve('not-enrolled'),
+    gatewayStatus(state, { force: forceGateway }),
     projectRootAvailable(state.currentProjectRoot),
   ]);
+  const gateway = remote.state;
   const desiredRemoteAccess = state.remoteAccess === 'suspended' ? 'suspended' : 'active';
   const remoteAccess = !state.bindingId ? 'not-enrolled'
     : ['active', 'suspended'].includes(gateway) ? gateway : desiredRemoteAccess;
   return { deviceId: state.deviceId, devspaceVersion: DEVSPACE_VERSION, releaseVersion: state.releaseVersion,
-    devspace, bridge, tunnel, gateway, endpoint: `${state.gateway}/mcp`, currentProjectRoot: state.currentProjectRoot,
+    devspace, bridge, tunnel, gateway, gatewayCheckedAt: remote.checkedAt,
+    endpoint: `${state.gateway}/mcp`, currentProjectRoot: state.currentProjectRoot,
     currentProjectRootAvailable, localReady: devspace && bridge && tunnel, desiredRemoteAccess, remoteAccess,
     enrollmentPending: !state.bindingId || Boolean(state.pendingAccessKey),
     ready: Boolean(state.bindingId) && currentProjectRootAvailable && devspace && bridge && tunnel &&

@@ -65,7 +65,7 @@ $ARG {
     header @mutable Cache-Control no-store
     @history path /releases /releases/
     header @history Cache-Control no-store
-    file_server browse {
+    file_server {
         hide .*
     }
 }
@@ -102,6 +102,9 @@ if [[ "$ACTION" = site-stage || "$ACTION" = site-discard || "$ACTION" = site-pub
     exit 0
   fi
   [[ -d "$incoming" ]] || { echo 'Invalid homepage staging directory' >&2; exit 2; }
+  if [[ -n "$STAGE" ]]; then
+    version_ok "$STAGE" && [[ "$(readlink "$PUBLIC/stable")" = "releases/$STAGE" ]] || { echo 'Stable changed; refusing stale homepage' >&2; exit 1; }
+  fi
   for file in index.html download-site.js devspace-logo-light.png; do
     [[ -f "$incoming/$file" && ! -L "$incoming/$file" ]] || { echo "Missing homepage asset: $file" >&2; exit 2; }
   done
@@ -141,6 +144,26 @@ verify() {
   done
   (cd "$directory" && sha256sum --check --strict SHA256SUMS)
 }
+
+if [[ "$ACTION" = verify ]]; then
+  verify "$DEST"
+  exit 0
+fi
+
+# Only the publisher calls this after verifying the activated scripts/homepage.
+# The lock and stable comparison prevent a concurrent activation being pruned.
+if [[ "$ACTION" = prune ]]; then
+  [[ "$(readlink "$PUBLIC/stable")" = "releases/$ARG" ]] || { echo 'Stable changed; refusing to prune' >&2; exit 1; }
+  verify "$DEST"
+  for candidate in "$PUBLIC/releases/"*; do
+    [[ -d "$candidate" && ! -L "$candidate" && "$candidate" != "$DEST" ]] || continue
+    version_ok "${candidate##*/}" || continue
+    find "$candidate" -type d -exec chmod u+w {} +
+    rm -rf -- "$candidate"
+    printf 'Removed old release: %s\n' "${candidate##*/}"
+  done
+  exit 0
+fi
 
 if [[ "$ACTION" = stage || "$ACTION" = discard ]]; then
   [[ "$STAGE" =~ ^[a-f0-9]{32}$ ]] || { echo 'Invalid staging identity' >&2; exit 2; }

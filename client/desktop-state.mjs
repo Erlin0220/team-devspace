@@ -51,7 +51,7 @@ export function desktopState(status, { busy = false, exiting = false, activity, 
   const pausePending = desired === 'suspended' && gateway !== 'suspended';
   const root = status?.currentProjectRoot ?? currentProjectRoot;
   const view = {
-    ...summaryOf(status), activity, notice, alert,
+    ...summaryOf(status), activity, notice, alert, gatewayCheckedAt: status?.gatewayCheckedAt ?? null,
     remoteText: pausePending ? '重试暂停远程访问' : gateway === 'suspended' ? '恢复远程访问' : '暂停远程访问',
     remoteAction: pausePending ? 'suspend' : gateway === 'suspended' ? 'resume' : 'suspend',
     remoteEnabled: !busy && controllable, checkEnabled: !busy,

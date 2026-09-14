@@ -75,7 +75,7 @@ Access Key replacement uses the existing application/CLI transaction. Device ide
 
 The dedicated site is `/etc/caddy/conf.d/team-devspace-downloads.caddy`; it uses the existing import in the main Caddyfile. Before reload it validates the whole Caddy configuration, backing up/restoring only its own site if validation or reload fails. Public file serving is rooted at `public/`, not the server root. No employee state, SSH files, private keys or build environment variables enter that directory.
 
-Version URLs use immutable caching; `/`, scripts, stable metadata/aliases and version-history listing use `no-store`. The public homepage is intentionally separate from immutable release directories so product/download copy and layout can evolve without rebuilding four native installers; `npm run downloads:site` regenerates it from the currently active catalog and replaces one static file atomically. Release-specific `index.html` files remain immutable historical pages. One shell `flock` serializes publication operations. Stable activation additionally compares the previous pointer recorded by the publisher so a concurrent publisher cannot silently replace a newer activation.
+Current-version URLs use immutable caching; `/`, scripts and stable metadata/aliases use `no-store`. The public site has no history links or directory browser. The public homepage is intentionally separate from immutable release directories so product/download copy and layout can evolve without rebuilding four native installers; `npm run downloads:site` regenerates it from the currently active catalog and replaces one static file atomically. The current release's `index.html` remains a pinned page. Completed publication retains only the current stable release. One shell `flock` serializes publication operations. Stable activation additionally compares the previous pointer recorded by the publisher so a concurrent publisher cannot silently replace a newer activation.
 
 ## Release, verification and rollback
 
@@ -93,7 +93,7 @@ npm run downloads:publish -- --publish    # SSH upload, verify, activate, refres
 npm run downloads:site                    # homepage-only refresh; no installer rebuild
 ```
 
-Publication first copies all four files to a private random staging directory. Server-side SHA-256 verification must pass before the directory becomes visible. Existing versions cannot change. The publisher then streams all four packages back through public HTTPS and checks exact size/hash, HEAD/ETag and byte-range support. Only then is the stable symlink replaced by an atomic rename. Partial upload, corrupted files or failed HTTPS checks do not change stable.
+Publication first copies all four files to a private random staging directory. Server-side SHA-256 verification must pass before the directory becomes visible. Existing versions cannot change. The publisher revalidates complete server-side SHA-256 hashes, then checks the public catalog/checksum sidecars, HEAD size/ETag/Accept-Ranges and bounded first/last byte ranges for all four packages. This verifies delivery without downloading all four packages again; it does not independently hash every byte over public HTTPS. Add `--full-https-verify` for that stronger diagnostic check. Employee installation scripts still verify complete size and SHA-256 before installation. Only then is the stable symlink replaced by an atomic rename. Partial upload, corrupted files or failed HTTPS checks do not change stable. After stable scripts and the homepage pass read-back verification, the publisher removes other version directories under the owned server root. Pruning refuses to run if stable changed concurrently; a homepage publication likewise verifies its expected stable version.
 
 Historical import is explicit and still checks the original source commit and exact final-byte acceptance:
 
@@ -101,15 +101,15 @@ Historical import is explicit and still checks the original source commit and ex
 npm run downloads:publish -- --publish --version <version> --commit <40-hex-source-commit> --directory <four-target-artifact-directory>
 ```
 
-Safe server-side rollback revalidates the retained files and switches the same pointer:
+Recovery during an incomplete publication can revalidate a still-present release and switch the same pointer:
 
 ```sh
 npm run downloads:publish -- --activate <previous-version>
 ```
 
-This changes future downloads, not already-running clients. Client downgrade requires an explicitly compatible historical installer; there is no generic promise that future state-schema migrations are backward-compatible. The current release adds no state-schema migration. A corrupt old release cannot be activated. Keep both current and a known-good previous version; do not automatically delete releases needed for rollback. Private GitHub release assets may serve as off-server backups, without being part of employee installation.
+This changes future downloads, not already-running clients. Client downgrade requires an explicitly compatible historical installer; there is no generic promise that future state-schema migrations are backward-compatible. The current release adds no state-schema migration. A corrupt old release cannot be activated. After a successful publication, older installers are deliberately removed rather than kept for rollback. Recovery after pruning requires rebuilding or explicitly re-publishing accepted bytes. Already-running clients are untouched, but an old pinned download URL will no longer support a new download or resumed transfer.
 
-The deployed 0.2.2 packages were accepted at source commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. A later documentation-only verification commit is not a new binary build. To re-publish these exact existing artifacts from such a checkout, supply `--commit 4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`; do not relabel their receipts as coming from the documentation commit. The retained 0.2.1 release keeps its older onboarding behavior and is a recovery reference. Employees should use the current stable entrypoint, not assume that a historical package includes the new credential-free installation flow.
+The deployed 0.2.2 packages were accepted at source commit `4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`. A later documentation-only verification commit is not a new binary build. To re-publish these exact existing artifacts from such a checkout, supply `--commit 4c0e4cdc04c31121eb01e5c2e7f195b989020eaf`; do not relabel their receipts as coming from the documentation commit. Those earlier release observations are historical evidence, not a promise of retained installer availability. Employees should use the current stable entrypoint.
 
 ## Trust and actual evidence
 
