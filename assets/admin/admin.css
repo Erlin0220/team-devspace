@@ -21,7 +21,14 @@ body > main {
   color: var(--pico-muted-color);
 }
 
-.page-header > button {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  flex: 0 0 auto;
+}
+
+.header-actions button {
   width: auto;
   margin: 0;
 }
@@ -57,12 +64,17 @@ tbody tr:last-child td {
 }
 
 .actions {
-  display: flex;
-  gap: .45rem;
   white-space: nowrap;
 }
 
-.actions button {
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  min-height: 100%;
+}
+
+.action-buttons button {
   width: auto;
   margin: 0;
   padding: .4rem .65rem;
@@ -155,6 +167,11 @@ dialog > article {
   border-radius: calc(var(--pico-border-radius) * 1.35);
 }
 
+.policy-dialog-card {
+  width: min(640px, calc(100vw - 2rem));
+  max-width: 640px;
+}
+
 .dialog-header {
   display: flex;
   align-items: flex-start;
@@ -209,6 +226,31 @@ dialog > article {
   display: block;
   margin-top: .35rem;
   color: var(--pico-muted-color);
+}
+
+#policy-form fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.policy-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.policy-editor-grid input,
+.policy-editor-grid select {
+  height: 3rem;
+  min-height: 3rem;
+  margin-bottom: 0;
+}
+
+.form-hint {
+  margin: 1rem 0 0;
+  color: var(--pico-muted-color);
+  font-size: .875rem;
 }
 
 .dialog-actions {
@@ -289,13 +331,23 @@ button.danger:is(:hover, :focus) {
     flex-direction: column;
   }
 
-  .page-header > button,
+  .header-actions,
   .credential-row,
   #copy-key {
     width: 100%;
   }
 
-  .credential-row {
+  .header-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .header-actions button {
+    width: 100%;
+  }
+
+  .credential-row,
+  .policy-editor-grid {
     grid-template-columns: 1fr;
   }
 

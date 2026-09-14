@@ -101,7 +101,7 @@ function renderKeyRow(key) {
   return `<tr><td class="key-name">${label}</td><td><span class="state state-${state}${key.cleanupPending ? ' state-cleanup' : ''}">${escapeHtml(status)}</span></td>` +
     `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code><br><small>${key.clientVersion ? `v${escapeHtml(key.clientVersion)} · ${escapeHtml(key.clientPlatform)}` : '版本未上报；旧客户端需先手动安装一次新版'}</small>` : '<span class="muted">未绑定</span>'}</td>` +
     `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
-    `<td class="actions">${buttons.join(' ') || '—'}</td></tr>`;
+    `<td class="actions"><div class="action-buttons">${buttons.join(' ') || '—'}</div></td></tr>`;
 }
 
 function keyTable(rows, emptyText) {
@@ -121,20 +121,24 @@ export function renderAdmin(keys) {
     `<link rel="stylesheet" href="/admin/assets/admin.css">` +
     `<script type="module" src="/admin/assets/admin.js"></script></head><body><main class="container">` +
     `<header class="page-header"><div><h1>Team DevSpace 管理后台</h1><p>访问密钥与设备绑定管理</p></div>` +
-    `<button type="button" id="show-create">创建访问密钥</button></header>` +
+    `<div class="header-actions"><button type="button" class="secondary" id="policy-edit" disabled>客户端版本策略</button>` +
+    `<button type="button" id="show-create">创建访问密钥</button></div></header>` +
     `<p id="notice" class="notice" role="alert" hidden></p>` +
     `<section class="table-card" aria-label="访问密钥列表">${keyTable(rows, revokedKeys.length ? '暂无有效或待处理的访问密钥' : '暂无访问密钥')}</section>` +
     revokedSection +
-    `<section aria-labelledby="update-policy-title"><h2 id="update-policy-title">客户端版本策略</h2>` +
-    `<p>stable 由四平台发布验收推进。先观察稳定版，再批准自动更新；最低支持版本到期后仅阻止新的远程工作，不远程强行执行安装器。</p>` +
-    `<p id="policy-notice" class="notice" role="status">正在读取版本策略…</p>` +
-    `<form id="policy-form"><fieldset id="policy-fields" disabled><div class="grid">` +
-    `<label>稳定版 stable<input id="policy-stable" readonly></label>` +
-    `<label>自动推广 auto<input id="policy-auto" placeholder="留空表示暂停自动推广" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" maxlength="30"></label>` +
-    `<label>最低支持版本<input id="policy-minimum" placeholder="留空表示暂不强制升级" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" maxlength="30"></label></div>` +
-    `<label>最低版本生效时间（浏览器本地时区）<input id="policy-deadline" type="datetime-local"></label>` +
-    `<p><small>自动推广与最低版本必须是已发布、具有独立签名的版本。旧客户端第一次需手动安装新版；启用最低版本前，应确认设备已更新或已收到安装通知。调低推广版本不会降级已安装客户端。</small></p>` +
-    `<button id="policy-save" type="submit">保存版本策略</button></fieldset></form></section>` +
+    `<dialog id="policy-dialog" aria-labelledby="policy-dialog-title"><article class="policy-dialog-card">` +
+    `<header class="dialog-header"><div><h2 id="policy-dialog-title">编辑版本策略</h2>` +
+    `<p>调整自动推广与最低支持版本，不会远程强制执行安装器。</p></div>` +
+    `<button type="button" id="close-policy-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
+    `<p id="policy-dialog-notice" class="notice" role="alert" hidden></p>` +
+    `<form id="policy-form"><fieldset id="policy-fields" disabled>` +
+    `<div class="policy-editor-grid"><label>稳定版 stable<input id="policy-stable" readonly></label>` +
+    `<label>自动推广 auto<select id="policy-auto"><option value="">暂停自动推广</option></select></label>` +
+    `<label>最低支持版本<select id="policy-minimum"><option value="">不设置最低支持版本</option></select></label>` +
+    `<label id="policy-deadline-field">生效时间<input id="policy-deadline" type="datetime-local"></label></div>` +
+    `<p class="form-hint">自动推广与最低版本必须是已发布且具有独立签名的版本。调低推广版本不会降级已安装客户端。</p>` +
+    `<footer class="dialog-actions"><button type="button" class="secondary" id="policy-cancel">取消</button><button id="policy-save" type="submit">保存策略</button></footer>` +
+    `</fieldset></form></article></dialog>` +
     `<dialog id="create-dialog" aria-labelledby="dialog-title"><article><header class="dialog-header"><div><h2 id="dialog-title">创建访问密钥</h2>` +
     `<p>为员工或设备生成一个独立的连接密钥。</p></div><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
     `<p id="dialog-notice" class="notice" role="alert" hidden></p>` +

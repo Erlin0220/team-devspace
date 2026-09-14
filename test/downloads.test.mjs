@@ -199,6 +199,8 @@ test('server publication is immutable, all-or-nothing, CAS guarded and genuinely
   const retention = `${Math.floor(Date.now() / 1000) + 900}:${first.version}`;
   run('prune', first.version, retention);
   assert.equal(run('current').trim(), 'releases/1.0.0');
+  assert.deepEqual(JSON.parse(await readFile(join(server, 'public/releases.json'), 'utf8')),
+    { schema: 1, versions: ['1.0.1', '1.0.0'] });
   assert.equal(await readFile(join(server, 'public/stable/windows-x64.exe.sha256'), 'utf8'), `${first.catalog.targets['win32-x64'].sha256}\n`);
   assert.ok(await readFile(join(server, 'public/releases/1.0.1/catalog.json')), 'Known-good predecessor remains recoverable');
   await assert.rejects(readFile(join(server, 'public/releases/0.9.9/catalog.json')), { code: 'ENOENT' });

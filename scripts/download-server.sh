@@ -178,6 +178,21 @@ if [[ "$ACTION" = prune ]]; then
     rm -rf -- "$candidate"
     printf 'Removed unused release: %s\n' "$value"
   done
+  index="$PUBLIC/.releases-json-$$"
+  printf '{"schema":1,"versions":[' > "$index"
+  first=1
+  while IFS= read -r value; do
+    if [[ "$first" -eq 0 ]]; then printf ',' >> "$index"; fi
+    first=0
+    printf '"%s"' "$value" >> "$index"
+  done < <(for candidate in "$PUBLIC/releases/"*; do
+    [[ -d "$candidate" && ! -L "$candidate" ]] || continue
+    value=${candidate##*/}
+    version_ok "$value" && printf '%s\n' "$value"
+  done | sort -Vr)
+  printf ']}\n' >> "$index"
+  chmod 0444 "$index"
+  mv -Tf "$index" "$PUBLIC/releases.json"
   exit 0
 fi
 

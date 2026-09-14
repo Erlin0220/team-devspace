@@ -164,42 +164,113 @@ function initialize() {
 
   const policyForm = document.querySelector('#policy-form');
   if (policyForm) {
-    const policyNotice = document.querySelector('#policy-notice');
+    const policyDialog = document.querySelector('#policy-dialog');
+    const policyDialogNotice = document.querySelector('#policy-dialog-notice');
     const fields = document.querySelector('#policy-fields');
+    const editButton = document.querySelector('#policy-edit');
+    const cancelButton = document.querySelector('#policy-cancel');
+    const closeButton = document.querySelector('#close-policy-dialog');
+    const autoSelect = document.querySelector('#policy-auto');
+    const minimumSelect = document.querySelector('#policy-minimum');
+    const deadlineField = document.querySelector('#policy-deadline-field');
     let policy;
+    let versions = [];
+    const closePolicyEditor = () => {
+      if (policyDialog.open) policyDialog.close();
+      clearNotice(policyDialogNotice);
+    };
+    const openPolicyEditor = () => {
+      if (!policy || fields.disabled) return;
+      renderPolicy(policy);
+      clearNotice(policyDialogNotice);
+      if (!policyDialog.open) policyDialog.showModal();
+      requestAnimationFrame(() => document.querySelector('#policy-auto').focus());
+    };
     const renderPolicy = value => {
       policy = value;
       document.querySelector('#policy-stable').value = value.stable;
-      document.querySelector('#policy-auto').value = value.auto ?? '';
-      document.querySelector('#policy-minimum').value = value.minimumSupported ?? '';
+      versions = [...new Set((Array.isArray(value.selectableVersions) ? value.selectableVersions :
+        [value.stable, value.auto, value.minimumSupported]).filter(Boolean))];
+      autoSelect.replaceChildren(new Option('暂停自动推广', ''));
+      for (const version of versions) autoSelect.add(new Option(version, version));
+      autoSelect.value = value.auto ?? '';
+      const renderMinimumOptions = selected => {
+        const previous = selected ?? minimumSelect.value;
+        minimumSelect.replaceChildren(new Option('不设置最低支持版本', ''));
+        if (autoSelect.value) {
+          for (const version of versions) {
+            if (compareVersionText(version, autoSelect.value) <= 0) minimumSelect.add(new Option(version, version));
+          }
+        }
+        minimumSelect.disabled = !autoSelect.value;
+        minimumSelect.value = [...minimumSelect.options].some(option => option.value === previous) ? previous : '';
+        deadlineField.hidden = !minimumSelect.value;
+        if (!minimumSelect.value) document.querySelector('#policy-deadline').value = '';
+      };
+      renderMinimumOptions(value.minimumSupported ?? '');
       const deadline = value.enforceAfter ? new Date(value.enforceAfter) : null;
       document.querySelector('#policy-deadline').value = deadline
         ? new Date(deadline.getTime() - deadline.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+      deadlineField.hidden = !minimumSelect.value;
       fields.disabled = false;
+      editButton.disabled = false;
     };
+    const compareVersionText = (left, right) => {
+      const a = left.split('.').map(Number), b = right.split('.').map(Number);
+      for (let index = 0; index < 3; index++) if (a[index] !== b[index]) return a[index] - b[index];
+      return 0;
+    };
+    const refreshMinimumOptions = () => {
+      const selected = minimumSelect.value;
+      minimumSelect.replaceChildren(new Option('不设置最低支持版本', ''));
+      if (autoSelect.value) {
+        for (const version of versions) {
+          if (compareVersionText(version, autoSelect.value) <= 0) minimumSelect.add(new Option(version, version));
+        }
+      }
+      minimumSelect.disabled = !autoSelect.value;
+      minimumSelect.value = [...minimumSelect.options].some(option => option.value === selected) ? selected : '';
+      deadlineField.hidden = !minimumSelect.value;
+      if (!minimumSelect.value) document.querySelector('#policy-deadline').value = '';
+    };
+    autoSelect.addEventListener('change', refreshMinimumOptions);
+    minimumSelect.addEventListener('change', () => {
+      deadlineField.hidden = !minimumSelect.value;
+      if (!minimumSelect.value) document.querySelector('#policy-deadline').value = '';
+    });
+    editButton.addEventListener('click', openPolicyEditor);
+    cancelButton.addEventListener('click', () => {
+      if (policy) renderPolicy(policy);
+      closePolicyEditor();
+    });
+    closeButton.addEventListener('click', closePolicyEditor);
+    policyDialog.addEventListener('click', event => {
+      if (event.target === policyDialog) closePolicyEditor();
+    });
     void adminJson('/admin/update-policy', { method: 'GET' }).then(({ response, result }) => {
       if (!response.ok) throw new Error(errorText(result.error));
       renderPolicy(result);
-      showNotice(policyNotice, '客户端每 6–7 小时检查一次；最低版本策略在服务端约一分钟内生效。');
-    }).catch(error => showNotice(policyNotice, `无法读取版本策略：${error.message}。密钥管理不受影响。`));
+    }).catch(error => showNotice(pageNotice, `无法读取版本策略：${error.message}。密钥管理不受影响。`));
     policyForm.addEventListener('submit', async event => {
       event.preventDefault();
       if (!policy || fields.disabled) return;
-      const minimumSupported = document.querySelector('#policy-minimum').value.trim() || null;
+      const minimumSupported = minimumSelect.value || null;
       const date = document.querySelector('#policy-deadline').value;
-      if (minimumSupported && !date) { showNotice(policyNotice, '请设置最低版本生效时间，为员工留出更新时间。'); return; }
+      if (minimumSupported && !date) { showNotice(policyDialogNotice, '请设置最低版本生效时间，为员工留出更新时间。'); return; }
       if (minimumSupported && !confirm('到期后，低于最低支持版本或尚未上报版本的设备将不能开始新的远程工作。确认已通知员工并保留升级恢复入口吗？')) return;
       fields.disabled = true;
-      showNotice(policyNotice, '正在验证签名发布产物并保存策略…');
+      showNotice(policyDialogNotice, '正在验证签名发布产物并保存策略…');
       try {
         const { response, result } = await adminJson('/admin/update-policy', { method: 'POST',
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-            revision: policy.revision, auto: document.querySelector('#policy-auto').value.trim() || null,
+            revision: policy.revision, auto: autoSelect.value || null,
             minimumSupported, enforceAfter: minimumSupported ? new Date(date).toISOString() : null,
           }) });
         if (!response.ok) throw new Error(errorText(result.error));
-        renderPolicy(result); showNotice(policyNotice, '版本策略已保存；不会远程执行安装器或降级已安装客户端。');
-      } catch (error) { showNotice(policyNotice, `保存未确认：${error.message}。请刷新核对后再操作。`); }
+        renderPolicy({ ...result, selectableVersions: versions });
+        closePolicyEditor();
+        showNotice(pageNotice, '版本策略已保存；不会远程执行安装器或降级已安装客户端。');
+      } catch (error) { showNotice(policyDialogNotice, `保存未确认：${error.message}。请刷新核对后再操作。`); }
       finally { fields.disabled = false; }
     });
   }
@@ -218,7 +289,7 @@ function initialize() {
       : '上次创建结果尚未确认，请使用同一密钥重试，不要重新生成或分发。');
   }
 
-  document.querySelector('#show-create').addEventListener('click', () => {
+  const showCreate = () => {
     if (credentialBusy) return;
     if (pending) {
       showCredential(pending);
@@ -228,7 +299,8 @@ function initialize() {
       return;
     }
     showCreateForm();
-  });
+  };
+  document.querySelector('#show-create').addEventListener('click', showCreate);
   const closeCreateDialog = () => { if (!credentialBusy) createDialog.close(); };
   document.querySelector('#close-dialog').addEventListener('click', closeCreateDialog);
   document.querySelector('#cancel-create').addEventListener('click', closeCreateDialog);

@@ -5,7 +5,7 @@ import assets from './assets.mjs';
 import { logRequest } from './observability.mjs';
 import { AdminService, AdminServiceError } from './admin-service.mjs';
 import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
-import { publicUpdatePolicy, saveUpdatePolicy, updateRules, publicationLease } from './update-policy.mjs';
+import { adminUpdatePolicy, publicUpdatePolicy, saveUpdatePolicy, updateRules, publicationLease } from './update-policy.mjs';
 import { UPDATE_VERSION, versionUnsupported } from '../client/update-policy.mjs';
 import { DOWNLOAD_TARGETS } from '../client/release-catalog.mjs';
 
@@ -358,7 +358,7 @@ export default {
           else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
           else if (pathname.startsWith('/admin')) response = await adminWeb(request, env,
             new AdminService(store, { remove: row => new Cloudflare(env).remove(row) }),
-            { read: () => publicUpdatePolicy(env, store), save: input => saveUpdatePolicy(env, store, input) });
+            { read: () => adminUpdatePolicy(env, store), save: input => saveUpdatePolicy(env, store, input) });
           else throw new HttpError(404, 'not_found');
         }
       }

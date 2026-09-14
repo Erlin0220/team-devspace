@@ -97,10 +97,18 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   assert.equal(escapeHtml(`<&"' `), '&lt;&amp;&quot;&#39; ');
   const emptyAdmin = renderAdmin([]);
   assert.ok(emptyAdmin.includes('暂无访问密钥'));
+  assert.ok(emptyAdmin.includes('<main class="container">'));
+  assert.ok(emptyAdmin.includes('class="header-actions"'));
+  assert.ok(emptyAdmin.includes('id="policy-edit"'));
+  assert.ok(emptyAdmin.includes('<dialog id="policy-dialog"'));
+  assert.ok(emptyAdmin.includes('id="policy-dialog-notice"'));
+  assert.ok(emptyAdmin.includes('<select id="policy-auto">'));
+  assert.ok(emptyAdmin.includes('<select id="policy-minimum">'));
   assert.ok(emptyAdmin.includes('<dialog id="create-dialog"'));
   assert.ok(emptyAdmin.includes('<dialog id="action-dialog"'));
   assert.ok(emptyAdmin.includes('id="copy-key"'));
   assert.ok(emptyAdmin.includes('placeholder="例如：张三-Windows"'));
+  assert.ok(!emptyAdmin.includes('class="admin-shell"'));
 
   const lifecycleAdmin = renderAdmin([
     { id, label: 'Active', state: 'active', deviceId: 'device-active', bindingId, updatedAt: row.updated_at, cleanupPending: false },

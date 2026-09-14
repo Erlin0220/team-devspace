@@ -63,6 +63,7 @@ async function fixture(t) {
       const url = new URL(request.url);
       if (url.origin === release.distribution.origin) {
         if (url.pathname === '/catalog.json') return Response.json(updateTestCatalog());
+        if (url.pathname === '/releases.json') return Response.json({ schema: 1, versions: ['0.2.5', '0.2.4'] });
         const version = /^\/releases\/(0\.2\.[45])\/update\.json$/.exec(url.pathname)?.[1];
         if (!version || switches.unsignedUpdate) return new Response('not found', { status: 404 });
         const signed = await signUpdateFixture(updateTestCatalog(version));
@@ -446,7 +447,9 @@ test('update policy verifies signed releases, rejects stale edits, and separates
   await f.request('/v1/admin/publication', f.adminToken, { action: 'end', token });
   assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, revision: 1 })).status, 200);
   const auth = await f.accessHeaders();
-  assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin/update-policy', { headers: auth })).status, 200);
+  const adminPolicy = await f.mf.dispatchFetch('https://team.example.test/admin/update-policy', { headers: auth });
+  assert.equal(adminPolicy.status, 200);
+  assert.deepEqual((await adminPolicy.json()).selectableVersions, ['0.2.5', '0.2.4']);
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin/update-policy', { method: 'POST',
     headers: { ...auth, 'Content-Type': 'application/json', Origin: 'https://attacker.test', 'Sec-Fetch-Site': 'cross-site' }, body: JSON.stringify({ ...policy, revision: 2 }) })).status, 403);
 });

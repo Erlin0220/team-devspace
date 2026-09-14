@@ -1,5 +1,5 @@
 import release from '../release.config.json' with { type: 'json' };
-import { boundedJson, validateUpdatePolicy, verifySignedCatalog } from '../client/update-policy.mjs';
+import { boundedJson, compareVersions, UPDATE_VERSION, validateUpdatePolicy, verifySignedCatalog } from '../client/update-policy.mjs';
 import { validateCatalog } from '../client/release-catalog.mjs';
 import { AdminServiceError } from './admin-service.mjs';
 
@@ -30,6 +30,42 @@ export function clearUpdatePolicyCache(env) { cache.delete(env.PUBLIC_ORIGIN); }
 export async function publicUpdatePolicy(env, store) {
   const [rule, catalog] = await Promise.all([updateRules(env, store), fetchJson(`${origin}/catalog.json`)]);
   return validateUpdatePolicy({ ...rule, stable: validateCatalog(catalog).version });
+}
+
+function validateReleaseIndex(value) {
+  if (value?.schema !== 1 || !Array.isArray(value.versions) || value.versions.length > 64 ||
+      value.versions.some(version => !UPDATE_VERSION.test(version ?? '')) ||
+      new Set(value.versions).size !== value.versions.length) throw new Error('Invalid release index');
+  return value.versions;
+}
+
+async function selectableVersions(policy) {
+  let candidates;
+  try { candidates = validateReleaseIndex(await fetchJson(`${origin}/releases.json`)); }
+  catch { candidates = []; }
+  const pinned = [policy.stable, policy.auto, policy.minimumSupported].filter(Boolean);
+  for (const version of pinned) {
+    if (version && !candidates.includes(version)) candidates.push(version);
+  }
+  const verified = [];
+  for (const version of candidates) {
+    if (compareVersions(version, policy.stable) > 0) continue;
+    try {
+      await verifySignedCatalog(await fetchJson(`${origin}/releases/${version}/update.json`),
+        release.distribution.updatePublicKey, version);
+      verified.push(version);
+    } catch {}
+  }
+  // Never hide the already-active policy from the editor during a transient
+  // distribution outage. New choices still come only from verified signed releases.
+  return [...new Set([...verified, ...pinned])]
+    .filter(version => compareVersions(version, policy.stable) <= 0)
+    .sort((left, right) => compareVersions(right, left));
+}
+
+export async function adminUpdatePolicy(env, store) {
+  const policy = await publicUpdatePolicy(env, store);
+  return { ...policy, selectableVersions: await selectableVersions(policy) };
 }
 
 export async function saveUpdatePolicy(env, store, input) {
