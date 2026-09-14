@@ -42,8 +42,8 @@ export async function runTray(home = stateHome(), options = {}) {
     const item = findMenuAction(controller.snapshot().menu, action);
     if (!item || exiting || closed) return;
     try {
-      if (['settings', 'troubleshoot', 'about'].includes(action)) {
-        await openSettings(action === 'troubleshoot' ? 'diagnostics' : action === 'about' ? 'about' : undefined);
+      if (['settings', 'troubleshoot', 'about', 'updates'].includes(action)) {
+        await openSettings(action === 'troubleshoot' ? 'diagnostics' : ['about', 'updates'].includes(action) ? action : undefined);
       }
       else if (action === 'exit') {
         exiting = true;
@@ -57,7 +57,7 @@ export async function runTray(home = stateHome(), options = {}) {
       process.stderr.write(`[Team DevSpace desktop] ${action}: ${desktopErrorText(error)}\n`);
       // Persistent errors are visible in the controller snapshot, not repeated
       // modal native alerts that can block the menu or hide operation progress.
-      if (!['settings', 'troubleshoot', 'about'].includes(action) && !exiting && !closed) await openSettings().catch(() => {});
+      if (!['settings', 'troubleshoot', 'about', 'updates'].includes(action) && !exiting && !closed) await openSettings().catch(() => {});
     }
   };
   const lines = createInterface({ input: child.stdout });

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { randomSecret, atomicJson } from '../client/state.mjs';
@@ -98,4 +99,16 @@ test('unmodified DevSpace: local OAuth, real MCP read/write/shell, roots and bri
   assert.equal(await readFile(join(root, 'created.txt'), 'utf8'), 'written through the authenticated MCP path');
   const shell = await client.callTool({ name: 'bash', arguments: { workspaceId, command: 'printf team-devspace-shell-ok', timeout: 10 } });
   assert.ok(!shell.isError && JSON.stringify(shell).includes('team-devspace-shell-ok'), JSON.stringify(shell));
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST', headers: { ...headers, 'X-Team-Update-Mode': 'automatic' } })).status, 409);
+  const working = client.callTool({ name: 'bash', arguments: { workspaceId, command: 'sleep 2; printf completed-before-update', timeout: 10 } });
+  await sleep(250);
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST', headers })).status, 409);
+  assert.ok(JSON.stringify(await working).includes('completed-before-update'));
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'POST', headers })).status, 200);
+  const deniedDuringUpdate = await fetch(`${endpoint}/mcp`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'initialize' }) });
+  assert.equal(deniedDuringUpdate.status, 503);
+  assert.equal((await fetch(`${endpoint}/update-drain`, { method: 'DELETE', headers })).status, 200);
+  assert.ok((await client.listTools()).tools.some(tool => tool.name === 'open_workspace'));
 });

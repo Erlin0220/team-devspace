@@ -34,7 +34,8 @@ test('Admin Service is the single issue/list/revoke/reset lifecycle owner', asyn
   const pending = new AdminService(store, { remove: async () => { throw new Error('offline'); } });
   assert.deepEqual(await pending.revokeKey(id), {
     key: { id, label: 'Alice', state: 'revoked', deviceId: 'device-id', bindingId,
-      updatedAt: '2026-09-10T00:00:00.000Z', cleanupPending: false },
+      updatedAt: '2026-09-10T00:00:00.000Z', cleanupPending: false,
+      clientVersion: null, clientPlatform: null, versionReportedAt: null },
     cleanup: 'pending', error: 'connectivity_cleanup_pending', retryable: true,
   });
   const revoked = new AdminService({ ...store, disable: async () => null }, cloud);

@@ -36,6 +36,13 @@
       </form>
     </details>
   </section>
+  <section aria-labelledby="updates-title">
+    <div class="section-heading"><h2 id="updates-title">软件更新</h2><span id="update-version" class="badge"></span></div>
+    <p id="update-description" role="status">尚未检查软件更新</p>
+    <div class="actions"><button id="update-check" class="secondary">检查更新</button><button id="update-apply" disabled>更新并重新连接</button></div>
+    <label><input id="update-auto" type="checkbox"> 自动更新到管理员已批准的版本</label>
+    <p class="hint">低频检查，不打断正在执行的远程请求。更新沿用设备绑定、Access Key、项目目录和暂停状态；macOS 安装仍需系统授权。关闭自动更新不会取消企业最低支持版本要求。</p>
+  </section>
   <section aria-labelledby="diagnostics-title" id="diagnostics-section">
     <h2 id="diagnostics-title" tabindex="-1">诊断与修复</h2>
     <div class="actions"><button id="check" class="secondary">检查连接</button><button id="restart" class="secondary" disabled>重启连接</button><button id="logs" class="secondary">打开日志</button><button id="diagnostics" class="secondary">查看诊断</button><button id="copy" class="secondary" hidden>复制诊断</button></div>

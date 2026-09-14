@@ -13,6 +13,7 @@ import { diagnosticReport, openLogs, restartTeamDevSpace,
 import { runTray } from './tray.mjs';
 import { desktopErrorText } from './desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
+import { checkForUpdates, applyUpdate, updateStatus, setAutomaticUpdates } from './updates.mjs';
 
 const HELP = `Team DevSpace
   setup                             Enter Access Key privately and choose a project
@@ -21,6 +22,8 @@ const HELP = `Team DevSpace
   setup --request-file <private-installer-request.json>
   setup-gui                         Native macOS first-run setup
   status                            Show local and gateway health (no secrets)
+  update check | apply | status     Discover, install or inspect trusted updates
+  update auto on | off              Set automatic approved-version updates
   repair                            Recreate local startup or resume pending Enrollment
   start | stop | restart            Control your user-owned runtime
   suspend | resume                  Fail-closed remote access safety switch
@@ -64,6 +67,15 @@ export async function main(argv = process.argv.slice(2)) {
     if (changingKey || !previous?.accessKey || process.stdin.isTTY) {
       values.interactiveInput = await interactiveInput(previous, { root: values.root, changeKey: changingKey });
     }
+  }
+  if (command === 'update') {
+    let result;
+    if (action === 'check' || !action) result = await checkForUpdates(home, { force: true });
+    else if (action === 'status') result = await updateStatus(home);
+    else if (action === 'apply') result = await applyUpdate(home, { onProgress: message => console.error(message) });
+    else if (action === 'auto' && ['on', 'off'].includes(argument)) result = await setAutomaticUpdates(argument === 'on', home);
+    else throw new Error('Use update check, apply, status, or auto on|off');
+    console.log(JSON.stringify(result, null, 2)); return;
   }
   if (command === 'run') {
     if (action === 'tray') await runTray(home);

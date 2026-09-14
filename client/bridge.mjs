@@ -47,6 +47,7 @@ export function rewriteMcpRequestBody(body, state) {
 
 export function createBridge(state, home) {
   const oauth = new LocalOAuth(state, home);
+  let activeWork = 0, lastWorkAt = Date.now(), updateDrainUntil = 0;
   return http.createServer(async (req, res) => {
     if (!matchesSecret(req.headers.authorization, `Bearer ${state.deviceSecret}`)) {
       fail(res, 401, 'device_credential_required'); return;
@@ -59,11 +60,28 @@ export function createBridge(state, home) {
       res.end(JSON.stringify({ service: 'team-devspace-bridge', deviceId: state.deviceId, bindingId: state.bindingId }));
       return;
     }
+    if (req.url === '/update-drain' && ['POST', 'DELETE'].includes(req.method)) {
+      req.resume();
+      if (req.method === 'DELETE') updateDrainUntil = 0;
+      else {
+        const automatic = req.headers['x-team-update-mode'] === 'automatic';
+        if (activeWork || (automatic && Date.now() - lastWorkAt < 10 * 60 * 1000)) { fail(res, 409, 'remote_work_active'); return; }
+        // A bounded admission pause, not another installer/rollback state machine.
+        // Failed handoffs release it; process restart or expiry also recovers it.
+        updateDrainUntil = Date.now() + 10 * 60 * 1000;
+      }
+      res.writeHead(200, { 'Cache-Control': 'no-store' }); res.end(); return;
+    }
     if (req.url !== '/mcp' || !['GET', 'POST', 'DELETE'].includes(req.method)) {
       fail(res, 404, 'not_found'); return;
     }
     if (Number(req.headers['content-length'] ?? 0) > REQUEST_LIMIT) {
       fail(res, 413, 'body_too_large'); return;
+    }
+    if (req.method === 'POST') {
+      if (Date.now() < updateDrainUntil) { fail(res, 503, 'client_update_in_progress'); return; }
+      activeWork++; lastWorkAt = Date.now();
+      res.once('close', () => { activeWork--; lastWorkAt = Date.now(); });
     }
     let token;
     try { token = await oauth.token(); } catch { fail(res, 503, 'local_devspace_unavailable'); return; }

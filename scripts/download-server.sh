@@ -155,12 +155,28 @@ fi
 if [[ "$ACTION" = prune ]]; then
   [[ "$(readlink "$PUBLIC/stable")" = "releases/$ARG" ]] || { echo 'Stable changed; refusing to prune' >&2; exit 1; }
   verify "$DEST"
+  [[ "$STAGE" =~ ^[0-9]{10}:[0-9A-Za-z.,-]+$ ]] || { echo 'Explicit policy retention and a live publication lease are required' >&2; exit 2; }
+  expires=${STAGE%%:*}
+  versions=${STAGE#*:}
+  [[ "$expires" -gt $(( $(date +%s) + 120 )) ]] || { echo 'Publication lease expired; refusing to prune' >&2; exit 1; }
+  IFS=',' read -ra retained <<< "$versions"
+  for value in "${retained[@]}"; do
+    version_ok "$value" && [[ -d "$PUBLIC/releases/$value" && ! -L "$PUBLIC/releases/$value" ]] || { echo 'A retained policy release is missing' >&2; exit 1; }
+  done
+  # Reuse the activation log, rather than a second mutable rollback pointer.
+  previous=$(awk -F '\t' -v current="releases/$ARG" '$3 == current && $2 != current && $2 ~ /^releases\// { value=$2 } END { print value }' "$ROOT/activations.log")
+  previous=${previous#releases/}
+  keep=",$ARG,$versions,"
+  if version_ok "$previous"; then keep="$keep$previous,"; fi
   for candidate in "$PUBLIC/releases/"*; do
     [[ -d "$candidate" && ! -L "$candidate" && "$candidate" != "$DEST" ]] || continue
-    version_ok "${candidate##*/}" || continue
+    value=${candidate##*/}
+    version_ok "$value" || continue
+    if [[ "$keep" = *",$value,"* ]]; then printf 'Retained recovery/policy release: %s\n' "$value"; continue; fi
+    [[ "$expires" -gt $(( $(date +%s) + 120 )) ]] || { echo 'Publication lease is expiring; remaining releases retained' >&2; exit 1; }
     find "$candidate" -type d -exec chmod u+w {} +
     rm -rf -- "$candidate"
-    printf 'Removed old release: %s\n' "${candidate##*/}"
+    printf 'Removed unused release: %s\n' "$value"
   done
   exit 0
 fi

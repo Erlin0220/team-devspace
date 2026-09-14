@@ -13,6 +13,7 @@
     "mode": "static-https",
     "origin": "https://downloads.568920429.xyz",
     "trustProfile": "internal-free",
+    "updatePublicKey": "R4FMEsumpqfXa5iVX_xu05WAelFQMDWuOdevtUZbPmA",
     "macosMinimumVersion": "12.0",
     "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]
   }

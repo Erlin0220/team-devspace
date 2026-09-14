@@ -60,7 +60,7 @@ test('shared presentation distinguishes intent, observed health and partial paus
 
 test('the shared native menu contains only status, common actions and Control Center entry', () => {
   const view = trayState(healthy);
-  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['suspend', 'settings', 'about', 'exit']);
+  assert.deepEqual(view.menu.filter(item => item.action).map(item => item.action), ['suspend', 'settings', 'updates', 'about', 'exit']);
   const diagnostics = view.menu.find(item => item.id === 'troubleshoot');
   assert.deepEqual(diagnostics.children.filter(item => item.action).map(item => item.action),
     ['check', 'restart', 'repair', 'logs', 'troubleshoot']);

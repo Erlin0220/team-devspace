@@ -5,6 +5,9 @@ import assets from './assets.mjs';
 import { logRequest } from './observability.mjs';
 import { AdminService, AdminServiceError } from './admin-service.mjs';
 import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
+import { publicUpdatePolicy, saveUpdatePolicy, updateRules, publicationLease } from './update-policy.mjs';
+import { UPDATE_VERSION, versionUnsupported } from '../client/update-policy.mjs';
+import { DOWNLOAD_TARGETS } from '../client/release-catalog.mjs';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const HASH = /^[a-f0-9]{64}$/;
@@ -63,6 +66,12 @@ async function enrollmentPreflight(request, store) {
   return json({ available: key.state === 'issued' });
 }
 
+function validateClientInventory(body, required = false) {
+  if (!required && body.version === undefined && body.platform === undefined) return false;
+  if (!UPDATE_VERSION.test(body.version ?? '') || !DOWNLOAD_TARGETS.includes(body.platform)) throw new HttpError(400, 'invalid_client_version');
+  return true;
+}
+
 async function enroll(request, env, store) {
   const key = await employeeKey(request, store);
   const body = await smallJson(request);
@@ -70,6 +79,7 @@ async function enroll(request, env, store) {
       !Number.isInteger(body.bridgePort) || body.bridgePort < 1024 || body.bridgePort > 65535) {
     throw new HttpError(400, 'invalid_enrollment');
   }
+  const hasVersion = validateClientInventory(body);
   const deviceHash = await sha256(body.deviceSecret);
   let row = key;
   if (row.state === 'issued') {
@@ -97,6 +107,7 @@ async function enroll(request, env, store) {
     await cloud.remove({ ...row, dns_id: configured.dnsId });
     throw new HttpError(409, 'enrollment_cancelled');
   }
+  if (hasVersion) await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
   const controlApiVersion = Number(env.CONTROL_API_VERSION);
   if (!Number.isInteger(controlApiVersion) || controlApiVersion < 1) throw new HttpError(503, 'release_not_configured');
   return json({ keyId: row.id, deviceId: row.device_id, bindingId: row.binding_id,
@@ -120,12 +131,19 @@ async function deviceIdentity(request, store, allowedStates = ['active', 'suspen
   const row = await store.byId(body.keyId);
   if (!row || !allowedStates.includes(row.state) || row.binding_id !== body.bindingId ||
       !equalSecret(row.device_secret_hash, await sha256(secret))) throw new HttpError(403, 'device_disabled');
-  return { row, secret };
+  return { row, secret, body };
 }
 
 async function deviceStatus(request, store) {
   const { row } = await deviceIdentity(request, store);
   return json({ state: row.state, deviceId: row.device_id, bindingId: row.binding_id });
+}
+
+async function reportDeviceVersion(request, store) {
+  const { row, body } = await deviceIdentity(request, store);
+  validateClientInventory(body, true);
+  await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
+  return json({ reported: true });
 }
 
 async function suspendDevice(request, store) {
@@ -147,7 +165,8 @@ async function releaseDevice(request, env, store) {
 }
 
 async function resumeDevice(request, store) {
-  const { row, secret } = await deviceIdentity(request, store);
+  const { row, secret, body } = await deviceIdentity(request, store);
+  const hasVersion = validateClientInventory(body);
   if (row.state === 'suspended') {
     if (!row.hostname || !row.tunnel_id) throw new HttpError(503, 'device_not_ready');
     let health;
@@ -164,6 +183,7 @@ async function resumeDevice(request, store) {
     await health.body?.cancel();
   }
   if (!await store.resume(row.id, row.binding_id)) throw new HttpError(409, 'access_lifecycle_changed');
+  if (hasVersion) await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
   return json({ state: 'active', deviceId: row.device_id, bindingId: row.binding_id });
 }
 
@@ -171,6 +191,9 @@ async function admin(request, env, store, pathname) {
   if (!env.ADMIN_TOKEN || env.ADMIN_TOKEN.length < 32) throw new HttpError(503, 'admin_not_configured');
   if (!equalSecret(bearer(request), env.ADMIN_TOKEN)) throw new HttpError(401, 'invalid_admin_credential');
   const service = new AdminService(store, { remove: row => new Cloudflare(env).remove(row) });
+  if (pathname === '/v1/admin/publication' && request.method === 'POST') return json(await publicationLease(store, await smallJson(request)));
+  if (pathname === '/v1/admin/update-policy' && request.method === 'GET') return json(await publicUpdatePolicy(env, store));
+  if (pathname === '/v1/admin/update-policy' && request.method === 'POST') return json(await saveUpdatePolicy(env, store, await smallJson(request)));
   if (pathname === '/v1/admin/keys' && request.method === 'GET') return json({ keys: await service.listKeys() });
   if (pathname === '/v1/admin/keys' && request.method === 'POST') {
     const body = await smallJson(request);
@@ -206,6 +229,10 @@ async function proxyMcp(request, env, store) {
   if (row.state === 'suspended') throw new HttpError(403, 'remote_access_suspended');
   if (row.state !== 'active' || !row.hostname || !row.tunnel_id) throw new HttpError(503, 'device_not_ready');
   if (Number(request.headers.get('Content-Length') ?? 0) > MCP_LIMIT) throw new HttpError(413, 'body_too_large');
+  // Existing in-flight responses are not touched. After the grace deadline, deny
+  // new work, but retain stream reconnect/cleanup and every local recovery route.
+  if ((request.method === 'POST' || (request.method === 'GET' && !request.headers.get('mcp-session-id'))) &&
+      versionUnsupported(row.client_version, await updateRules(env, store))) throw new HttpError(426, 'client_upgrade_required');
   const headers = new Headers();
   for (const name of ['accept', 'content-type', 'mcp-protocol-version', 'last-event-id']) {
     const value = request.headers.get(name);
@@ -280,6 +307,11 @@ export function requestOperation(method, pathname) {
   if (pathname === '/mcp') return 'mcp';
   if (pathname === '/v1/enrollment/preflight' && method === 'POST') return 'enrollment_preflight';
   if (pathname === '/v1/enroll' && method === 'POST') return 'enroll';
+  if (pathname === '/v1/update-policy' && method === 'GET') return 'update_policy';
+  if (pathname === '/v1/device/version' && method === 'POST') return 'device_version';
+  if (pathname === '/v1/admin/update-policy') return 'admin_update_policy';
+  if (pathname === '/v1/admin/publication') return 'admin_publication';
+  if (pathname === '/admin/update-policy') return 'admin_web_update_policy';
   if (pathname === '/v1/device/status' && method === 'POST') return 'device_status';
   if (pathname === '/v1/device/suspend' && method === 'POST') return 'device_suspend';
   if (pathname === '/v1/device/resume' && method === 'POST') return 'device_resume';
@@ -314,7 +346,9 @@ export default {
             devspace: env.DEVSPACE_VERSION, controlApi: controlApiVersion });
         } else {
           const store = new KeyStore(env.DB);
-          if (pathname === '/mcp') response = await proxyMcp(request, env, store);
+          if (operation === 'update_policy') response = json(await publicUpdatePolicy(env, store));
+          else if (operation === 'device_version') response = await reportDeviceVersion(request, store);
+          else if (pathname === '/mcp') response = await proxyMcp(request, env, store);
           else if (operation === 'enrollment_preflight') response = await enrollmentPreflight(request, store);
           else if (operation === 'enroll') response = await enroll(request, env, store);
           else if (operation === 'device_status') response = await deviceStatus(request, store);
@@ -323,7 +357,8 @@ export default {
           else if (operation === 'device_release') response = await releaseDevice(request, env, store);
           else if (pathname.startsWith('/v1/admin/')) response = await admin(request, env, store, pathname);
           else if (pathname.startsWith('/admin')) response = await adminWeb(request, env,
-            new AdminService(store, { remove: row => new Cloudflare(env).remove(row) }));
+            new AdminService(store, { remove: row => new Cloudflare(env).remove(row) }),
+            { read: () => publicUpdatePolicy(env, store), save: input => saveUpdatePolicy(env, store, input) });
           else throw new HttpError(404, 'not_found');
         }
       }

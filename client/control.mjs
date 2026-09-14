@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { control } from './http.mjs';
 import { COMPONENTS, installServices, linuxJournalInvocation, serviceAction, serviceLabel } from './platform.mjs';
 import { deviceStatus } from './setup.mjs';
-import { atomicJson, installRoot, loadState, privateDirectory, readJson, stateHome } from './state.mjs';
+import { atomicJson, installRoot, loadState, privateDirectory, readJson, stateHome, RELEASE_VERSION } from './state.mjs';
 import { openWindowsDirectory } from './windows-desktop.mjs';
 import { withDeviceOperation } from './operation.mjs';
 import { linuxServiceManager } from './linux-lifecycle.mjs';
@@ -134,7 +134,8 @@ async function resumeRemoteAccessUnlocked(home = stateHome(), dependencies = {})
         try {
           // cloudflared /ready means an edge connection, not that the Gateway
           // can already reach this device. Keep denial until its probe succeeds.
-          await sendControl(state.gateway, '/v1/device/resume', state.deviceSecret, { body: identity(state), timeout: 15000 });
+          await sendControl(state.gateway, '/v1/device/resume', state.deviceSecret, { body: {
+            ...identity(state), version: RELEASE_VERSION, platform: `${process.platform}-${process.arch}` }, timeout: 15000 });
           resumed = true;
           break;
         } catch (error) {

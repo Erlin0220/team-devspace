@@ -8,6 +8,7 @@ import { DOWNLOAD_TARGETS, ALIASES, packageName, httpsOrigin, validateCatalog, d
 import { buildDownloadCatalog, prepareSite, prepareHomepage, main } from '../scripts/publish-downloads.mjs';
 import { verifyAcceptance } from '../scripts/verify-acceptance.mjs';
 import { renderAdmin } from '../gateway/admin-web.mjs';
+import { signUpdateFixture } from './update-fixture.mjs';
 
 const origin = 'https://downloads.example.com';
 const commit = 'a'.repeat(40);
@@ -33,7 +34,7 @@ async function fixture(t, version = '1.0.0') {
       limitations: ['Synthetic test fixture, not installer execution evidence.'] }));
   }
   const site = join(root, 'site');
-  await prepareSite(input, site, catalog, origin, `Fixture release ${version}\n`);
+  await prepareSite(input, site, catalog, origin, `Fixture release ${version}\n`, { signer: signUpdateFixture });
   return { root, input, catalog, site, version };
 }
 
@@ -191,11 +192,17 @@ test('server publication is immutable, all-or-nothing, CAS guarded and genuinely
   run('verify', first.version);
   assert.throws(() => run('prune', second.version), /Stable changed/);
   await mkdir(join(server, 'public/releases/operator-notes'));
-  run('prune', first.version);
+  const unused = await fixture(t, '0.9.9');
+  await upload(unused, '6'.repeat(32)); run('publish', unused.version, '6'.repeat(32));
+  assert.throws(() => run('prune', first.version), /publication lease/);
+  assert.throws(() => run('prune', first.version, `1000000000:${first.version}`), /expired/);
+  const retention = `${Math.floor(Date.now() / 1000) + 900}:${first.version}`;
+  run('prune', first.version, retention);
   assert.equal(run('current').trim(), 'releases/1.0.0');
   assert.equal(await readFile(join(server, 'public/stable/windows-x64.exe.sha256'), 'utf8'), `${first.catalog.targets['win32-x64'].sha256}\n`);
-  await assert.rejects(readFile(join(server, 'public/releases/1.0.1/catalog.json')), { code: 'ENOENT' });
+  assert.ok(await readFile(join(server, 'public/releases/1.0.1/catalog.json')), 'Known-good predecessor remains recoverable');
+  await assert.rejects(readFile(join(server, 'public/releases/0.9.9/catalog.json')), { code: 'ENOENT' });
   await writeFile(join(server, 'public/releases/operator-notes/kept.txt'), 'outside version ownership');
-  run('prune', first.version); // Idempotent and never removes non-version operator data.
+  run('prune', first.version, retention); // Idempotent and never removes non-version operator data.
   assert.equal(await readFile(join(server, 'public/releases/operator-notes/kept.txt'), 'utf8'), 'outside version ownership');
 });

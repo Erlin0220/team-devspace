@@ -9,10 +9,11 @@ import { desktopErrorText } from './desktop.mjs';
 const ASSETS = { '/': ['control.html', 'text/html; charset=utf-8'],
   '/diagnostics': ['control.html', 'text/html; charset=utf-8'],
   '/about': ['control.html', 'text/html; charset=utf-8'],
+  '/updates': ['control.html', 'text/html; charset=utf-8'],
   '/control.js': ['control.js', 'text/javascript; charset=utf-8'],
   '/control.css': ['control.css', 'text/css; charset=utf-8'] };
 const ACTIONS = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'setup', 'switch-key',
-  'project-root', 'choose-folder', 'logs']);
+  'project-root', 'choose-folder', 'logs', 'update-check', 'update-apply', 'update-auto']);
 const badRequest = (message, status = 400) => Object.assign(new Error(message), { status });
 
 function readBody(request) {
@@ -105,7 +106,8 @@ export async function startLocalControl(controller, { openBrowser = openControlB
       }
       const body = await readBody(request);
       if (!body || typeof body !== 'object' || Array.isArray(body) || !ACTIONS.has(body.action) ||
-          Object.keys(body).some(key => !['action', 'accessKey', 'projectRoot'].includes(key))) throw badRequest('未知控制操作');
+          Object.keys(body).some(key => !['action', 'accessKey', 'projectRoot', 'enabled'].includes(key))) throw badRequest('未知控制操作');
+      if (body.action === 'update-auto' && typeof body.enabled !== 'boolean') throw badRequest('更新偏好无效');
       if (['setup', 'switch-key'].includes(body.action) && !/^tds_[A-Za-z0-9_-]{43}$/.test(body.accessKey ?? '')) {
         throw badRequest('请输入管理员发放的完整 Access Key');
       }
@@ -113,7 +115,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
         throw badRequest('项目目录无效');
       }
       if ((body.action === 'setup' || (body.action === 'project-root' && body.projectRoot !== undefined)) && !body.projectRoot?.trim()) throw badRequest('请输入项目目录');
-      const result = await controller.dispatch(body.action, { accessKey: body.accessKey, projectRoot: body.projectRoot });
+      const result = await controller.dispatch(body.action, { accessKey: body.accessKey, projectRoot: body.projectRoot, enabled: body.enabled });
       // Only a folder picker returns data. Never serialize arbitrary operation/state objects.
       send(200, { ok: true, ...(body.action === 'choose-folder' ? { projectRoot: result ?? null } : {}) });
     } catch (error) { send([400, 401, 403, 404, 409, 413].includes(error.status) ? error.status : 500, { error: desktopErrorText(error) }); }
@@ -125,7 +127,7 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   origin = `http://127.0.0.1:${server.address().port}`;
   return {
     url: `${origin}/#${token}`,
-    open: section => openBrowser(`${origin}/${['diagnostics', 'about'].includes(section) ? section : ''}#${token}`),
+    open: section => openBrowser(`${origin}/${['diagnostics', 'about', 'updates'].includes(section) ? section : ''}#${token}`),
     close: () => new Promise((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());
       // The owner settles controller transactions before closing this surface.

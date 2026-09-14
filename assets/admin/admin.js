@@ -49,6 +49,10 @@ function errorText(code) {
     access_lifecycle_changed: '访问密钥状态已发生变化，请刷新页面后重试',
     invalid_key_request: '访问密钥请求无效',
     request_failed: '请求失败',
+    invalid_update_policy: '版本策略无效：最低支持版本须先批准自动推广，并设置明确的生效时间',
+    update_policy_changed: '另一位管理员已更新策略，请刷新后重新确认',
+    update_release_not_verified: '该版本尚未发布完整的签名验收产物，不能批准推广',
+    update_publication_in_progress: '版本正在发布或清理，请在发布完成后修改策略',
   })[code] ?? code ?? '未知错误';
 }
 
@@ -156,6 +160,48 @@ function initialize() {
       time.title = time.dateTime;
       time.textContent = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
     }
+  }
+
+  const policyForm = document.querySelector('#policy-form');
+  if (policyForm) {
+    const policyNotice = document.querySelector('#policy-notice');
+    const fields = document.querySelector('#policy-fields');
+    let policy;
+    const renderPolicy = value => {
+      policy = value;
+      document.querySelector('#policy-stable').value = value.stable;
+      document.querySelector('#policy-auto').value = value.auto ?? '';
+      document.querySelector('#policy-minimum').value = value.minimumSupported ?? '';
+      const deadline = value.enforceAfter ? new Date(value.enforceAfter) : null;
+      document.querySelector('#policy-deadline').value = deadline
+        ? new Date(deadline.getTime() - deadline.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
+      fields.disabled = false;
+    };
+    void adminJson('/admin/update-policy', { method: 'GET' }).then(({ response, result }) => {
+      if (!response.ok) throw new Error(errorText(result.error));
+      renderPolicy(result);
+      showNotice(policyNotice, '客户端每 6–7 小时检查一次；最低版本策略在服务端约一分钟内生效。');
+    }).catch(error => showNotice(policyNotice, `无法读取版本策略：${error.message}。密钥管理不受影响。`));
+    policyForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!policy || fields.disabled) return;
+      const minimumSupported = document.querySelector('#policy-minimum').value.trim() || null;
+      const date = document.querySelector('#policy-deadline').value;
+      if (minimumSupported && !date) { showNotice(policyNotice, '请设置最低版本生效时间，为员工留出更新时间。'); return; }
+      if (minimumSupported && !confirm('到期后，低于最低支持版本或尚未上报版本的设备将不能开始新的远程工作。确认已通知员工并保留升级恢复入口吗？')) return;
+      fields.disabled = true;
+      showNotice(policyNotice, '正在验证签名发布产物并保存策略…');
+      try {
+        const { response, result } = await adminJson('/admin/update-policy', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+            revision: policy.revision, auto: document.querySelector('#policy-auto').value.trim() || null,
+            minimumSupported, enforceAfter: minimumSupported ? new Date(date).toISOString() : null,
+          }) });
+        if (!response.ok) throw new Error(errorText(result.error));
+        renderPolicy(result); showNotice(policyNotice, '版本策略已保存；不会远程执行安装器或降级已安装客户端。');
+      } catch (error) { showNotice(policyNotice, `保存未确认：${error.message}。请刷新核对后再操作。`); }
+      finally { fields.disabled = false; }
+    });
   }
 
   const previousFlash = sessionStorage.getItem(FLASH_KEY);

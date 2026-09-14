@@ -9,6 +9,10 @@ import { DOWNLOAD_TARGETS, packageName, VERSION, validateCatalog, httpsOrigin, p
 import { installScripts } from './download-commands.mjs';
 import { verifyAcceptance } from './verify-acceptance.mjs';
 import release from '../release.config.json' with { type: 'json' };
+import { signUpdateCatalog } from './sign-updates.mjs';
+import { validateUpdatePolicy, verifySignedCatalog } from '../client/update-policy.mjs';
+import { administrator } from '../client/admin.mjs';
+import { control } from '../client/http.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -23,7 +27,7 @@ export async function buildDownloadCatalog(directory, version, commit) {
   return validateCatalog({ schema: 1, version, commit, targets });
 }
 
-export async function prepareSite(directory, output, catalog, origin, notes) {
+export async function prepareSite(directory, output, catalog, origin, notes, { signer = signUpdateCatalog } = {}) {
   validateCatalog(catalog); httpsOrigin(origin);
   await mkdir(output, { recursive: true });
   if ((await readdir(output)).length) throw new Error('Site staging directory must be empty');
@@ -41,6 +45,7 @@ export async function prepareSite(directory, output, catalog, origin, notes) {
   }
   const scripts = installScripts(catalog, origin);
   await writeFile(join(output, 'catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`);
+  await writeFile(join(output, 'update.json'), `${JSON.stringify(await signer(catalog), null, 2)}\n`);
   await writeFile(join(output, 'install.ps1'), scripts.windows);
   await writeFile(join(output, 'install.sh'), scripts.unix);
   await writeFile(join(output, 'index.html'), downloadPage(catalog, origin));
@@ -208,7 +213,9 @@ export async function main(argv = process.argv.slice(2)) {
     command = async (action, argument = '', stage = '', capture = false) => run('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', server.sshHost,
       ['bash', remoteScript, server.serverRoot, action, argument, stage].map(quote).join(' ')], { capture, timeout: 1800000 });
   }
-  let uploadId;
+  let uploadId, operator, publicationToken;
+  const lease = async action => control(operator.gateway, '/v1/admin/publication', operator.adminToken,
+    { body: { action, token: publicationToken } });
   try {
     if (values['init-server']) {
       await command('prepare');
@@ -256,18 +263,41 @@ export async function main(argv = process.argv.slice(2)) {
       await command('publish', version, uploadId);
       uploadId = null;
     }
+    // Signed metadata is independent of the HTTPS host. Never infer trust from
+    // a checksum hosted beside an executable. Legacy manual recovery remains possible.
+    const signatureResponse = await request(`${origin}/releases/${version}/update.json`);
+    const hasSignature = signatureResponse.status === 200;
+    if (hasSignature) {
+      const signed = await verifySignedCatalog(JSON.parse(await smallBody(signatureResponse)), release.distribution.updatePublicKey, version);
+      if (JSON.stringify(signed) !== JSON.stringify(catalog)) throw new Error('Signed update catalog differs from published package metadata');
+    } else {
+      await signatureResponse.body?.cancel();
+      if (!values.activate || signatureResponse.status !== 404) throw new Error('Published update signature is missing');
+    }
     // Verify final server bytes before bounded public HTTPS delivery probes.
     // No pruning happens until activation, scripts AND homepage verify successfully.
     await command('verify', version);
     await verifyRemote(origin, catalog, { full: Boolean(values['full-https-verify']) });
+    operator = await administrator();
+    if (operator.gateway !== release.gateway) throw new Error('The administrator belongs to a different Gateway');
+    publicationToken = randomUUID();
+    const beforeActivation = await lease('begin');
+    validateUpdatePolicy({ ...beforeActivation.policy, stable: version });
     await command('activate', version, initialStable);
     await stableCheck(origin, catalog);
     await publishHomepage({ origin, catalog, server, command });
-    await command('prune', version);
+    // Renew only around the short activation/cleanup operation, not during upload.
+    // The same existing D1 row prevents admin promotion from racing release deletion.
+    const beforePrune = await lease('begin');
+    validateUpdatePolicy({ ...beforePrune.policy, stable: version });
+    const retained = [...new Set([version, beforePrune.policy.auto, beforePrune.policy.minimumSupported].filter(Boolean))];
+    await command('prune', version, `${Math.floor(beforePrune.expiresAt / 1000)}:${retained.join(',')}`);
     console.log(JSON.stringify({ activated: true, version, commit: catalog.commit, origin,
       previous: initialStable, rollbackChangesInstalledClients: false, verifiedAllFourHttpsDeliveryPaths: true,
-      fullHttpsHash: Boolean(values['full-https-verify']), homepagePublished: true, retainedCurrentReleaseOnly: true }));
+      fullHttpsHash: Boolean(values['full-https-verify']), homepagePublished: true, signedUpdates: hasSignature,
+      retainedPolicyVersions: retained, retainedKnownGoodPredecessor: true }));
   } finally {
+    if (publicationToken && operator) await lease('end').catch(() => console.error('Publication lease will expire automatically; policy edits may be temporarily unavailable.'));
     if (uploadId && command) await command('discard', version, uploadId).catch(() => console.error(`Staging cleanup needs inspection: ${uploadId}`));
     if (remoteScript && server) await run('ssh', ['-o', 'BatchMode=yes', server.sshHost, `rm -f -- ${quote(remoteScript)}`]).catch(() => {});
   }

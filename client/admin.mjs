@@ -59,12 +59,14 @@ export async function adminMain(argv = process.argv.slice(2)) {
   } });
   const [group, action, argument] = positionals;
   if (values.help || !group) {
-    console.log('Team DevSpace administrator\n  key create <employee-label> [--output private-file.json]\n  key list\n  key revoke <id-or-label>\n  device reset <id-or-label>\n  --config <private-admin-config.json>  Optional override\n\nUses the project .runtime/admin.json by default, with the per-user administrator config as a fallback. Never give administrator credentials to employees. Access Key is a bearer credential.');
+    console.log('Team DevSpace administrator\n  key create <employee-label> [--output private-file.json]\n  key list\n  key revoke <id-or-label>\n  device reset <id-or-label>\n  update-policy show\n  update-policy set <policy.json>\n  --config <private-admin-config.json>  Optional override\n\nUses the project .runtime/admin.json by default, with the per-user administrator config as a fallback. Never give administrator credentials to employees. Access Key is a bearer credential.');
     return;
   }
   const config = await administrator(values.config);
   let result;
-  if (group === 'key' && action === 'create') result = await createAccessKey(config, argument, values.output);
+  if (group === 'update-policy' && action === 'show') result = await control(config.gateway, '/v1/admin/update-policy', config.adminToken, { method: 'GET' });
+  else if (group === 'update-policy' && action === 'set' && argument) result = await control(config.gateway, '/v1/admin/update-policy', config.adminToken, { body: await readJson(resolve(argument)) });
+  else if (group === 'key' && action === 'create') result = await createAccessKey(config, argument, values.output);
   else {
     const listed = await control(config.gateway, '/v1/admin/keys', config.adminToken, { method: 'GET' });
     if (group === 'key' && action === 'list') result = listed;

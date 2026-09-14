@@ -41,7 +41,7 @@ export function findMenuAction(menu, action) {
 // Pure projection shared by both native renderers and the Control Center.
 // No runtime dependencies: early native packaging smoke runs before npm ci.
 export function desktopState(status, { busy = false, exiting = false, activity, notice, alert,
-  accessKeyMode = 'setup', currentProjectRoot } = {}) {
+  accessKeyMode = 'setup', currentProjectRoot, updates } = {}) {
   const gateway = status?.gateway ?? status?.remoteAccess;
   const desired = status?.desiredRemoteAccess ?? status?.remoteAccess;
   const enrolled = Boolean(status && status.remoteAccess !== 'not-enrolled');
@@ -71,6 +71,7 @@ export function desktopState(status, { busy = false, exiting = false, activity, 
   };
   const item = (id, text, enabled, action = id) => ({ id, text, enabled, action });
   const separator = id => ({ id, text: '', enabled: false, separator: true });
+  if (updates?.required) { view.status = 'partial'; view.summary = 'Team DevSpace 当前版本需要升级'; }
   view.iconStatus = alert ? 'partial' : activity ? 'busy' : view.status;
   view.tooltip = `Team DevSpace · ${alert ? '需要处理，点击查看设置' : activity ?? view.summary.replace(/^Team DevSpace /, '')}${root ? ` · ${basename(root)}` : ''}`;
   view.menu = [
@@ -87,6 +88,7 @@ export function desktopState(status, { busy = false, exiting = false, activity, 
       item('logs', '打开日志', view.logsEnabled),
       item('diagnostics', '查看完整诊断…', view.diagnosticsEnabled, 'troubleshoot'),
     ] },
+    item('updates', updates?.required ? '需要升级才能继续远程工作…' : updates?.available ? `更新到 ${updates.policy.stable}…` : '软件更新…', !exiting),
     item('about', '关于 Team DevSpace…', !exiting), separator('exit-separator'),
     item('exit', '退出 Team DevSpace', !exiting),
   ];

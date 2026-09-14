@@ -111,7 +111,8 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
 
   onProgress('Contacting the Team Gateway and confirming Enrollment...');
   const binding = await control(gateway, '/v1/enroll', accessKey, {
-    body: { deviceId: state.deviceId, deviceSecret: state.deviceSecret, bridgePort: state.ports.bridge },
+    body: { deviceId: state.deviceId, deviceSecret: state.deviceSecret, bridgePort: state.ports.bridge,
+      version: release.version, platform: `${process.platform}-${process.arch}` },
   });
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
   if (binding.deviceId !== state.deviceId || !uuid.test(binding.bindingId ?? '') || !uuid.test(binding.keyId ?? '') ||

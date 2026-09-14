@@ -8,9 +8,16 @@ import { Miniflare, Log, LogLevel } from 'miniflare';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { reconcileCleanup, requestOperation } from '../gateway/index.mjs';
 import { KeyStore } from '../gateway/store.mjs';
+import release from '../release.config.json' with { type: 'json' };
+import { signUpdateFixture, updateTestCatalog, updateTestPublicKey } from './update-fixture.mjs';
 
 const gatewayScript = (await build({ entryPoints: [resolve('gateway/index.mjs')], bundle: true,
-  format: 'esm', platform: 'browser', write: false, sourcemap: false })).outputFiles[0].text;
+  format: 'esm', platform: 'browser', write: false, sourcemap: false,
+  // Inject an ephemeral key into the TEST bundle only; production has no key override API.
+  plugins: [{ name: 'test-release-key', setup(builder) {
+    builder.onLoad({ filter: /release\.config\.json$/ }, () => ({ loader: 'json', contents: JSON.stringify({ ...release,
+      distribution: { ...release.distribution, updatePublicKey: updateTestPublicKey } }) }));
+  } }] })).outputFiles[0].text;
 
 const ACCESS_ISSUER = 'https://access.example.test';
 const ACCESS_AUD = 'team-devspace-admin-test';
@@ -54,6 +61,14 @@ async function fixture(t) {
       ACCESS_TEAM_DOMAIN: ACCESS_ISSUER, ACCESS_AUD },
     outboundService: async request => {
       const url = new URL(request.url);
+      if (url.origin === release.distribution.origin) {
+        if (url.pathname === '/catalog.json') return Response.json(updateTestCatalog());
+        const version = /^\/releases\/(0\.2\.[45])\/update\.json$/.exec(url.pathname)?.[1];
+        if (!version || switches.unsignedUpdate) return new Response('not found', { status: 404 });
+        const signed = await signUpdateFixture(updateTestCatalog(version));
+        if (switches.invalidUpdateSignature) signed.signature = 'a'.repeat(86);
+        return Response.json(signed);
+      }
       if (url.origin === ACCESS_ISSUER && url.pathname === '/cdn-cgi/access/certs') return Response.json({ keys: [ACCESS_JWK] });
       if (url.hostname !== 'api.cloudflare.com') {
         if (switches.offline) return new Response('tunnel offline', { status: 530 });
@@ -404,6 +419,65 @@ test('reset invalidates the old Device Binding and session before a replacement 
     headers: { Authorization: `Bearer ${key.accessKey}`, 'mcp-session-id': `${old.bindingId}.upstream-session` },
   });
   assert.equal(stale.status, 404);
+});
+
+test('update policy verifies signed releases, rejects stale edits, and separates publication from promotion', async t => {
+  const f = await fixture(t);
+  const original = await f.request('/v1/update-policy').then(res => res.json());
+  assert.deepEqual(original, { schema: 1, stable: '0.2.5', auto: null, minimumSupported: null, enforceAfter: null, revision: 0 });
+  const policy = { auto: '0.2.5', minimumSupported: '0.2.4', enforceAfter: new Date(Date.now() + 86400000).toISOString(), revision: 0 };
+  assert.equal((await f.request('/v1/admin/update-policy', secret(), policy)).status, 401);
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, auto: '0.2.6' })).status, 400);
+  f.switches.unsignedUpdate = true;
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 409);
+  f.switches.unsignedUpdate = false; f.switches.invalidUpdateSignature = true;
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 409);
+  f.switches.invalidUpdateSignature = false;
+  const approved = await f.request('/v1/admin/update-policy', f.adminToken, policy);
+  assert.equal(approved.status, 200); assert.equal((await approved.json()).revision, 1);
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 409);
+  const token = randomUUID();
+  const claim = await f.request('/v1/admin/publication', f.adminToken, { action: 'begin', token });
+  assert.equal(claim.status, 200); assert.equal((await claim.json()).policy.auto, '0.2.5');
+  assert.equal((await f.request('/v1/admin/publication', f.adminToken, { action: 'begin', token: randomUUID() })).status, 409);
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, revision: 1 })).status, 409);
+  await f.request('/v1/admin/publication', f.adminToken, { action: 'end', token: randomUUID() });
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, revision: 1 })).status, 409);
+  await f.request('/v1/admin/publication', f.adminToken, { action: 'end', token });
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, revision: 1 })).status, 200);
+  const auth = await f.accessHeaders();
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin/update-policy', { headers: auth })).status, 200);
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/admin/update-policy', { method: 'POST',
+    headers: { ...auth, 'Content-Type': 'application/json', Origin: 'https://attacker.test', 'Sec-Fetch-Site': 'cross-site' }, body: JSON.stringify({ ...policy, revision: 2 }) })).status, 403);
+});
+
+test('minimum support blocks only new unsupported work and retains version reporting and recovery routes', async t => {
+  const f = await fixture(t);
+  const key = await f.issue('Update-aware employee'); const device = f.device();
+  const binding = await f.request('/v1/enroll', key.accessKey, device).then(res => res.json());
+  const identity = { keyId: key.id, bindingId: binding.bindingId };
+  const policy = { auto: '0.2.5', minimumSupported: '0.2.4', enforceAfter: new Date(Date.now() + 86400000).toISOString(), revision: 0 };
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 200);
+  const first = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'initialize' });
+  assert.equal(first.status, 200); const session = first.headers.get('mcp-session-id');
+  assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, { ...policy, revision: 1,
+    enforceAfter: new Date(Date.now() - 1000).toISOString() })).status, 200);
+  const blocked = await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.equal(blocked.status, 426); assert.equal((await blocked.json()).error.message, 'client_upgrade_required');
+  assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp', { headers: {
+    Authorization: `Bearer ${key.accessKey}`, 'mcp-session-id': session } })).status, 200);
+  assert.equal((await f.request('/v1/device/status', device.deviceSecret, identity)).status, 200);
+  assert.equal((await f.request('/v1/device/version', key.accessKey, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 403);
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: 'bad', platform: 'win32-x64' })).status, 400);
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 200);
+  const store = new KeyStore(f.db);
+  assert.equal((await store.reportVersion(key.id, binding.bindingId, '0.2.5', 'win32-x64')).meta.changes, 0);
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 3, method: 'tools/list' })).status, 200);
+  const listed = await f.request('/v1/admin/keys', f.adminToken).then(res => res.json());
+  assert.equal(listed.keys[0].clientVersion, '0.2.5'); assert.equal(listed.keys[0].clientPlatform, 'win32-x64');
+  assert.equal((await f.request('/v1/device/suspend', device.deviceSecret, identity)).status, 200);
+  assert.equal((await f.request(`/v1/admin/keys/${key.id}/reset`, f.adminToken, {})).status, 200);
+  assert.equal((await store.byId(key.id)).client_version, null);
 });
 
 test('control routes reject invalid credentials and oversized/invalid enrollment', async t => {

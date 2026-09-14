@@ -15,7 +15,8 @@ export class KeyStore {
   async list() {
     const rows = await this.db.prepare(`SELECT id, label, state, device_id AS deviceId,
       binding_id AS bindingId, hostname, cleanup_pending AS cleanupPending,
-      created_at AS createdAt, updated_at AS updatedAt
+      created_at AS createdAt, updated_at AS updatedAt,
+      client_version AS clientVersion, client_platform AS clientPlatform, version_reported_at AS versionReportedAt
       FROM access_keys ORDER BY created_at, id`).all();
     return rows.results;
   }
@@ -86,6 +87,7 @@ export class KeyStore {
       const result = await this.db.prepare(`UPDATE access_keys SET state = 'issued', device_id = NULL,
         device_secret_hash = NULL, device_secret_box = NULL, binding_id = NULL,
         bridge_port = NULL, tunnel_id = NULL, hostname = NULL, dns_id = NULL, cleanup_pending = 0,
+        client_version = NULL, client_platform = NULL, version_reported_at = NULL,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ? AND binding_id IS ? AND state = 'resetting'`)
         .bind(id, bindingId).run();
@@ -106,6 +108,41 @@ export class KeyStore {
       WHERE id = ? AND binding_id IS ? AND state = 'provisioning' AND updated_at = ?
       AND julianday(updated_at) < julianday('now', '-15 minutes') RETURNING *`)
       .bind(row.id, row.binding_id, row.updated_at).first();
+  }
+
+  updatePolicy() {
+    return this.db.prepare('SELECT * FROM update_policy WHERE id = 1').first();
+  }
+
+  saveUpdatePolicy({ auto, minimumSupported, enforceAfter, revision }) {
+    // Prevent two administrators from overwriting each other's promotion decision.
+    return this.db.prepare(`UPDATE update_policy SET auto_version = ?, minimum_supported = ?,
+      enforce_after = ?, revision = revision + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = 1 AND revision = ? AND publication_until <= ? RETURNING *`)
+      .bind(auto, minimumSupported, enforceAfter, revision, Date.now()).first();
+  }
+
+  claimPublication(token) {
+    const now = Date.now();
+    return this.db.prepare(`UPDATE update_policy SET publication_token = ?, publication_until = ?
+      WHERE id = 1 AND (publication_until <= ? OR publication_token = ?) RETURNING *`)
+      .bind(token, now + 15 * 60 * 1000, now, token).first();
+  }
+
+  releasePublication(token) {
+    return this.db.prepare(`UPDATE update_policy SET publication_token = NULL, publication_until = 0
+      WHERE id = 1 AND publication_token = ?`).bind(token).run();
+  }
+
+  reportVersion(id, bindingId, version, platform) {
+    // Startup/upgrade plus low-frequency check-in only. Repeated starts with the
+    // same version do not generate writes on the desktop's five-second refresh.
+    return this.db.prepare(`UPDATE access_keys SET client_version = ?, client_platform = ?,
+      version_reported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND binding_id = ? AND state IN ('active', 'suspended')
+      AND (client_version IS NOT ? OR client_platform IS NOT ? OR version_reported_at IS NULL
+        OR julianday(version_reported_at) <= julianday('now', '-6 hours'))`)
+      .bind(version, platform, id, bindingId, version, platform).run();
   }
 
   async cleanupCandidates(limit = 10) {

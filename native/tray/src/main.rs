@@ -159,7 +159,7 @@ impl Application {
                 .flat_map(|entry| std::iter::once(entry).chain(entry.children.iter()))
                 .find(|entry| entry.enabled && !entry.action.is_empty()
                 && self.items.get(&entry.id).is_some_and(|item| item.id() == id)) {
-                if ["settings", "troubleshoot", "about", "logs"].contains(&entry.action.as_str()) {
+                if ["settings", "troubleshoot", "about", "updates", "logs"].contains(&entry.action.as_str()) {
                     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
                 }
                 emit("menu", serde_json::json!({"action": entry.action}));

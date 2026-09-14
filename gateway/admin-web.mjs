@@ -99,7 +99,7 @@ function renderKeyRow(key) {
     buttons.push(`<button type="button" class="danger-link" data-key-action="revoke" data-key-id="${id}" data-key-label="${label}">吊销</button>`);
   }
   return `<tr><td class="key-name">${label}</td><td><span class="state state-${state}${key.cleanupPending ? ' state-cleanup' : ''}">${escapeHtml(status)}</span></td>` +
-    `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code>` : '<span class="muted">未绑定</span>'}</td>` +
+    `<td>${device ? `<code title="${fullDevice}">${escapeHtml(device)}</code><br><small>${key.clientVersion ? `v${escapeHtml(key.clientVersion)} · ${escapeHtml(key.clientPlatform)}` : '版本未上报；旧客户端需先手动安装一次新版'}</small>` : '<span class="muted">未绑定</span>'}</td>` +
     `<td><time class="local-time" datetime="${escapeHtml(key.updatedAt ?? '')}">${escapeHtml(key.updatedAt ?? '—')}</time></td>` +
     `<td class="actions">${buttons.join(' ') || '—'}</td></tr>`;
 }
@@ -125,6 +125,16 @@ export function renderAdmin(keys) {
     `<p id="notice" class="notice" role="alert" hidden></p>` +
     `<section class="table-card" aria-label="访问密钥列表">${keyTable(rows, revokedKeys.length ? '暂无有效或待处理的访问密钥' : '暂无访问密钥')}</section>` +
     revokedSection +
+    `<section aria-labelledby="update-policy-title"><h2 id="update-policy-title">客户端版本策略</h2>` +
+    `<p>stable 由四平台发布验收推进。先观察稳定版，再批准自动更新；最低支持版本到期后仅阻止新的远程工作，不远程强行执行安装器。</p>` +
+    `<p id="policy-notice" class="notice" role="status">正在读取版本策略…</p>` +
+    `<form id="policy-form"><fieldset id="policy-fields" disabled><div class="grid">` +
+    `<label>稳定版 stable<input id="policy-stable" readonly></label>` +
+    `<label>自动推广 auto<input id="policy-auto" placeholder="留空表示暂停自动推广" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" maxlength="30"></label>` +
+    `<label>最低支持版本<input id="policy-minimum" placeholder="留空表示暂不强制升级" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" maxlength="30"></label></div>` +
+    `<label>最低版本生效时间（浏览器本地时区）<input id="policy-deadline" type="datetime-local"></label>` +
+    `<p><small>自动推广与最低版本必须是已发布、具有独立签名的版本。旧客户端第一次需手动安装新版；启用最低版本前，应确认设备已更新或已收到安装通知。调低推广版本不会降级已安装客户端。</small></p>` +
+    `<button id="policy-save" type="submit">保存版本策略</button></fieldset></form></section>` +
     `<dialog id="create-dialog" aria-labelledby="dialog-title"><article><header class="dialog-header"><div><h2 id="dialog-title">创建访问密钥</h2>` +
     `<p>为员工或设备生成一个独立的连接密钥。</p></div><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></header>` +
     `<p id="dialog-notice" class="notice" role="alert" hidden></p>` +
@@ -146,7 +156,7 @@ function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: headers('application/json; charset=utf-8') });
 }
 
-export async function adminWeb(request, env, service) {
+export async function adminWeb(request, env, service, updates) {
   if (new URL(request.url).origin !== new URL(env.PUBLIC_ORIGIN).origin) throw new AdminWebError(404, 'not_found');
   await requireAccess(request, env);
   const pathname = new URL(request.url).pathname;
@@ -161,6 +171,14 @@ export async function adminWeb(request, env, service) {
   }
   if ((pathname === '/admin' || pathname === '/admin/') && request.method === 'GET') {
     return new Response(renderAdmin(await service.listKeys()), { headers: headers('text/html; charset=utf-8') });
+  }
+  if (pathname === '/admin/update-policy' && updates) {
+    if (request.method === 'GET') return json(await updates.read());
+    if (request.method === 'POST') {
+      requireMutation(request, env);
+      return json(await updates.save(await smallJson(request)));
+    }
+    throw new AdminWebError(405, 'method_not_allowed');
   }
   if (pathname === '/admin/downloads' && request.method === 'POST') {
     requireMutation(request, env);

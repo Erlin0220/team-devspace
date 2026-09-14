@@ -4,6 +4,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBridge } from './bridge.mjs';
 import { DEVSPACE_VERSION, loadState, stateHome, upstreamEnvironment, writeUpstreamConfig } from './state.mjs';
+import { startUpdateChecks } from './updates.mjs';
 
 const require = createRequire(import.meta.url);
 const applicationRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -82,10 +83,12 @@ export async function runComponent(component, home = stateHome()) {
   try { bridge = await startBridge(state, home); }
   catch (error) { await closeService(upstream); throw error; }
   const services = [upstream, bridge];
+  // Desktop checks belong to its existing controller; headless Linux reuses this runtime.
+  const stopUpdates = process.platform === 'linux' ? startUpdateChecks(home) : null;
   let stopping = false;
   const stop = async () => {
     if (stopping) return;
-    stopping = true;
+    stopping = true; stopUpdates?.();
     try { await Promise.all(services.map(closeService)); process.exitCode = 0; }
     catch { process.exitCode = 1; for (const service of services) service.server.closeAllConnections(); }
   };

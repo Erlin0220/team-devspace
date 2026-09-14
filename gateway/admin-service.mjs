@@ -18,6 +18,9 @@ export function publicAccessKey(row) {
     bindingId: value(row, 'binding_id', 'bindingId'),
     updatedAt: value(row, 'updated_at', 'updatedAt'),
     cleanupPending: Boolean(value(row, 'cleanup_pending', 'cleanupPending')),
+    clientVersion: value(row, 'client_version', 'clientVersion'),
+    clientPlatform: value(row, 'client_platform', 'clientPlatform'),
+    versionReportedAt: value(row, 'version_reported_at', 'versionReportedAt'),
   };
 }
 

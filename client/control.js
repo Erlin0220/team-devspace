@@ -16,7 +16,7 @@ async function request(path, body) {
   // One standard controller also lets successful requests release their timer.
   const controller = new AbortController();
   const { signal } = controller;
-  const timer = setTimeout(() => controller.abort(), body ? 180000 : 10000);
+  const timer = setTimeout(() => controller.abort(), body?.action === 'update-apply' ? 1900000 : body ? 180000 : 10000);
   try {
     const response = await fetch(path, { method: body ? 'POST' : 'GET', cache: 'no-store', signal,
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
@@ -45,6 +45,19 @@ function render(state) {
   $('identity').textContent = `${state.computer} · ${state.platform} ${state.architecture}`;
   $('version').textContent = `Team DevSpace ${state.version} · DevSpace ${state.devspaceVersion}`;
   $('author').textContent = `作者：${state.author.name} · ${state.author.email}`;
+  const updates = state.updates;
+  $('update-version').textContent = updates?.policy ? `稳定版 ${updates.policy.stable}` : `当前 ${state.version}`;
+  $('update-description').textContent = updates?.error ?? (updates?.required
+    ? `当前版本已不受支持，请升级到 ${updates.policy.stable} 后继续远程工作。`
+    : updates?.available ? `发现 ${updates.policy.stable}。${updates.requiresAuthorization ? '点击后使用系统安装器完成授权。' : '更新期间连接会短暂重启。'}`
+    : updates?.checkedAt ? `当前没有可用的新版本。上次检查：${new Date(updates.checkedAt).toLocaleString()}` : '尚未检查软件更新');
+  if (updates?.policy?.minimumSupported && !updates.required) $('update-description').textContent += ` 最低支持版本 ${updates.policy.minimumSupported} 将于 ${new Date(updates.policy.enforceAfter).toLocaleString()} 生效。`;
+  if (updates?.available && updates.automaticResult?.deferred) $('update-description').textContent += ` ${updates.automaticResult.message}`;
+  if (updates?.lastInstall && updates.lastInstall.exitCode !== 0) $('update-description').textContent += ' 上次安装未完成，请重新更新或运行固定下载站的安装包。';
+  $('update-auto').checked = updates?.automatic !== false;
+  $('update-check').disabled = submitting || state.busy || state.exiting;
+  $('update-apply').disabled = submitting || state.busy || state.exiting || !updates?.available;
+  $('update-auto').disabled = submitting || state.busy || state.exiting;
   $('summary').textContent = state.summary.replace(/^Team DevSpace /, '');
   $('checked-at').textContent = state.checkedAt ? `本机检查：${new Date(state.checkedAt).toLocaleTimeString()}${state.gatewayCheckedAt ? ` · 服务端检查：${new Date(state.gatewayCheckedAt).toLocaleTimeString()}` : ''}` : '尚未完成状态检查';
   $('connection').textContent = state.activity ? '操作进行中' : state.status === 'ready' ? '已连接' : state.status === 'suspended' ? '已暂停' : '需要检查';
@@ -113,6 +126,11 @@ async function action(name, input = {}) {
 }
 $('project-root').addEventListener('input', () => { rootEdited = true; if (current) render(current); });
 $('remote').addEventListener('click', () => action(current.remoteAction));
+$('update-check').addEventListener('click', () => action('update-check'));
+$('update-apply').addEventListener('click', () => {
+  if (confirm('更新会短暂重启连接，保留设备绑定、项目目录和暂停状态。继续吗？')) action('update-apply');
+});
+$('update-auto').addEventListener('change', () => action('update-auto', { enabled: $('update-auto').checked }));
 for (const name of ['restart', 'check', 'repair', 'logs']) $(name).addEventListener('click', () => action(name));
 $('choose-folder').addEventListener('click', () => current?.accessKeyMode === 'setup'
   ? action('choose-folder', { projectRoot: $('project-root').value }) : action('project-root'));
@@ -140,7 +158,7 @@ $('copy').addEventListener('click', async () => {
   catch { feedback('浏览器未允许复制，请从下方诊断文本中手动复制。', true); }
 });
 void refresh().then(() => {
-  const target = { '/diagnostics': 'diagnostics-title', '/about': 'about-title' }[location.pathname];
+  const target = { '/diagnostics': 'diagnostics-title', '/about': 'about-title', '/updates': 'updates-title' }[location.pathname];
   if (target) {
     $(target).scrollIntoView({ block: 'start' });
     $(target).focus({ preventScroll: true });

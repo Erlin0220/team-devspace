@@ -10,11 +10,16 @@ import release from '../release.config.json' with { type: 'json' };
 import { sourceIdentity } from '../scripts/build-utils.mjs';
 
 const exec = promisify(execFile);
+async function copyCatalogContract(root) {
+  await mkdir(join(root, 'client'), { recursive: true });
+  await cp('client/release-catalog.mjs', join(root, 'client/release-catalog.mjs'));
+}
 test('release acceptance rejects extracted-only PKGs and missing native startup evidence', async t => {
   const root = await mkdtemp(join(tmpdir(), 'tds-acceptance-contract-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
   for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  await copyCatalogContract(root);
   await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['darwin-arm64'] } }));
   const directory = join(root, 'release/offline/1.2.3/darwin-arm64');
   await mkdir(directory, { recursive: true });
@@ -58,6 +63,7 @@ test('installed payload verification rejects a foreign manifest and altered nati
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
   for (const file of ['verify-release.mjs', 'distribution.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  await copyCatalogContract(root);
   await writeFile(join(root, 'release.config.json'), JSON.stringify(release));
   const target = `${process.platform}-${process.arch}`;
   const directory = join(root, 'release/offline', release.version, target);
@@ -130,6 +136,7 @@ test('strict Windows acceptance rejects isolated-only installer evidence', async
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
   for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  await copyCatalogContract(root);
   await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['win32-x64'] } }));
   const directory = join(root, 'release/offline/1.2.3/win32-x64');
   await mkdir(directory, { recursive: true });

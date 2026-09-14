@@ -6,17 +6,20 @@ import { desktopErrorText, macProgress } from './desktop.mjs';
 import { stateHome } from './state.mjs';
 import { desktopState } from './desktop-state.mjs';
 import { createGatewayStatusProbe } from './gateway-status.mjs';
+import { updateStatus, checkForUpdates, applyUpdate, setAutomaticUpdates, startUpdateChecks } from './updates.mjs';
 export { desktopState } from './desktop-state.mjs';
 
 const ACTIVITY = {
   suspend: '正在暂停远程访问…', resume: '正在恢复远程访问…', restart: '正在重启连接服务…',
   repair: '正在修复连接…', 'project-root': '正在切换项目目录…',
   'switch-key': '正在设置 Access Key…', setup: '正在完成设置…',
+  'update-check': '正在检查软件更新…', 'update-apply': '正在准备软件更新…', 'update-auto': '正在保存更新偏好…',
 };
 const SUCCESS = {
   suspend: '暂停操作已完成', resume: '恢复操作已完成', restart: '连接服务重启操作已完成',
   repair: '修复操作已完成', 'project-root': '项目目录已更改，请重新连接 ChatGPT',
   'switch-key': 'Access Key 已更新', setup: '设置已完成',
+  'update-check': '软件更新检查完成', 'update-apply': '更新已交给系统安装器；完成后请重新打开设置', 'update-auto': '更新偏好已保存',
 };
 
 export function createDesktopController(home = stateHome(), options = {}) {
@@ -36,17 +39,21 @@ export function createDesktopController(home = stateHome(), options = {}) {
     'project-root': ({ projectRoot, onProgress }) => changeProjectRoot(projectRoot, home, { onProgress }),
     'choose-folder': ({ signal, projectRoot }) => promptProjectRoot(projectRoot, { signal, home }),
     logs: () => openLogs(home), diagnostics: () => diagnosticReport(home),
+    'update-check': () => checkForUpdates(home, { force: true }),
+    'update-apply': ({ onProgress, signal }) => applyUpdate(home, { onProgress, signal }),
+    'update-auto': ({ enabled }) => setAutomaticUpdates(enabled, home),
     exit: () => stopTeamDevSpace(home),
   };
   let status = null, local = {}, activity = '正在启动…', notice, failure, probeFailure;
   let revision = 0, pending = null, refreshPromise = null, closing = false, disposed = false, interval;
-  let started = false, checkedAt = null, refreshForced = false;
+  let started = false, checkedAt = null, refreshForced = false, updates = null, stopUpdates;
+  const refreshUpdates = async () => { if (!options.operations) { updates = await updateStatus(home).catch(() => null); publish(); } };
   const listeners = new Set();
   const utilities = new Map();
   let prompts = new AbortController();
   const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || utilities.has('choose-folder') || closing,
     exiting: closing, activity: !closing && utilities.has('choose-folder') ? '正在选择项目目录…' : activity,
-    notice, alert: failure ?? probeFailure }), checkedAt });
+    notice, alert: failure ?? probeFailure, updates }), checkedAt, updates });
   const publish = () => { if (!disposed) for (const listener of listeners) listener(snapshot()); };
   const readLocal = async () => {
     const generation = revision;
@@ -64,7 +71,8 @@ export function createDesktopController(home = stateHome(), options = {}) {
       if (generation === revision && !disposed) { status = value; probeFailure = undefined; checkedAt = new Date().toISOString(); }
     }, error => {
       if (generation === revision && !disposed) { status = null; probeFailure = desktopErrorText(error); }
-    }).finally(() => {
+    }).finally(async () => {
+      await refreshUpdates();
       refreshPromise = null;
       if (generation === revision && !disposed) { activity = undefined; publish(); }
     });
@@ -124,6 +132,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
       const result = await operations[action]({ ...parameters, signal: prompts.signal,
         onProgress: message => { if (!closing) { activity = macProgress(message); publish(); } } });
       await readLocal();
+      if (action.startsWith('update-')) await refreshUpdates();
       if (!closing) {
         try {
           // An Enrollment acknowledgement is not a runtime health snapshot.
@@ -159,11 +168,13 @@ export function createDesktopController(home = stateHome(), options = {}) {
       started = true;
       void readLocal().then(publish, error => { failure = desktopErrorText(error); publish(); });
       void refresh(true);
+      void refreshUpdates();
+      if (!options.operations) stopUpdates = startUpdateChecks(home, () => void refreshUpdates(), () => !pending && !closing && !utilities.size);
       interval = setInterval(() => void refresh(), options.refreshInterval ?? 5000);
       interval.unref();
     },
     async dispose() {
-      disposed = true; clearInterval(interval); prompts.abort(); listeners.clear();
+      disposed = true; clearInterval(interval); stopUpdates?.(); prompts.abort(); listeners.clear();
       await pending?.catch(() => {});
     },
   };
