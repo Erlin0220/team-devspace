@@ -51,8 +51,8 @@ test('public MCP assets bypass the Worker while all control/admin routes remain 
   assert.equal(html.status, 200, 'Public HTML does not add a redirect request');
   assert.equal(html.headers.has('X-Request-Id'), false);
   const legacyStatus = await mf.dispatchFetch('https://team.example.test/v1/device/status', { method: 'POST' });
-  assert.equal(legacyStatus.status, 401, 'Legacy status remains authenticated Worker traffic during migration');
-  assert.ok(legacyStatus.headers.get('X-Request-Id'));
+  assert.equal(legacyStatus.status, 404, 'Legacy status is absent from the contracted Worker API');
+  assert.ok(legacyStatus.headers.get('X-Request-Id'), 'Local Worker fallback remains observable; production blocks this path before Worker invocation');
   const currentStatus = await mf.dispatchFetch('https://team.example.test/v1/device/status-v2', { method: 'POST' });
   assert.equal(currentStatus.status, 401, 'Current status endpoint remains authenticated Worker traffic');
   assert.ok(currentStatus.headers.get('X-Request-Id'));

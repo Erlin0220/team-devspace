@@ -261,35 +261,33 @@ test('one Worker serves health and public assets with consistent headers without
   assert.equal(requestOperation('POST', '/private-user-content'), 'not_found');
 });
 
-test('Expand keeps both status endpoints authenticated across pause, minimum support and rebinding', async t => {
-  const f = await fixture(t), key = await f.issue('Status migration'), device = f.device();
+test('Contract removes legacy status while status-v2 stays authenticated across pause, minimum support and rebinding', async t => {
+  const f = await fixture(t), key = await f.issue('Status contract'), device = f.device();
   const binding = await f.request('/v1/enroll', key.accessKey, device).then(response => response.json());
   const identity = { keyId: key.id, bindingId: binding.bindingId };
-  const routes = ['/v1/device/status', '/v1/device/status-v2'];
+  assert.equal(requestOperation('POST', '/v1/device/status'), 'not_found');
+  assert.equal((await f.request('/v1/device/status', device.deviceSecret, identity)).status, 404);
+  const route = '/v1/device/status-v2';
   const policy = { auto: '0.2.5', minimumSupported: '0.2.4',
     enforceAfter: new Date(Date.now() - 1000).toISOString(), revision: 0 };
   assert.equal((await f.request('/v1/admin/update-policy', f.adminToken, policy)).status, 200);
   assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 426);
   for (const state of ['active', 'suspended']) {
     if (state === 'suspended') await f.request('/v1/device/suspend', device.deviceSecret, identity);
-    for (const route of routes) {
-      const response = await f.request(route, device.deviceSecret, identity);
-      assert.equal(response.status, 200, route);
-      assert.deepEqual(await response.json(), { state, deviceId: device.deviceId, bindingId: binding.bindingId });
-      assert.equal((await f.request(route, secret(), identity)).status, 403);
-      assert.equal((await f.request(route, device.deviceSecret, { ...identity, bindingId: randomUUID() })).status, 403);
-    }
+    const response = await f.request(route, device.deviceSecret, identity);
+    assert.equal(response.status, 200, route);
+    assert.deepEqual(await response.json(), { state, deviceId: device.deviceId, bindingId: binding.bindingId });
+    assert.equal((await f.request(route, secret(), identity)).status, 403);
+    assert.equal((await f.request(route, device.deviceSecret, { ...identity, bindingId: randomUUID() })).status, 403);
   }
   await f.request(`/v1/admin/keys/${key.id}/reset`, f.adminToken, {});
   const replacementDevice = f.device();
   const replacement = await f.request('/v1/enroll', key.accessKey, replacementDevice).then(response => response.json());
-  for (const route of routes) {
-    assert.equal((await f.request(route, device.deviceSecret, identity)).status, 403);
-    assert.equal((await f.request(route, replacementDevice.deviceSecret,
-      { keyId: key.id, bindingId: replacement.bindingId })).status, 200);
-  }
+  assert.equal((await f.request(route, device.deviceSecret, identity)).status, 403);
+  assert.equal((await f.request(route, replacementDevice.deviceSecret,
+    { keyId: key.id, bindingId: replacement.bindingId })).status, 200);
   await f.request(`/v1/admin/keys/${key.id}/revoke`, f.adminToken, {});
-  for (const route of routes) assert.equal((await f.request(route, replacementDevice.deviceSecret,
+  assert.equal((await f.request(route, replacementDevice.deviceSecret,
     { keyId: key.id, bindingId: replacement.bindingId })).status, 403);
 });
 

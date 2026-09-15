@@ -99,6 +99,7 @@ When changing status routes, publishing a client, retiring legacy polling, or se
 - Expand: deploy a Gateway that authenticates and serves both legacy `/v1/device/status` and replacement `/v1/device/status-v2` before shipping clients that require v2. Both routes remain Worker-first during migration; an in-Worker rejection does not remove Worker request usage.
 - Migrate: publish and verify actual installed clients, including the recovery plan for offline/legacy devices. Updating source, the release alias, or a low-frequency inventory row alone is not evidence that every client migrated.
 - Contract: retire legacy polling in a separate approved change only after migration evidence and recovery paths exist. Preserve a v2-capable Gateway rollback after clients migrate; do not combine the first v2 client release with a static bypass/tombstone for the old endpoint.
+- Contract was explicitly approved and applied on 2026-09-15. Production Cloudflare WAF blocks exactly `team-devspace.568920429.xyz/v1/device/status` in `http_request_firewall_custom` before Worker execution, and the Worker no longer routes the legacy endpoint. Do not reintroduce it as a compatibility fallback. 0.2.4 can recover through its updater; 0.2.3 and older use the documented manual covering install. Keep every Gateway rollback target v2-capable.
 
 ### Release verification
 

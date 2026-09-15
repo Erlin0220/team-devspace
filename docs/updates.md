@@ -12,16 +12,16 @@
 
 ## 状态接口的 Expand / Migrate / Contract
 
-`bbedda8` 恢复的是 Expand，不是已完成迁移。当前 0.2.5 源码使用 `/v1/device/status-v2`；Gateway 同时为新旧 status 执行设备凭据、绑定和吊销检查，两条路由均保持 Worker-first。最低版本门禁只限制新的远程工作，不关闭两条 status、版本上报或本地升级恢复入口。
+`bbedda8` 先完成了 Expand；0.2.5 起客户端使用 `/v1/device/status-v2`。2026-09-15 经管理员明确批准进入 Contract：生产 Cloudflare WAF 在 Worker 之前精确阻断 `team-devspace.568920429.xyz/v1/device/status`，Worker 同时删除该旧路由，只保留 `/v1/device/status-v2`。最低版本门禁仍只限制新的远程工作；版本上报和本地升级恢复入口继续可用。
 
 发布阶段按以下顺序完成，代码审查不执行这些生产操作：
 
 1. 先应用向后兼容的 D1 加法迁移，再部署双接口 Gateway，并检查旧客户端仍可工作。既有部署脚本已经按此顺序执行；新 Worker 不能先于 `0005_update_inventory.sql` 上线。
 2. 在该 Gateway 上完成最终客户端构建、跨版本验收与发布。0.2.4 已有 updater 但仍使用旧 status；0.2.3 及更早版本需要手动覆盖安装。版本别名更新不等于设备已升级。
 3. 根据实际安装、受支持设备清单和低频版本快照确认迁移，同时处理长期离线设备与失败恢复。不能把短时没有请求、单条快照或源码版本号当作全量迁移证明。迁移后的 Gateway 回滚目标也必须支持 v2。
-4. 最后另行实施 Contract，届时再验证旧路由的静态绕过、错误响应与旧客户端恢复指引；本轮不添加静态墓碑、不删除旧接口。
+4. Contract 已于 2026-09-15 独立实施：旧路径由 Cloudflare `http_request_firewall_custom` 的精确 Block 规则在 Edge 终止，因此旧轮询不再进入 Worker；Worker 代码也删除旧路由，避免 Edge 规则意外移除后恢复旧协议。0.2.4 可继续通过既有 updater 升级；0.2.3 及更早版本按既有规则手工覆盖安装。Gateway 回滚必须保留 v2 支持，不能回滚到只支持旧 status 的版本。
 
-Worker 内提前返回错误仍消耗 Worker 请求；Expand 期间保留旧客户端的调用成本是兼容性代价，不应通过提前关路由“优化”掉。新客户端的本地展示缓存与低频更新检查先行降频；MCP 鉴权不使用展示缓存。
+Worker 内提前返回错误仍消耗 Worker 请求，所以 Contract 使用 Edge Block，而不是在 Worker 内做 410/426 墓碑。新客户端的本地展示缓存与低频更新检查保持不变；MCP 鉴权不使用展示缓存。
 
 ## 员工体验
 

@@ -44,8 +44,8 @@ test('observability retains unsampled diagnostic logs, not automatic invocation 
   assert.equal(config.observability.logs.head_sampling_rate, 1);
   assert.equal(config.observability.logs.invocation_logs, false);
   assert.equal(config.observability.redact_query_string, true);
-  // Expand keeps both authenticated status routes Worker-first. A static
-  // legacy tombstone is a later Contract change, not a logging optimization.
+  // Contract keeps the supported authenticated control surface Worker-first.
+  // The retired legacy status path is blocked separately at the Cloudflare edge.
   assert.deepEqual(config.assets.run_worker_first, ['/*', '!/mcp-app-assets/*']);
   const headers = await readFile('assets/_headers', 'utf8');
   assert.match(headers, /Access-Control-Allow-Origin: \*/);
