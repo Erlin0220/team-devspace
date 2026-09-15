@@ -9,11 +9,30 @@ import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomInt } from 'node:crypto';
 
 const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gateway: 'active', remoteAccess: 'active', desiredRemoteAccess: 'active' };
 const paused = { ready: false, devspace: false, bridge: false, tunnel: false, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
+
+async function freeFallbackPort() {
+  // Linux listen(0) may choose a port below the production fallback range.
+  // Exercise the same high-port contract instead of relying on OS defaults.
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const server = createServer();
+    const port = randomInt(49152, 65536);
+    try {
+      await listenOnBrowserPort(server, port);
+      await new Promise(resolve => server.close(resolve));
+      return port;
+    } catch (error) {
+      server.close();
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
+    }
+  }
+  throw new Error('Test could not reserve a browser-safe fallback port');
+}
 
 test('a successful setup keeps its auxiliary startup warning visible without marking the connection failed', async t => {
   const warning = '托盘登录启动项暂不可用';
@@ -30,10 +49,6 @@ test('Control Center persists its chosen loopback port, retries brief ownership,
   const home = await mkdtemp(join(tmpdir(), 'tds-control-port-'));
   const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
   const servers = [], surfaces = [];
-  const reserveFreePort = async () => {
-    const probe = createServer(); await listenOnBrowserPort(probe, 0);
-    const port = probe.address().port; await new Promise(resolve => probe.close(resolve)); return port;
-  };
   t.after(async () => {
     await Promise.all(surfaces.map(surface => surface.close().catch(() => {})));
     for (const server of servers) { server.close(); server.closeAllConnections(); }
@@ -41,7 +56,7 @@ test('Control Center persists its chosen loopback port, retries brief ownership,
   });
   assert.equal(CONTROL_UI_PREFERRED_PORT, 53682);
   const blocker = createServer(); servers.push(blocker); await listenOnBrowserPort(blocker, 0);
-  const preferred = blocker.address().port, fallback = await reserveFreePort();
+  const preferred = blocker.address().port, fallback = await freeFallbackPort();
   const first = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
     portRetryDelayMs: 1, chooseFallbackPort: () => fallback, openBrowser: async () => {} });
   surfaces.push(first);
@@ -56,7 +71,7 @@ test('Control Center persists its chosen loopback port, retries brief ownership,
   await second.close(); surfaces.splice(surfaces.indexOf(second), 1);
 
   const persistedBlocker = createServer(); servers.push(persistedBlocker); await listenOnBrowserPort(persistedBlocker, fallback);
-  const next = await reserveFreePort();
+  const next = await freeFallbackPort();
   const third = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
     portRetryDelayMs: 1, chooseFallbackPort: () => next, openBrowser: async () => {} });
   surfaces.push(third);
@@ -73,8 +88,7 @@ test('legacy fixed-port capability migrates safely when the old 53682 origin can
     await controller.dispose(); await rm(home, { recursive: true, force: true }); });
   await writeFile(join(home, 'control-capability.json'), JSON.stringify({ schema: 1, token: 'a'.repeat(43) }));
   await listenOnBrowserPort(blocker, 0); const preferred = blocker.address().port;
-  const fallbackProbe = createServer(); await listenOnBrowserPort(fallbackProbe, 0); const fallback = fallbackProbe.address().port;
-  await new Promise(resolve => fallbackProbe.close(resolve));
+  const fallback = await freeFallbackPort();
   surface = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
     portRetryDelayMs: 1, chooseFallbackPort: () => fallback, openBrowser: async () => {} });
   assert.equal(surface.migratedFrom, preferred);
@@ -415,8 +429,7 @@ test('endpoint cache failure cannot reuse a control capability across origins af
   });
   await mkdir(join(home, 'control-endpoint.json'));
   const blocker = await reserve(), preferred = blocker.address().port;
-  const probe = await reserve(), fallback = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
+  const fallback = await freeFallbackPort();
   const options = { home, preferredPort: preferred, portRetryAttempts: 1, portRetryDelayMs: 1,
     chooseFallbackPort: () => fallback, openBrowser: async () => {} };
   const first = await startLocalControl(controller, options); surfaces.push(first);

@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { DOWNLOAD_TARGETS, ALIASES, packageName, httpsOrigin, validateCatalog, downloadPage } from '../scripts/download-catalog.mjs';
-import { buildDownloadCatalog, prepareSite, prepareHomepage, main } from '../scripts/publish-downloads.mjs';
+import { buildDownloadCatalog, prepareSite, prepareHomepage, main, retainedReleaseVersions } from '../scripts/publish-downloads.mjs';
+
+test('release cleanup retains cold-cache upgrade fixtures independently of rollout policy', () => {
+  const retained = retainedReleaseVersions('0.2.6', { auto: '0.2.5', minimumSupported: null });
+  assert.deepEqual(retained, ['0.2.6', '0.2.5', '0.2.3', '0.2.4']);
+  assert.deepEqual(retainedReleaseVersions('0.2.4', { auto: '0.2.4', minimumSupported: '0.2.3' }), ['0.2.4', '0.2.3']);
+});
 import { verifyAcceptance } from '../scripts/verify-acceptance.mjs';
 import { renderAdmin } from '../gateway/admin-web.mjs';
 import { signUpdateFixture } from './update-fixture.mjs';

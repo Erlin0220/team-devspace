@@ -350,7 +350,8 @@ async function waitForStopped(state, components) {
 }
 
 export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS,
-  { runNative = native, allowTrayFailure = false } = {}) {
+  { runNative = native, allowTrayFailure = false,
+    repairTray = () => installServices(state, home, undefined, ['tray']) } = {}) {
   if (!['start', 'stop', 'restart', 'enable', 'disable', 'remove'].includes(action)) throw new Error('Unknown service action');
   if (action === 'disable' && !['win32', 'linux'].includes(process.platform)) throw new Error('Disable without removing startup is unsupported on this platform');
   if (action === 'enable' && process.platform !== 'win32') throw new Error('Explicit startup enable is only required on Windows');
@@ -445,7 +446,14 @@ export async function serviceAction(action, state, home = stateHome(), component
       // Ordinary reopening is not installer activation. A missing presentation
       // job must not trigger bootstrap and recycle otherwise healthy core jobs.
       if (action === 'start' && component === 'tray' && allowTrayFailure) {
-        warning = '托盘暂未启动，核心连接未因此停止；可重新打开应用重试或通过安装器修复。';
+        try {
+          // Reuse the existing installer, scoped strictly to presentation. A
+          // deleted login entry must recover on open, not stay headless forever.
+          await repairTray();
+          await serviceAction('start', state, home, ['tray'], { runNative });
+        } catch {
+          warning = '托盘暂未启动，核心连接未因此停止；可重新打开应用重试或通过安装器修复。';
+        }
         continue;
       }
       if (!['stop', 'disable', 'remove'].includes(action)) throw error;

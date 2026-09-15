@@ -13,9 +13,15 @@ import { signUpdateCatalog } from './sign-updates.mjs';
 import { validateUpdatePolicy, verifySignedCatalog } from '../client/update-policy.mjs';
 import { administrator } from '../client/admin.mjs';
 import { control } from '../client/http.mjs';
+import { UPGRADE_BASELINES } from './upgrade-baselines.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+
+export function retainedReleaseVersions(version, policy) {
+  return [...new Set([version, policy.auto, policy.minimumSupported,
+    ...Object.keys(UPGRADE_BASELINES)].filter(Boolean))];
+}
 
 export async function buildDownloadCatalog(directory, version, commit) {
   const targets = {};
@@ -292,12 +298,13 @@ export async function main(argv = process.argv.slice(2)) {
     // The same existing D1 row prevents admin promotion from racing release deletion.
     const beforePrune = await lease('begin');
     validateUpdatePolicy({ ...beforePrune.policy, stable: version });
-    const retained = [...new Set([version, beforePrune.policy.auto, beforePrune.policy.minimumSupported].filter(Boolean))];
+    const retained = retainedReleaseVersions(version, beforePrune.policy);
     await command('prune', version, `${Math.floor(beforePrune.expiresAt / 1000)}:${retained.join(',')}`);
     console.log(JSON.stringify({ activated: true, version, commit: catalog.commit, origin,
       previous: initialStable, rollbackChangesInstalledClients: false, verifiedAllFourHttpsDeliveryPaths: true,
       fullHttpsHash: Boolean(values['full-https-verify']), homepagePublished: true, signedUpdates: hasSignature,
-      retainedPolicyVersions: retained, retainedKnownGoodPredecessor: true }));
+      retainedPolicyVersions: retained, retainedAcceptanceBaselines: Object.keys(UPGRADE_BASELINES),
+      retainedKnownGoodPredecessor: true }));
   } finally {
     if (publicationToken && operator) await lease('end').catch(() => console.error('Publication lease will expire automatically; policy edits may be temporarily unavailable.'));
     if (uploadId && command) await command('discard', version, uploadId).catch(() => console.error(`Staging cleanup needs inspection: ${uploadId}`));

@@ -47,7 +47,9 @@ test('ordinary desktop reopening may degrade a tray start failure but never a co
     if (args.join(' ').includes('.tray')) throw new Error('tray unavailable');
     return { stdout: 'existing job' };
   };
-  const result = await serviceAction('start', state, 'unused', ['runtime', 'tunnel', 'tray'], { runNative, allowTrayFailure: true });
+  const result = await serviceAction('start', state, 'unused', ['runtime', 'tunnel', 'tray'], {
+    runNative, allowTrayFailure: true, repairTray: async () => { throw new Error('tray repair unavailable'); },
+  });
   assert.match(result.warning, /托盘/);
   assert.ok(calls.some(call => call.includes('.runtime')) && calls.some(call => call.includes('.tunnel')));
   assert.ok(calls.every(call => !/bootout|\/End|\/Delete/.test(call)), 'Reopening must not stop or reinstall healthy jobs');
@@ -56,6 +58,30 @@ test('ordinary desktop reopening may degrade a tray start failure but never a co
   await assert.rejects(serviceAction('start', state, 'unused', ['runtime', 'tray'], {
     allowTrayFailure: true, runNative: async () => { throw new Error('core unavailable'); },
   }), /core unavailable/);
+});
+
+test('ordinary reopening repairs only a missing tray entry and retries without restarting healthy core jobs',
+  { skip: !['win32', 'darwin'].includes(process.platform) }, async () => {
+  const state = { ownerToken: 'a'.repeat(43), deviceId: randomUUID(), ports: { devspace: 0, bridge: 0, metrics: 0 } };
+  const calls = []; let repaired = false;
+  const result = await serviceAction('start', state, 'unused', ['runtime', 'tunnel', 'tray'], {
+    allowTrayFailure: true,
+    runNative: async (_command, args) => {
+      calls.push(args.join(' '));
+      if (args.join(' ').includes('.tray') && !repaired) throw new Error('tray entry missing');
+      return { stdout: 'existing job' };
+    },
+    repairTray: async () => { assert.equal(repaired, false, 'Repair must be attempted only once'); repaired = true; },
+  });
+  assert.equal(repaired, true);
+  assert.equal(result?.warning, undefined);
+  assert.ok(calls.every(call => !/bootout|\/End|\/Delete/.test(call)));
+  const starts = calls.filter(call => /\/Run|kickstart/.test(call));
+  assert.equal(starts.filter(call => call.includes('.runtime')).length, 1);
+  assert.equal(starts.filter(call => call.includes('.tunnel')).length, 1);
+  const source = await readFile(new URL('../client/platform.mjs', import.meta.url), 'utf8');
+  assert.ok(source.includes("repairTray = () => installServices(state, home, undefined, ['tray'])"),
+    'Production repair must remain scoped to the tray, never the default whole service set');
 });
 test('macOS diagnostics wrapper falls back before exec but never reruns a failed worker', async t => {
   const work = await mkdtemp(join(tmpdir(), 'tds-mac-log-'));
