@@ -1,0 +1,71 @@
+name: Legacy Codemagic Intel acceptance
+
+# Retain this handoff until all four replacement native jobs actually pass.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Draft containing the existing Codemagic PKG and receipt
+        type: string
+        required: true
+      package_sha256:
+        description: Exact accepted Codemagic PKG SHA-256
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: team-devspace-intel-acceptance
+  cancel-in-progress: false
+
+jobs:
+  verify-existing-package:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    # GitHub requires repository push access to read draft release assets.
+    # This trusted, main-only manual job never publishes or changes a release.
+    permissions:
+      contents: write
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      TEAM_DEVSPACE_RELEASE_PROFILE_JSON: ${{ vars.TEAM_DEVSPACE_RELEASE_PROFILE }}
+      TEAM_DEVSPACE_PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: release
+        run: node scripts/ci-metadata.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.release.outputs.node }}
+          package-manager-cache: false
+      - name: Validate operator profile before consuming candidate bytes
+        run: node --input-type=module -e "import release,{requireProductionProfile} from './scripts/release-profile.mjs'; requireProductionProfile(release);"
+      - env:
+          BUILD_NPM: ${{ steps.release.outputs.npm }}
+        run: npx --yes "$BUILD_NPM" ci --no-fund --no-audit
+      - name: Download existing bytes without building
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          [[ "$CANDIDATE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]
+          [[ "$TEAM_DEVSPACE_PACKAGE_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          mkdir -p build/intel-input
+          gh release download "$CANDIDATE_TAG" --dir build/intel-input \
+            --pattern '*macos-x64.pkg' --pattern 'acceptance-darwin-x64.json'
+      - run: node scripts/macos-accept-existing.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: macos-x64-native-acceptance
+          path: |
+            release/offline/*/darwin-x64/acceptance.json
+            build/macos-review/*.png
+          if-no-files-found: error
+          retention-days: 7

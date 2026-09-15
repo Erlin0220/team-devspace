@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { apiRequest, buildRequest, buildArchitecture, matchesBuild, requiredArtifacts,
   publicBuild, collectBuild, findReusableBuild, listBuilds } from '../scripts/codemagic.mjs';
+import release, { resolveReleaseProfile, releaseProfileDigest } from '../scripts/release-profile.mjs';
 
 const appId = 'a'.repeat(24), commit = 'b'.repeat(40), id = 'c'.repeat(24);
 const token = 'private-test-token';
@@ -68,6 +69,26 @@ test('GET retries bounded transient failures and sends auth only to official API
   } });
   assert.equal(calls, 2);
   assert.equal(result.data.id, id);
+});
+
+test('transitional builds carry only the explicit public edition and never reuse a different profile', () => {
+  const profile = { gateway: 'https://gateway.example.test', downloadOrigin: 'https://downloads.example.test', updatePublicKey: 'B'.repeat(43) };
+  const expectedProfileSha256 = releaseProfileDigest(resolveReleaseProfile(release, profile));
+  const body = buildRequest({ ...context, profile });
+  assert.deepEqual(JSON.parse(body.environment.variables.TEAM_DEVSPACE_RELEASE_PROFILE_JSON), profile);
+  const build = { ...baseBuild(), labels: body.labels };
+  assert.equal(matchesBuild(build, { ...context, expectedProfileSha256 }), true);
+  assert.equal(matchesBuild(baseBuild(), { ...context, expectedProfileSha256 }), false);
+  assert.equal(matchesBuild(build, { ...context, expectedProfileSha256: '0'.repeat(64) }), false);
+  assert.throws(() => buildRequest({ ...context, profile: { ...profile, token: 'must-not-send' } }), /accepts/);
+});
+
+test('transitional collection checks the full profile digest before downloading a large package', async t => {
+  const f = await fixture(t);
+  const expectedProfileSha256 = 'd'.repeat(64);
+  f.build.labels = [`tds-profile:${expectedProfileSha256.slice(0, 32)}`];
+  await assert.rejects(collectBuild(f.build, { ...f.options, expectedProfileSha256 }), /different release profile/);
+  assert.ok(f.calls.every(call => !new URL(call.url).pathname.endsWith('.pkg')));
 });
 
 test('POST never automatically retries a possibly accepted chargeable build', async () => {

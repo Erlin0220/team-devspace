@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { run } from './build-utils.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 import { downloadUpgradeBaseline, UPGRADE_BASELINES } from './upgrade-baselines.mjs';
 
 // This test installs the actual package-owned paths. Never run it on an employee

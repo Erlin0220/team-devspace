@@ -19,13 +19,17 @@ Use the single-context domain documentation layout. See `docs/agents/domain.md`.
 - D1 remote statement parsing rejects semicolons inside SQL comments even when local SQLite accepts them. Keep migration comments free of statement delimiters; `test/migrations.test.mjs` guards the verified production failure.
 - Disposable macOS upgrade baselines must remove the newer test-owned app bundle and PKG receipt after uninstalling runtime files. Otherwise Apple Installer can retain the newer bundle when installing an older PKG, invalidating cross-version evidence. Never apply this fixture cleanup to an employee Mac.
 
-- New publication must include real cross-version installer acceptance. Native CPU evidence remains required where available; for the supported macOS x64 target, this internal product explicitly accepts the exact x64 PKG after full Rosetta system-install/upgrade/lifecycle acceptance when no Intel hardware is available. The receipt must keep `nativeArchitecture=false` and the Rosetta limitation visible rather than pretending native Intel hardware was tested. Retained 0.2.3/0.2.4 package hashes in `scripts/upgrade-baselines.mjs` are test fixtures, never automatic downgrade targets.
-- Keep builds on the existing local Windows/WSL and Codemagic paths. The GitHub Intel workflow only re-accepts the exact already-built x64 PKG from a private draft, checks its original source/hash receipt, and returns native acceptance. It must never rebuild or silently replace that package.
+- New publication requires real cross-version installer acceptance and matching native CPU evidence. Historical Rosetta receipts retain their original limitations and do not become Intel evidence after a workflow change. Retained 0.2.3/0.2.4 hashes in `scripts/upgrade-baselines.mjs` are test fixtures, never automatic downgrade targets.
+- The source-available preparation targets native GitHub Windows/Linux/macOS ARM64/Intel candidate builds, not external artifact handoff. Current account billing blocks hosted acceptance, so local/Codemagic fallback is retained until the replacement proves all gates; do not call it migrated or delete it prematurely. A build-only candidate is not a publishable release.
 - Capture the D1 Time Travel bookmark and compare redacted pre/post-migration binding summaries before switching the Worker. An unexpected lifecycle/identity change stops deployment before Worker upload; reconcile rather than bypass this guard.
 
 These are long-lived product and architecture constraints that are easy to miss when reading one source file. Current code, tests, release metadata, and real runtime behavior remain authoritative when they conflict with this section.
 
 ### Thin architecture
+
+- Original source uses the unmodified PolyForm Shield 1.0.0 text; third-party licenses/notices remain unchanged. Follow Issue -> branch -> PR -> CI/review -> merge; do not routinely commit directly to main. Solo approval count is zero, not an impossible self-approval requirement.
+- Production profile/resource identities live outside source. Root release.config.json is a sample; operator builds explicitly select scripts/release-profile.mjs inputs and embed the existing public trust key. Never inject config by modifying tracked files, silently regenerate trust keys, or promote sample artifacts.
+- Publication readiness includes remote refs, metadata/logs/artifacts and actual GitHub protections. Local Codex checkpoint refs must not be pushed. Source cleanup does not authorize Public visibility, remote history rewriting, deployment or version-policy changes. See docs/public-readiness.md.
 
 - Keep Team DevSpace thin: reuse the existing DevSpace runtime, OS facilities, Cloudflare, Caddy, and current installers before adding a new framework or parallel state machine.
 - The native tray is a presentation frontend. Runtime state, lifecycle operations, progress, recovery, and settings behavior belong to the shared controller/client layer.
@@ -91,6 +95,7 @@ The update controller is a thin control layer over the existing installers. Veri
 - Device lifecycle remains fail-closed. Update convenience must not weaken per-binding authorization, reset/revoke semantics, or MCP session isolation.
 - Device display caching is not authorization caching: MCP requests continue to read current binding state from primary D1. Only fleet policy/stable discovery has a bounded cache; concurrent reads coalesce and invalidated reads cannot refill it later.
 - Apply backward-compatible D1 migrations before switching to a Worker that reads the new schema. Verify cleanup indexes with query plans and rows read, not merely their existence; keep migrations out of review-only runs.
+- The public Gateway uses one project-owned Cloudflare `http_request_firewall_custom` rule identified by ref `team-devspace-gateway-surface`. It is scoped exactly to the Gateway hostname, explicitly blocks retired `/v1/device/status`, and blocks paths outside the stable Team DevSpace namespaces before Worker execution. Never broaden it to the entire operator zone or `tds-*` device Tunnel hosts, never use IP/country lists as the primary boundary, and never adopt/delete unrelated WAF rules. New public namespaces must update this boundary deliberately before shipping clients that require them.
 
 ### Status API migration
 
@@ -99,7 +104,7 @@ When changing status routes, publishing a client, retiring legacy polling, or se
 - Expand: deploy a Gateway that authenticates and serves both legacy `/v1/device/status` and replacement `/v1/device/status-v2` before shipping clients that require v2. Both routes remain Worker-first during migration; an in-Worker rejection does not remove Worker request usage.
 - Migrate: publish and verify actual installed clients, including the recovery plan for offline/legacy devices. Updating source, the release alias, or a low-frequency inventory row alone is not evidence that every client migrated.
 - Contract: retire legacy polling in a separate approved change only after migration evidence and recovery paths exist. Preserve a v2-capable Gateway rollback after clients migrate; do not combine the first v2 client release with a static bypass/tombstone for the old endpoint.
-- Contract was explicitly approved and applied on 2026-09-15. Production Cloudflare WAF blocks exactly `team-devspace.568920429.xyz/v1/device/status` in `http_request_firewall_custom` before Worker execution, and the Worker no longer routes the legacy endpoint. Do not reintroduce it as a compatibility fallback. 0.2.4 can recover through its updater; 0.2.3 and older use the documented manual covering install. Keep every Gateway rollback target v2-capable.
+- Contract was explicitly approved and applied on 2026-09-15. The operator's Cloudflare WAF blocks the Gateway's `/v1/device/status` in `http_request_firewall_custom` before Worker execution, and the Worker no longer routes the legacy endpoint. Do not reintroduce it as a compatibility fallback. 0.2.4 can recover through its updater; 0.2.3 and older use the documented manual covering install. Keep every Gateway rollback target v2-capable.
 
 ### Release verification
 

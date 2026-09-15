@@ -172,7 +172,7 @@ async (page) => {
     const notesFailure = await context.newPage();
     await notesFailure.route('**/api/release-notes?*', route => route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ version: '0.2.6', summary: null, error: 'Temporary notes failure',
-        url: 'https://downloads.568920429.xyz/releases/0.2.6/release-notes.txt' }) }));
+        url: 'https://downloads.example.com/releases/0.2.6/release-notes.txt' }) }));
     await notesFailure.goto(origin + '/updates#' + capability); await settled(notesFailure);
     await notesFailure.locator('#update-apply').click();
     await notesFailure.locator('#update-modal-notes-fallback').waitFor({ state: 'visible' });

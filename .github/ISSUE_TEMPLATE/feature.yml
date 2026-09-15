@@ -1,0 +1,15 @@
+name: Feature or maintenance work
+description: Describe an outcome and acceptance criteria before implementation.
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Problem and desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Scope, exclusions and acceptance criteria
+    validations:
+      required: true

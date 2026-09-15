@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { validateDistributionConfig } from './distribution.mjs';
 
 async function check(directory) {
@@ -18,10 +19,9 @@ for (const directory of ['gateway', 'client', 'scripts', 'test']) await check(di
 
 const manifest = JSON.parse(await readFile('package.json', 'utf8'));
 const release = JSON.parse(await readFile('release.config.json', 'utf8'));
-const deployment = JSON.parse(await readFile('deployment.config.json', 'utf8'));
+const deployment = JSON.parse(await readFile('config/deployment.example.json', 'utf8'));
 const wrangler = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
-const retiredPackageWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
-const codemagic = await readFile('codemagic.yaml', 'utf8');
+const packageWorkflow = await readFile('.github/workflows/build-installers.yml', 'utf8');
 const deployWorkflow = await readFile('.github/workflows/deploy.yml', 'utf8');
 const binaries = JSON.parse(await readFile('scripts/binaries.json', 'utf8'));
 const windowsSigning = await readFile('scripts/sign-internal-windows.ps1', 'utf8');
@@ -37,11 +37,9 @@ if (!Number.isInteger(release.controlApiVersion) || release.controlApiVersion < 
 }
 validateDistributionConfig(release);
 
-if (Object.keys(deployment).some(key => !['databaseId', 'accessApplicationId'].includes(key)) ||
-    !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.databaseId ?? '') ||
-    (deployment.accessApplicationId !== null &&
-      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(deployment.accessApplicationId ?? ''))) {
-  throw new Error('deployment.config.json stores only owned D1 and Access Application resource IDs');
+if (deployment.zoneId !== '0'.repeat(32) || deployment.databaseId !== '00000000-0000-0000-0000-000000000000' ||
+    deployment.accessApplicationId !== null || 'cloudflareZoneId' in release) {
+  throw new Error('Source must contain examples only; production resource identities belong to private operator configuration');
 }
 
 if (wrangler.assets?.binding !== 'ASSETS' ||
@@ -65,27 +63,16 @@ if (JSON.stringify(runtimeDependencies) !== JSON.stringify(allowedRuntimeDepende
   throw new Error(`Employee runtime dependencies must stay thin: ${allowedRuntimeDependencies.join(', ')}`);
 }
 
-if (retiredPackageWorkflow.includes('npm run package') || retiredPackageWorkflow.includes('acceptance:local') ||
-    retiredPackageWorkflow.includes('node scripts/package.mjs') ||
-    retiredPackageWorkflow.includes('windows-2022') || retiredPackageWorkflow.includes('linux-x64')) {
-  throw new Error('GitHub Actions native packaging must remain retired; macOS builds on Codemagic and Windows/Linux build locally');
+for (const label of ['windows-2022', 'ubuntu-24.04', 'macos-15', 'macos-15-intel']) {
+  if (!packageWorkflow.includes(label)) throw new Error(`Native candidate matrix is missing ${label}`);
 }
-if (!retiredPackageWorkflow.includes('runs-on: macos-15-intel') ||
-    !retiredPackageWorkflow.includes('node scripts/macos-accept-existing.mjs') ||
-    !retiredPackageWorkflow.includes('TEAM_DEVSPACE_PACKAGE_SHA256:')) {
-  throw new Error('The GitHub Intel exception must only accept an existing hash-pinned PKG, never build another release');
+if (/macos-accept-existing|arch -x86_64|workflow_run|pull_request_target/.test(packageWorkflow) ||
+    !packageWorkflow.includes('npm run package') || !packageWorkflow.includes('acceptance:platform')) {
+  throw new Error('Native candidate builds must build and accept their own final bytes without Rosetta or privileged PR triggers');
 }
 if (!release.distribution.targets.includes('darwin-arm64') || !release.distribution.targets.includes('darwin-x64') ||
     !/^[a-f0-9]{64}$/.test(binaries.node?.['darwin-x64']?.sha256 ?? '')) {
   throw new Error('macOS release targets must include pinned Apple Silicon and Intel runtimes');
-}
-if (!codemagic.includes('instance_type: mac_mini_m2') || !codemagic.includes('npm run package') ||
-    !codemagic.includes('architecture:') || !codemagic.includes('- x64') || !codemagic.includes('/usr/bin/arch -x86_64') ||
-    codemagic.includes('npm run package -- --reuse-dependencies') || codemagic.includes('npm ci') ||
-    codemagic.includes('rustup') || codemagic.includes('TEAM_DEVSPACE_TRAY_') ||
-    codemagic.includes('/usr/sbin/installer -verboseR') || codemagic.includes('acceptance:platform') ||
-    codemagic.includes('triggering:')) {
-  throw new Error('Codemagic must remain one manual, macOS-only thin package workflow for arm64 and Intel x64');
 }
 
 if (windowsPlatformFiles.includes('launch.ps1') || windowsPlatformFiles.includes('process-job.ps1')) {
@@ -99,9 +86,15 @@ if (manifest.scripts['acceptance:platform'] !== 'node scripts/platform-acceptanc
 if (!/^[a-f0-9]{64}$/.test(binaries.zig?.['win32-x64']?.executableSha256 ?? '')) {
   throw new Error('Cached Windows Zig executable must have an exact SHA-256 pin');
 }
-const officialActionRefs = [...deployWorkflow.matchAll(/uses:\s+(actions\/[A-Za-z0-9_.-]+)@([^\s#]+)/g)];
-if (officialActionRefs.length === 0 || officialActionRefs.some(([, , reference]) => !/^[a-f0-9]{40}$/.test(reference))) {
-  throw new Error('Every GitHub-owned Action must remain pinned to a full 40-character commit SHA');
+for (const name of (await readdir('.github/workflows')).filter(name => /\.ya?ml$/.test(name))) {
+  const workflow = await readFile(join('.github/workflows', name), 'utf8');
+  const externalRefs = [...workflow.matchAll(/uses:\s+([^\s#]+)@([^\s#]+)/g)];
+  if (externalRefs.some(([, , reference]) => !/^[a-f0-9]{40}$/.test(reference))) {
+    throw new Error(`Every external Action must use a full commit SHA: ${name}`);
+  }
+  if (/^\s*(?:pull_request_target|workflow_run):/m.test(workflow) || /runs-on:\s*self-hosted/.test(workflow)) {
+    throw new Error(`Privileged PR follow-up and employee/self-hosted runners are not part of this release design: ${name}`);
+  }
 }
 for (const required of [
   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
@@ -115,11 +108,9 @@ if (!windowsSigning.includes('Set-AuthenticodeSignature') || !windowsSigning.inc
     /addstore|X509Store|TrustedPublisher/i.test(windowsSigning)) {
   throw new Error('Windows release signing must verify Authenticode without mutating runner trust stores');
 }
-if (!/^[a-f0-9]{32}$/.test(release.cloudflareZoneId ?? '')) {
-  throw new Error('Release Cloudflare Zone ID is incomplete');
-}
-if ('cloudflare' in release) {
-  throw new Error('Release Cloudflare metadata must stay thin: use cloudflareZoneId only; Account and device domain are derived from the Zone');
+if ('cloudflare' in release || release.gateway !== 'https://gateway.example.com' ||
+    release.distribution.origin !== 'https://downloads.example.com' || release.distribution.updatePublicKey !== 'A'.repeat(43)) {
+  throw new Error('Tracked release config must remain a sample edition; inject operator endpoints and trust key via release profile');
 }
 const gateway = new URL(release.gateway);
 if (gateway.protocol !== 'https:' || gateway.username || gateway.password || gateway.pathname !== '/' || gateway.search || gateway.hash ||
@@ -128,4 +119,13 @@ if (gateway.protocol !== 'https:' || gateway.username || gateway.password || gat
 }
 
 execFileSync('git', ['diff', '--check'], { stdio: 'inherit' });
+const licenseHash = createHash('sha256').update(await readFile('LICENSE')).digest('hex');
+if (licenseHash !== '67530f8e9adfcc5d2e9d72b804500cebb7472ff84c34a6729a80a2a9be901ee6') {
+  throw new Error('LICENSE must match the unmodified official PolyForm Shield 1.0.0 text');
+}
+if (!deployWorkflow.includes("github.ref == 'refs/heads/main'") ||
+    !deployWorkflow.includes('contents: read') || deployWorkflow.includes('--ci --provision') ||
+    deployWorkflow.includes('gh api') || deployWorkflow.includes('contents: write')) {
+  throw new Error('Deployment must be main-only, read-only for repository contents, and never provision/write config back to Git');
+}
 console.log('Syntax, release pins, thin dependency/build policy, gateway metadata, supply-chain pins, and diff whitespace checks passed.');

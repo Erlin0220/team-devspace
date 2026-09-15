@@ -4,7 +4,7 @@ import { promisify, parseArgs } from 'node:util';
 import { access, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 import { serviceLabel, STARTUP_COMPONENTS } from '../client/platform.mjs';
 import { redactDiagnostic } from '../client/control.mjs';
 import { compareVersions } from '../client/update-policy.mjs';

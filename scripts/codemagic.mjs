@@ -12,6 +12,7 @@ import { atomicJson, readJson, secureStateDirectory } from '../client/state.mjs'
 import { run, sha256File, sourceIdentity } from './build-utils.mjs';
 import { packageName } from './download-catalog.mjs';
 import { verifyAcceptance } from './verify-acceptance.mjs';
+import release, { resolveReleaseProfile, requireProductionProfile, releaseProfileDigest } from './release-profile.mjs';
 
 const WORKFLOW = 'macos-package';
 const SHA = /^[a-f0-9]{40}$/;
@@ -22,6 +23,7 @@ const TERMINAL = new Set(['finished', ...FAILED]);
 const defaultConfig = () => join(homedir(), '.team-devspace-admin', 'codemagic.json');
 const tagFor = commit => `ci/macos-${commit}`;
 const targetLabel = architecture => `tds-target:darwin-${architecture}`;
+const profileLabel = digest => `tds-profile:${digest.slice(0, 32)}`;
 
 // Never retry a POST: a lost response may already have started a chargeable build.
 export async function apiRequest(path, { token, method = 'GET', body, legacy = false,
@@ -58,11 +60,14 @@ export async function apiRequest(path, { token, method = 'GET', body, legacy = f
   }
 }
 
-export function buildRequest({ appId, commit, architecture }) {
+export function buildRequest({ appId, commit, architecture, profile }) {
   if (!ID.test(appId) || !SHA.test(commit) || !ARCHES.includes(architecture)) throw new Error('Invalid build identity');
+  const edition = profile ? resolveReleaseProfile(release, profile) : null;
+  if (edition) requireProductionProfile(edition);
   return { appId, workflowId: WORKFLOW, tag: tagFor(commit),
-    labels: [targetLabel(architecture)],
-    environment: { variables: { TEAM_DEVSPACE_BUILD_ARCHITECTURE: architecture, TEAM_DEVSPACE_EXPECTED_COMMIT: commit } } };
+    labels: [targetLabel(architecture), ...(edition ? [profileLabel(releaseProfileDigest(edition))] : [])],
+    environment: { variables: { TEAM_DEVSPACE_BUILD_ARCHITECTURE: architecture, TEAM_DEVSPACE_EXPECTED_COMMIT: commit,
+      ...(edition ? { TEAM_DEVSPACE_RELEASE_PROFILE_JSON: JSON.stringify(profile) } : {}) } } };
 }
 
 export function buildArchitecture(build) {
@@ -72,8 +77,9 @@ export function buildArchitecture(build) {
   return ARCHES.includes(build.build_inputs?.architecture) ? build.build_inputs.architecture : undefined;
 }
 
-export function matchesBuild(build, { appId, commit, architecture }, { pending = false } = {}) {
+export function matchesBuild(build, { appId, commit, architecture, expectedProfileSha256 }, { pending = false } = {}) {
   if (build.app_id !== appId || build.workflow?.id !== WORKFLOW || buildArchitecture(build) !== architecture) return false;
+  if (expectedProfileSha256 && !build.labels?.includes(profileLabel(expectedProfileSha256))) return false;
   if (build.commit?.hash === commit) return true;
   return pending && !TERMINAL.has(build.status) && !build.commit?.hash &&
     build.tag === tagFor(commit);
@@ -217,8 +223,8 @@ async function downloadArtifact(artifact, path, limit, fetcher) {
   }
 }
 
-export async function collectBuild(build, { appId, commit, architecture, version, directory, fetcher = fetch }) {
-  if (build.status !== 'finished' || !matchesBuild(build, { appId, commit, architecture })) throw new Error('Only a successful exact-commit/architecture build can be collected');
+export async function collectBuild(build, { appId, commit, architecture, version, directory, expectedProfileSha256, fetcher = fetch }) {
+  if (build.status !== 'finished' || !matchesBuild(build, { appId, commit, architecture, expectedProfileSha256 })) throw new Error('Only a successful exact-commit/architecture/profile build can be collected');
   const target = `darwin-${architecture}`;
   const { pkg, checksum, receipt, bundle } = requiredArtifacts(build, version, architecture);
   await mkdir(directory, { recursive: true });
@@ -235,6 +241,9 @@ export async function collectBuild(build, { appId, commit, architecture, version
     if (receipt) await downloadArtifact(receipt, receiptPath, 65536, fetcher);
     else await writeFile(receiptPath, readBundleText(bundlePath, `release/offline/${version}/${target}/acceptance.json`, 65536), { flag: 'wx', mode: 0o600 });
     const evidence = await readJson(receiptPath);
+    if (expectedProfileSha256 && evidence.releaseProfileSha256 !== expectedProfileSha256) {
+      throw new Error('Downloaded acceptance belongs to a different release profile');
+    }
     if (evidence.passed !== true || evidence.commit !== commit || evidence.sourceDirty !== false ||
         evidence.release !== version || evidence.target !== target || evidence.entrypoint?.name !== pkg.name ||
         !/^[a-f0-9]{64}$/.test(evidence.entrypoint?.sha256 ?? '')) throw new Error('Downloaded acceptance does not describe the requested final source/package');
@@ -249,7 +258,7 @@ export async function collectBuild(build, { appId, commit, architecture, version
     const previous = await readJson(join(destination, 'acceptance.json'), null);
     if (previous) {
       if (previous.commit !== commit || previous.entrypoint?.sha256 !== evidence.entrypoint.sha256) throw new Error('Existing accepted candidate has different provenance/bytes; use a separate --directory');
-      await verifyAcceptance({ version, root: directory, targets: [target], expectedCommit: commit });
+      await verifyAcceptance({ version, root: directory, targets: [target], expectedCommit: commit, expectedProfileSha256 });
       return { collected: true, reused: true, buildId: build.id, target, commit, sha256: evidence.entrypoint.sha256 };
     }
     // Never merge into an unknown partial directory or replace accepted bytes.
@@ -257,7 +266,7 @@ export async function collectBuild(build, { appId, commit, architecture, version
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     await downloadArtifact(pkg, join(candidate, pkg.name), 1024 * 1024 * 1024, fetcher);
     if (await sha256File(join(candidate, pkg.name)) !== evidence.entrypoint.sha256) throw new Error('Downloaded PKG hash differs from acceptance');
-    await verifyAcceptance({ version, root: staging, targets: [target], expectedCommit: commit });
+    await verifyAcceptance({ version, root: staging, targets: [target], expectedCommit: commit, expectedProfileSha256 });
     await rename(candidate, destination);
     return { collected: true, reused: false, buildId: build.id, target, commit, sha256: evidence.entrypoint.sha256, directory: destination };
   } finally { await rm(staging, { recursive: true, force: true }); }
@@ -297,18 +306,23 @@ export async function main(argv = process.argv.slice(2)) {
   if (!SHA.test(commit) || (action === 'start' && (identity.sourceDirty || commit !== identity.commit))) throw new Error('Start requires the current clean, fully committed source tree');
   const sourceRelease = JSON.parse((await run('git', ['show', `${commit}:release.config.json`], { capture: true })).stdout);
   const version = sourceRelease.version;
+  const profile = sourceRelease.gateway === 'https://gateway.example.com'
+    ? { gateway: release.gateway, downloadOrigin: release.distribution.origin, updatePublicKey: release.distribution.updatePublicKey } : undefined;
+  if (profile) requireProductionProfile(release);
+  const expectedProfileSha256 = profile ? releaseProfileDigest(release) : undefined;
   const architectures = values.arch === 'both' ? ARCHES : [values.arch];
   const recordPath = resolve('build', 'codemagic', `${commit}.json`);
   await mkdir(dirname(recordPath), { recursive: true });
   const unlock = await lockfile.lock(recordPath, { realpath: false, retries: 0 });
   try {
-    const record = await readJson(recordPath, { appId: config.appId, commit, version, builds: {} });
+    const record = await readJson(recordPath, { appId: config.appId, commit, version, expectedProfileSha256, builds: {} });
     if (record.appId !== config.appId || record.commit !== commit || record.version !== version) throw new Error('Local build references belong to another source/app');
+    if (record.expectedProfileSha256 !== expectedProfileSha256) throw new Error('Local build record belongs to a different release profile; inspect it rather than reusing or overwriting it');
     const listed = values['build-id'] ? [] : await listBuilds(config);
     const details = new Map();
     let tagReady = false;
     for (const architecture of architectures) {
-      const context = { appId: config.appId, commit, architecture };
+      const context = { appId: config.appId, commit, architecture, expectedProfileSha256 };
       let id = values['build-id'] ?? record.builds[architecture]?.id;
       let build = id ? await getBuild(config, id) : null;
       if (build && !matchesBuild(build, context, { pending: true })) throw new Error('Recorded build has a different source/architecture');
@@ -324,7 +338,7 @@ export async function main(argv = process.argv.slice(2)) {
         if (!tagReady) { await ensureRemoteTag(commit); tagReady = true; }
         record.builds[architecture] = { requestedAt: new Date().toISOString(), id: null };
         await atomicJson(recordPath, record);
-        const response = await apiRequest('/builds', { ...config, legacy: true, method: 'POST', body: buildRequest({ ...context }) });
+        const response = await apiRequest('/builds', { ...config, legacy: true, method: 'POST', body: buildRequest({ ...context, profile }) });
         if (!ID.test(response.buildId ?? '')) throw new Error('Codemagic did not return a build ID; reconcile the pending request before retrying');
         record.builds[architecture].id = response.buildId;
         await atomicJson(recordPath, record);

@@ -4,15 +4,24 @@ import { validateCatalog } from '../client/release-catalog.mjs';
 import { AdminServiceError } from './admin-service.mjs';
 
 const cache = new Map();
-let stableCache, stablePending;
-const origin = release.distribution.origin;
+const stableCaches = new Map();
+function distribution(env) {
+  const origin = env.DOWNLOAD_ORIGIN ?? release.distribution.origin;
+  const publicKey = env.UPDATE_PUBLIC_KEY ?? release.distribution.updatePublicKey;
+  const url = new URL(origin);
+  if (url.protocol !== 'https:' || url.origin !== origin || !/^[A-Za-z0-9_-]{43}$/.test(publicKey)) {
+    throw new Error('Update distribution is not configured');
+  }
+  return { origin, publicKey, key: `${origin}:${publicKey}` };
+}
 const rules = row => ({ schema: 1, auto: row.auto_version, minimumSupported: row.minimum_supported,
   enforceAfter: row.enforce_after, revision: row.revision });
 // workerd accepts manual/follow, not Node's redirect:error. boundedJson rejects
 // every non-2xx response, so a redirect can never change the trusted origin.
 const fetchJson = async url => boundedJson(await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(15000) }));
 
-async function fetchStableCatalog() {
+async function fetchStableCatalog(env) {
+  const { origin, publicKey } = distribution(env);
   const response = await fetch(`${origin}/update.json`, { redirect: 'manual', signal: AbortSignal.timeout(15000) });
   if (response.status === 404) {
     await response.body?.cancel();
@@ -22,22 +31,31 @@ async function fetchStableCatalog() {
     if (UPDATE_VERSION.test(legacy.version) && compareVersions(legacy.version, '0.2.3') <= 0) return legacy;
     throw new Error('Stable signed update metadata is missing');
   }
-  return verifySignedCatalog(await boundedJson(response), release.distribution.updatePublicKey);
+  return verifySignedCatalog(await boundedJson(response), publicKey);
 }
 
-async function stableCatalog(fresh = false) {
-  if (fresh) return fetchStableCatalog();
-  if (stableCache?.expires > Date.now()) return stableCache.value;
-  if (!stablePending) {
-    const pending = fetchStableCatalog().then(value => {
-      // An earlier read may finish after an administrator's fresh approval.
-      // Invalidation must prevent that read from restoring the old cache.
-      if (stablePending === pending) stableCache = { value, expires: Date.now() + 60000 };
-      return value;
-    }).finally(() => { if (stablePending === pending) stablePending = null; });
-    stablePending = pending;
+async function stableCatalog(env, fresh = false) {
+  const { key } = distribution(env);
+  if (fresh) return fetchStableCatalog(env);
+  const previous = stableCaches.get(key);
+  if (previous?.pending) return previous.pending;
+  if (previous?.expires > Date.now()) {
+    if (previous.failed) throw new Error('Update origin temporarily unavailable');
+    return previous.value;
   }
-  return stablePending;
+  if (stableCaches.size > 16) stableCaches.clear();
+  const current = {};
+  stableCaches.set(key, current);
+  current.pending = fetchStableCatalog(env).then(value => {
+    current.value = value; current.expires = Date.now() + 60000;
+    return value;
+  }).catch(error => {
+    // Short negative caching bounds anonymous outage retries, never authorizes a
+    // device or accepts unsigned/stale metadata. Admin fresh verification bypasses it.
+    current.failed = true; current.expires = Date.now() + 5000;
+    throw error;
+  }).finally(() => { current.pending = null; });
+  return current.pending;
 }
 
 // This cache never covers device authorization, reset or revoke. Only fleet policy
@@ -65,10 +83,10 @@ export async function updateRules(env, store, fresh = false) {
   return current.pending;
 }
 
-export function clearUpdatePolicyCache(env) { cache.delete(env.PUBLIC_ORIGIN); stableCache = undefined; stablePending = null; }
+export function clearUpdatePolicyCache(env) { cache.delete(env.PUBLIC_ORIGIN); stableCaches.delete(distribution(env).key); }
 
 export async function publicUpdatePolicy(env, store) {
-  const [rule, catalog] = await Promise.all([updateRules(env, store), stableCatalog()]);
+  const [rule, catalog] = await Promise.all([updateRules(env, store), stableCatalog(env)]);
   return validateUpdatePolicy({ ...rule, stable: catalog.version });
 }
 
@@ -79,7 +97,8 @@ function validateReleaseIndex(value) {
   return value.versions;
 }
 
-async function selectableVersions(policy) {
+async function selectableVersions(env, policy) {
+  const { origin, publicKey } = distribution(env);
   let candidates;
   try { candidates = validateReleaseIndex(await fetchJson(`${origin}/releases.json`)); }
   catch { candidates = []; }
@@ -92,7 +111,7 @@ async function selectableVersions(policy) {
     if (compareVersions(version, policy.stable) > 0) continue;
     try {
       await verifySignedCatalog(await fetchJson(`${origin}/releases/${version}/update.json`),
-        release.distribution.updatePublicKey, version);
+        publicKey, version);
       verified.push(version);
     } catch {}
   }
@@ -105,24 +124,25 @@ async function selectableVersions(policy) {
 
 export async function adminUpdatePolicy(env, store) {
   const policy = await publicUpdatePolicy(env, store);
-  return { ...policy, selectableVersions: await selectableVersions(policy) };
+  return { ...policy, selectableVersions: await selectableVersions(env, policy) };
 }
 
 export async function saveUpdatePolicy(env, store, input) {
+  const { origin, publicKey } = distribution(env);
   if (!input || Object.keys(input).sort().join() !== 'auto,enforceAfter,minimumSupported,revision') {
     throw new AdminServiceError(400, 'invalid_update_policy');
   }
   const row = await store.updatePolicy();
   if (row.publication_until > Date.now()) throw new AdminServiceError(409, 'update_publication_in_progress');
   // A deliberate stable rollback must not make the policy editor itself unusable.
-  const current = { ...rules(row), stable: (await stableCatalog(true)).version };
+  const current = { ...rules(row), stable: (await stableCatalog(env, true)).version };
   let policy;
   try { policy = validateUpdatePolicy({ ...input, schema: 1, stable: current.stable }); }
   catch { throw new AdminServiceError(400, 'invalid_update_policy'); }
   if (current.revision !== policy.revision) throw new AdminServiceError(409, 'update_policy_changed');
   // Approval cannot name unpublished, incomplete or unsigned release bytes.
   for (const version of new Set([policy.auto, policy.minimumSupported].filter(Boolean))) {
-    try { await verifySignedCatalog(await fetchJson(`${origin}/releases/${version}/update.json`), release.distribution.updatePublicKey, version); }
+    try { await verifySignedCatalog(await fetchJson(`${origin}/releases/${version}/update.json`), publicKey, version); }
     catch { throw new AdminServiceError(409, 'update_release_not_verified'); }
   }
   const saved = await store.saveUpdatePolicy(policy);

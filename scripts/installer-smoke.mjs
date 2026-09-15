@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { atomicJson, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
 import { serviceLabel, windowsTaskNames } from '../client/platform.mjs';
 import { run, sha256File } from './build-utils.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 
 if (process.platform !== 'win32') throw new Error('This smoke test exercises the actual Windows NSIS bootstrapper');
 const { values } = parseArgs({ options: { installer: { type: 'string' }, direct: { type: 'boolean' } } });

@@ -1,7 +1,7 @@
 import { chmod, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { run, sha256File } from './build-utils.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 
 export function macUiCompileArgs(destination, minimum = release.distribution.macosMinimumVersion, architecture = process.arch) {
   if (!/^\d+\.\d+$/.test(minimum)) throw new Error('An explicit macOS deployment target is required');

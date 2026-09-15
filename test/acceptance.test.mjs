@@ -11,6 +11,7 @@ import { sourceIdentity } from '../scripts/build-utils.mjs';
 
 const exec = promisify(execFile);
 async function copyCatalogContract(root) {
+  await cp('scripts/release-profile.mjs', join(root, 'scripts/release-profile.mjs'));
   await mkdir(join(root, 'client'), { recursive: true });
   await cp('client/release-catalog.mjs', join(root, 'client/release-catalog.mjs'));
 }
@@ -20,7 +21,7 @@ test('release acceptance rejects extracted-only PKGs and missing native startup 
   await mkdir(join(root, 'scripts'));
   for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   await copyCatalogContract(root);
-  await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['darwin-arm64'] } }));
+  await writeFile(join(root, 'release.config.json'), JSON.stringify({ ...release, version: '1.2.3', distribution: { ...release.distribution, targets: ['darwin-arm64'] } }));
   const directory = join(root, 'release/offline/1.2.3/darwin-arm64');
   await mkdir(directory, { recursive: true });
   const bytes = 'fixture package bytes';
@@ -44,9 +45,9 @@ test('a failed acceptance attempt invalidates a previous green report', async t 
   const root = await mkdtemp(join(tmpdir(), 'tds-stale-acceptance-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'scripts'));
-  for (const file of ['platform-acceptance.mjs', 'build-utils.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
+  for (const file of ['platform-acceptance.mjs', 'build-utils.mjs', 'release-profile.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   const target = `${process.platform}-${process.arch}`;
-  await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: [target] } }));
+  await writeFile(join(root, 'release.config.json'), JSON.stringify({ ...release, version: '1.2.3', distribution: { ...release.distribution, targets: [target] } }));
   await writeFile(join(root, 'scripts/verify-release.mjs'), 'process.exit(7);');
   const directory = join(root, 'release/offline/1.2.3', target);
   await mkdir(directory, { recursive: true });
@@ -137,7 +138,7 @@ test('strict Windows acceptance rejects isolated-only installer evidence', async
   await mkdir(join(root, 'scripts'));
   for (const file of ['verify-acceptance.mjs', 'build-utils.mjs', 'download-catalog.mjs']) await cp(join('scripts', file), join(root, 'scripts', file));
   await copyCatalogContract(root);
-  await writeFile(join(root, 'release.config.json'), JSON.stringify({ version: '1.2.3', distribution: { targets: ['win32-x64'] } }));
+  await writeFile(join(root, 'release.config.json'), JSON.stringify({ ...release, version: '1.2.3', distribution: { ...release.distribution, targets: ['win32-x64'] } }));
   const directory = join(root, 'release/offline/1.2.3/win32-x64');
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, 'Team-DevSpace-1.2.3-windows-x64-setup.exe'), 'test-only bytes');

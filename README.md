@@ -1,176 +1,68 @@
 # Team DevSpace
 
-让一个共享的 ChatGPT 工作空间 App，按员工的 Access Key 连接到各自电脑上的官方 DevSpace。
+让共享的 ChatGPT 工作空间 App 根据每名员工自己的 Access Key，连接到对应电脑上的官方 DevSpace。
 
-Team DevSpace 不修改个人 DevSpace，不替换 `devspace.568920429.xyz`，也不维护 DevSpace fork。云端使用单独的 `team-devspace.568920429.xyz`。本地将官方 DevSpace 与认证适配放在同一个 Node 进程，另由 `cloudflared` 提供出站连接；Windows/macOS 的极薄原生托盘只转发控制事件，不是 supervisor 或事实源。管理员页面由同一个 Gateway Worker 提供，不增加第二个 Worker、数据库或登录系统。
-
-**发布状态与真实验收范围见 [验证记录](docs/verification.md)。生成安装包、通过本地测试，不等于已经完成 Cloudflare、ChatGPT 和 macOS 实机验收。**
+**Source-available · PolyForm Shield 1.0.0。** 原创代码适用未经修改的 [LICENSE](LICENSE)，不是 OSI 开源许可。第三方组件保留各自许可证，见 [NOTICE](NOTICE) 和 [第三方说明](LICENSES/README.md)。公开源码不授予任何生产服务的访问权限。
 
 ## 工作方式
 
 ```text
-ChatGPT 工作空间 App + 员工 Access Key
-                  |
-        Cloudflare Worker + D1
-                  |
-      Access Key -> Device Binding
-                  |
-        该设备专属 Cloudflare Tunnel
-                  |
-        本机认证适配 -> 官方 DevSpace
+ChatGPT + 每位员工的 Access Key
+              ↓
+Cloudflare Worker + D1 → Key / Device Binding
+              ↓
+该设备专属 Cloudflare Tunnel
+              ↓
+本机薄认证适配 → 官方 DevSpace
 ```
 
-一个 Access Key 只绑定一个 Device，允许多个 ChatGPT 会话。Gateway 不相信模型传入的设备标识，不会在设备离线时转发到别人电脑。同一台电脑的修复安装保留绑定；换电脑由管理员重置；凭据泄露时撤销旧 Key 并签发新 Key，而不是只重置绑定。
+一个 Key 同时绑定一台设备，支持多个会话。重置允许重新绑定，撤销立即拒绝后续访问；设备离线不会转发到别人的电脑。Gateway、Admin 和公共静态资源复用同一个 Worker。Windows/macOS 原生托盘负责展示，操作复用共享控制器和系统生命周期，不增加第二套 supervisor。
 
-## 固定版本
+**选择项目目录不是 Shell 沙箱。** 开发命令以员工的系统账户运行；持有有效 Access Key 的人可以调用该账户的开发能力。仅把 Key 交给被授权的使用者。
 
-| 组件 | 版本 |
-| --- | --- |
-| Team DevSpace | 0.2.2 |
-| 官方 DevSpace | 1.0.8 |
-| Node.js | 22.23.0 |
-| cloudflared | 2026.8.3 |
-| Windows Git/Bash 后备环境 | Git for Windows 2.55.0.windows.5 |
-| Windows 安装器 | NSIS 3.12 |
-| Windows 原生托盘 | tray-icon 0.24.2 / Rust 1.85.1 |
-| macOS 原生界面 | 系统 AppKit / Foundation，单文件 Swift，无第三方 UI 依赖 |
-| Admin CSS | Pico CSS 2.1.1 |
+## 员工安装
 
-构建固定使用 npm 11.19.1，避免上游发布的旧 shrinkwrap 绕过安全补丁覆盖；只允许已审核、精确版本的依赖安装脚本。官方 DevSpace 代码保持原样，下游 `undici`、`brace-expansion` 和 `protobufjs` 使用已修补的锁定版本。包管理锁文件和二进制 SHA-256 固定实际输入。员工端不执行 `npm update`；升级使用经过重新验证的 Team DevSpace 安装包。二进制来源和校验值见 `scripts/binaries.json`，安装包内附组件说明、SBOM 和构建来源记录。
+从组织管理员提供的**正式下载站或正式发行包**下载对应平台安装器，安装后输入管理员发放的 Access Key、选择项目目录，再连接共享 App。不需要 GitHub 登录，也不需要每人一个下载链接。
 
-## 跨平台一行安装
+支持 Windows x64、macOS ARM64 / Intel x64 和 Linux x64。具体版本、最低系统版本及工具链以 [release.config.json](release.config.json)、锁文件和 `scripts/binaries.json` 为准，不以 README 中的版本快照为准。
 
-统一下载入口：**https://downloads.568920429.xyz/**。软件通过现有阿里云服务器和 Caddy HTTPS 静态分发，不需要管理员生成下载链接，不需要下载票据或 GitHub 登录。每个版本的四个平台包和 SHA-256 不可覆盖，固定入口仅切换到已验收版本。
+安装包自包含 Node、DevSpace、cloudflared 和按需使用的 Windows PortableGit；员工机器不执行 npm 安装。覆盖升级保留 Key、绑定、项目目录与暂停意图。卸载保留员工配置和项目文件；退休设备还需管理员撤销 Key。内部发行的系统签名限制见 [内部发行与信任](docs/internal-distribution.md)，不要关闭整机 Gatekeeper 或 SmartScreen。
 
-```powershell
-# Windows x64：在 PowerShell 执行
-irm https://downloads.568920429.xyz/install.ps1 | iex
-```
+本仓库默认是**不可连接生产的示例发行配置**。`gateway.example.com`、`downloads.example.com` 和示例公钥不是可用服务，开发构建不能发给员工。正式构建由管理员注入组织配置；配置不包含员工 Key。
+
+## 开发与贡献
+
+使用锁定的 Node/npm，按 Issue → 分支 → PR → CI / Review → Squash Merge 工作；不要在 `main` 日常开发。单维护者不要求自我 Approval，但仍需要 PR、测试和处理 review threads。见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ```sh
-# macOS Apple Silicon / Intel 或 Linux x64：自动识别平台
-curl -fsSL https://downloads.568920429.xyz/install.sh | sh
-```
-
-以上命令执行本站 HTTPS 安装脚本；可先在浏览器检查脚本，或直接下载安装包。脚本固定对应版本的包 URL、大小和 SHA-256，校验通过才交给现有系统安装器。安装不携带 Access Key，不创建设备身份；Windows/macOS 安装后在应用内配置，Linux 运行 `~/.local/bin/team-devspace setup`。更换 Key 不需重装。方案、发布、回滚与信任边界见 [固定软件分发](docs/one-command-distribution.md)；实际部署和验收状态仍以 [验证记录](docs/verification.md) 为准。
-
-## 管理员首次部署
-
-在本仓库目录运行：
-
-```sh
-npx --yes npm@11.19.1 ci --no-fund --no-audit
-npm run configure
-npm run deploy
-```
-
-`configure` 使用本机终端的隐藏输入，保存到私有、Git 忽略的 `.runtime/cloudflare.json`。不要把任何令牌粘贴到聊天、Issue 或仓库。所需 Cloudflare 账号、区域与权限见 [部署说明](docs/deployment.md)。此脚本不购买套餐，也不修改现有个人域名的 DNS 或 Worker。
-
-`deploy` 先确认或创建项目拥有的 Cloudflare Access `/admin*` Application 与管理员邮箱 allow policy，再准备 D1、应用迁移，将静态资源与 Gateway/Secret 部署到同一个 Worker。Access 配置失败时不会上传含管理页的 Worker；部署后还会从未认证视角确认 `/admin` 被 challenge/deny。重复执行只复用 `deployment.config.json` 明确记录的项目资源；部署失败时尝试恢复已记录的 Worker 版本和旧资源路由，但不会自动回滚 D1 迁移。管理员令牌与加密主密钥首次生成后保存在 `.runtime/admin.json`，再次部署必须保留该文件，否则现有设备密文将无法解密。
-
-仅验证构建、不访问或修改 Cloudflare：
-
-```sh
-npm run deploy -- --dry-run
-```
-
-### 员工凭据管理
-
-管理员可在通过 Cloudflare Access 登录后打开 `https://team-devspace.568920429.xyz/admin`。页面与下列 CLI 共用同一个 Admin Service：浏览器本地用 Web Crypto 生成 Access Key，只把 `id`、`label` 和 SHA-256 发给 Worker；明文仅在当前 `sessionStorage` 中保留到管理员确认已复制。网络失败时使用同一 credential 重试。
-
-```sh
-npm run admin -- key create "张三-Windows" --output zhangsan.json
-npm run admin -- key list
-npm run admin -- key revoke "张三-Windows"
-npm run admin -- device reset "张三-Windows"
-```
-
-CLI 默认使用本仓库部署生成的 `.runtime/admin.json`；如果本机还保留旧的 `~/.team-devspace-admin/config.json`，会自动回退读取，不需要每条命令重复传 `--config`。显式 `--config` / `TEAM_DEVSPACE_ADMIN_CONFIG` 只保留给自动化或特殊环境覆盖。相对 `--output` 路径会写入当前管理员配置所在的私有目录；控制台只输出文件位置。创建请求可重试，不会因网络超时丢失第一次签发的 Key。重复使用一个已有标签返回同一签发记录；已撤销标签不能重新激活，应为新凭据使用新标签。
-
-撤销先在数据库拒绝后续访问，再禁用隧道入口、断开连接并删除隧道。Cloudflare 清理失败时保持拒绝访问并返回 `cleanup_pending`，重复同一命令完成清理，不会假报撤销全部成功。
-
-### ChatGPT 工作空间 App
-
-管理员单独发布 **Team DevSpace**，地址使用新 Gateway 的 `/mcp`，不要编辑原个人 DevSpace App。按工作空间现有的“访问令牌或 API 密钥”连接机制，将**每位连接者自己的** Access Key 作为 `Authorization: Bearer ...` 发送。
-
-必须在真实工作空间验证每名员工的凭据分别传递；不能把管理员 Key 写成所有用户共用的静态请求头。只有真正的 ChatGPT 工具调用通过后才能关闭接入验收项，远程 MCP SDK 测试不能代替这一项。
-
-## 员工安装和使用
-
-管理员先完成云端部署，再按平台取得安装包并分发对应员工的 Access Key。Windows/Linux 只在对应原生主机本地打包，不再走 GitHub Actions；macOS arm64 与 Intel x64 共用根目录 `codemagic.yaml` 的一个 Codemagic M2 workflow，通过 `architecture` 输入选择目标架构。员工统一从固定下载站安装；管理员只负责发布已验收的版本并发放 Access Key，private GitHub Release 仅作为可选的固定版本归档位置。发行目录和离线布局见 [客户端发行模型](docs/distribution.md)。
-
-**Windows x64：**通过固定入口下载单个自包含 `Team-DevSpace-<version>-windows-x64-setup.exe`，不再要求 ZIP 或安装前导入证书。当前 `internal-free` 包不承诺公共 Authenticode 信任或 SmartScreen 信誉，保留正常系统确认；管理员已有的内部签名可继续使用，但固定入口不会自动建立根证书信任。安装器只安装软件；完成后打开 Team DevSpace，在应用控制中心输入 Key、选择项目目录。EXE 内已包含固定 manifest、Node、DevSpace runtime、cloudflared 和按需 PortableGit fallback，不再依赖同目录 `objects` 或持久 payload cache；PortableGit 只在系统 Git 不可用时展开。程序使用 `%LOCALAPPDATA%\TDS` 的短 A/B 版本槽完成本地原子切换，Enrollment/配置独立保存在 `%LOCALAPPDATA%\TeamDevSpace`。本地程序安装成功后才进行首次 Enrollment；Access Key、Gateway、DNS 或 Tunnel 暂时失败只进入“连接待完成/Offline”，不会把已验证的本地安装回滚。已有 Binding 的覆盖升级直接复用原 Enrollment，不再次调用 `/v1/enroll`。
-
-**macOS：**分别提供 Apple Silicon (`arm64`) 与 Intel (`x64`) 自包含 `.pkg`，最低支持 macOS 12.0 Monterey，包内已包含对应架构的离线 runtime 组件。当前 Codemagic 走 `internal-free` unsigned/unnotarized 路径，不要求 Apple 付费凭据；两个架构共用同一 M2 workflow，Intel 构建在 Rosetta x86_64 进程中运行目标 Node/npm 与原生依赖安装，cloudflared 由固定源码交叉构建为 amd64，AppKit helper 明确使用 `x86_64-apple-macosx` target。workflow 执行打包、真实 AppKit 窗口/菜单栏短消息冒烟、release layout 校验、Mach-O/最低系统版本检查，并对最终 `.pkg` 执行系统安装与 LaunchAgent 验收；Rosetta 验证不等于 Intel 硬件实测。管理员发布前核对 Codemagic 产物、随包 SHA-256 和验收记录；员工从固定下载站取得对应架构的包，再在真实 Mac 上完成最终验收；unsigned 包首次安装若被 Gatekeeper 拦截，使用系统“隐私与安全性”中的“仍要打开”，不要关闭整机 Gatekeeper。安装完成后 PKG 会自动打开 Team DevSpace，并通过用户状态目录中的 `.ui-ready` 标记确认原生设置窗口或菜单栏已显示；如果 LaunchServices/Gatekeeper 导致自动首启没有真正发生，会直接向当前登录用户显示恢复指引，而不是静默显示“安装成功”。首次打开完成本地校验和解压后，在同一个 AppKit 窗口输入 Access Key、选择项目目录，并显示验证、错误、重试和完成状态，不下载 runtime；绑定失败时保留已产生的待配置状态与菜单栏入口，用户取消设置不作为安装失败。日常操作使用原生菜单栏与系统单色图标，不弹常规成功通知，设置窗口仍复用 Node 中的验证和生命周期逻辑。
-
-**Linux x64：**当前包要求 `x86_64`、glibc 2.34+；支持 systemd user manager 和已有无 systemd 生命周期。Linux 当前不走 GitHub Actions；需要时在原生 Linux x64 主机执行 `npm run package`，取得 `Team-DevSpace-<version>-linux-x64-offline.tar.gz` 与对应 SHA-256。校验并解压后，以员工本人运行 `install.sh`，不要 `sudo`。安装器会写入稳定的 `~/.local/bin/team-devspace` 入口；首次安装若尚未 Enrollment，再执行 `team-devspace setup`，在终端隐藏输入 Access Key 并选择项目目录；以后用 `team-devspace access-key change` 更换 Key。原 `--credential-file` 仅保留为显式无人值守配置入口。已有 Binding 的覆盖升级只需重新运行新版 `install.sh`，安装器会复用现有 Enrollment、刷新固定 systemd user units，并让服务始终通过 `active-path` 解析当前版本。
-
-内部发行仍可能触发 Windows SmartScreen 或 macOS Gatekeeper 的额外确认；只对管理员提供、SHA-256 已核对的固定版本包建立例外，不要关闭整机安全功能。
-
-安装成功后，员工在 ChatGPT 连接共享 App，输入同一个 Access Key 即可。状态检查只报告可观测到的本地/网关健康状态，不会伪造“ChatGPT 已连接”。
-
-Windows/macOS 登录后显示统一的系统托盘/菜单栏入口：真实状态、当前设备与项目、暂停/恢复远程访问、**设置…**、**诊断与修复…**、**退出 Team DevSpace**。诊断入口定位到同一个本机设置页，不再在托盘复制维护按钮或创建第二套诊断界面。两端从同一份 `desktop-state.mjs` 投影渲染菜单和图标；`desktop-controller.mjs` 只协调操作与反馈，实际生命周期仍复用现有 controller/操作锁/系统启动管理器。“退出 Team DevSpace”停止本次连接并关闭托盘，但保留原有登录启动设置；关闭设置网页或托盘崩溃不会改变远程访问意图。
-
-Access Key、项目目录、检查连接、修复、脱敏诊断和作者/版本信息集中到一个本地控制中心，不再维护两套托盘设置弹窗。控制中心首次使用时才在现有桌面进程中监听随机的 `127.0.0.1` 端口；不增加公网路由、独立服务、持久状态或 npm 依赖。每次启动生成独立访问凭据，通过 URL fragment 交给页面，再移至当前标签页 `sessionStorage`；API 校验 Bearer、Host 和同源请求，密钥不会回显。暂停远程访问不关闭本地设置。已配置设备使用“更换项目目录…”一次选择并应用，取消不改配置；首次设置的目录仍与 Access Key 一起提交。手动路径输入折叠为备用方式，并复用同一更改动作。目录选择复用 Windows 系统对话框与已打包的 macOS AppKit helper；Windows 使用调用窗口关联的临时 owner，不全局置顶、不禁用浏览器、不修改前台策略。首次配置时 Windows 使用同一个控制中心，macOS 保留现有原生 AppKit 设置窗口。
-
-Linux 使用稳定 CLI 和原有 systemd/无 systemd 生命周期，不引入桌面控制面或托盘。Windows 开始菜单提供主应用、**Repair connection** 和卸载入口；macOS/Linux 使用 `team-devspace`：
-
-```sh
-team-devspace status
-team-devspace stop
-team-devspace start
-team-devspace restart
-team-devspace suspend
-team-devspace resume
-team-devspace diagnostics
-team-devspace logs
-team-devspace logs --follow   # Linux: journalctl --user
-team-devspace project-root show
-team-devspace project-root set <绝对项目目录>
-```
-
-修改目录会重启本机 runtime，现有 MCP 会话需要重新连接。停止 runtime 会终止它管理的子进程，因此不要在仍需保留的开发命令运行中执行停止、升级或卸载。
-
-### 权限边界
-
-**Current Project Root 约束工作区及文件工具，不是 Shell 沙箱。** Team DevSpace 产品层只暴露一个当前项目目录；upstream DevSpace 内部仍使用 `allowedRoots: [currentProjectRoot]`。Shell 以员工自己的系统账户执行，能访问该账户本来有权访问的资源。不要把“选择了项目目录”误解为强制隔离整机；取得 Access Key 的人能远程调用这些开发能力。
-
-本地 Owner Token、设备 Secret、Tunnel Token 与员工 Access Key 不同。私有状态使用当前用户权限保护；Windows runtime 只绑定 loopback。云端只持久化路由、凭据摘要、加密后的设备 Secret 与运行元数据，不记录 MCP body、源码、Prompt 或 Shell 内容。
-
-### 升级和卸载
-
-重新运行明确版本的完整离线安装包，先取得并验证候选版本，再切换 active slot。失败时保留当前版本；成功激活后清理旧解压版本和当前 manifest 不再引用的缓存。没有长期保留的本地手动回滚槽，需要退回时从下载站历史版本取得兼容的旧安装包。服务器稳定版回滚只改变后续下载，不自动降级现有客户端。私有状态位于应用目录以外：
-
-- Windows：`%LOCALAPPDATA%\TeamDevSpace`
-- macOS：`~/Library/Application Support/TeamDevSpace`
-- Linux：`${XDG_STATE_HOME:-~/.local/state}/team-devspace`
-
-修复和升级保留 Key、Device Binding、Current Project Root，**不需要重新认证或重新输入 Access Key**。管理员执行 Reset 后，原设备或新设备都可用同一个 Key 重新 Enrollment；Revoke 后则需要管理员重新发放。若升级前远程访问已暂停，不会暗中启动 runtime/tunnel 或把 Gateway 改回 active；Linux 保留已安装但 disabled 的固定 user units，恢复时只重新 enable/start。卸载停止并移除用户登录启动项，**保留 Enrollment 和项目文件**；退休或丢失的设备仍需管理员撤销 Key。
-
-macOS 卸载执行一次 `team-devspace uninstall`：它先停止/移除用户 LaunchAgent，再通过 macOS 原生管理员授权删除包拥有的 App、命令入口和安装 receipt；Enrollment 与员工项目不会删除。Windows 使用系统卸载入口。高级隔离测试可通过 `TEAM_DEVSPACE_HOME` 或 CLI `--home` 指定独立状态目录，但不要复用他人的状态文件。
-
-## 开发、验证、构建
-
-```sh
+npx --yes npm@11.19.1 ci --no-audit --no-fund
 npm run check
 npm test
 npm run deploy -- --dry-run
-npm run package
-npm run build:tray
-npm run test:tray
-npm run test:native
 ```
 
-`package` 必须在目标系统下以目标 CPU 架构的 Node 进程构建，不能跨平台复制 SQLite/PTY 模块；macOS Intel 构建允许在 Apple Silicon 主机上通过 Rosetta 运行完整 x86_64 Node/npm 构建链。输出包含固定版本的离线布局 `release/offline/<version>/<target>`；员工安装只使用管理员提供的完整离线包，不从远端拉取 runtime。再次本地构建可使用 `npm run package -- --reuse-dependencies`，只复用指纹匹配的依赖树，不复用生成目录。构建器优先复用启动它且版本完全匹配 `packageManager` 的 npm，避免 hosted macOS 为取得 npm CLI 再完整安装一次仓库依赖；本地全局 npm 版本不匹配时仍可回退到仓库锁定的 npm devDependency。构建后自动清理解压/组装中间文件；所有平台的员工 runtime archive 都排除 source map 与 TypeScript 声明文件，并且不携带构建用 npm 和 lock/.npmrc。
+最后一个命令只打包 Gateway，不部署、不执行生产迁移。Windows 测试需要 Git for Windows 的 Bash，不应误用系统的 WSL Bash 启动器。
 
-本地控制中心浏览器验收在一个保留的前台终端运行 `node scripts/control-ui-fixture.mjs start`，再用已安装的 Playwright 浏览器打开输出 URL，执行 `scripts/control-browser-smoke.js` 中的函数代码；完成后按 Ctrl+C 结束有限夹具。需要持久预览时必须使用 Windows 的 OS-managed 预览入口，不从命令会话 detached spawn。夹具使用生产页面、HTTP 服务和共享控制器，但连接操作全部隔离，不写真实员工设备或云端 Key。Windows 原生目录窗口单独运行 `node scripts/windows-picker-smoke.mjs --desktop [--runtime-root <installed-path>]`，实际确认/取消、检查前后台层级与调用窗口可用性；锁屏会失败而不是假装完成 GUI 验收。
+报告漏洞请先阅读 [SECURITY.md](SECURITY.md)。不要在公开 Issue、日志或截图中提供 Key、令牌、员工路径或未经脱敏的诊断文件。
 
-`test:tray` 在当前 Windows/macOS 桌面实际启动 native helper、通过生产共享投影生成 JSON-lines 菜单，检查真实菜单事件、畸形输入拒绝、同实例互斥、隔离实例共存并正常退出；macOS 额外验证真实 AppKit 目录选择器的显示和取消。Windows Rust helper 使用 `cargo build --locked`，构建还检查 PE 必须是原生 x64 GUI 子系统；macOS helper 使用系统 `xcrun swiftc`，额外验收菜单事件、错误输入拒绝、表单单实例、错误后原地重试与正常关闭。macOS 构建中的 `--self-test` 不要求 GUI，但不替代桌面验收。`test:native` 使用临时状态和原生用户启动项验证实际安装载荷、认证 MCP 调用、停止、重启与清理，不启动公网 Tunnel，不访问现有个人 DevSpace；Windows/Linux 深度验收在本机执行；Codemagic 另对最终 `.pkg` 执行真实系统安装、LaunchAgent 与已安装载荷验收。Windows 计划任务以当前用户的 `InteractiveToken` 直接运行预编译的 `tds-launcher.exe`；launcher 通过 `CREATE_NO_WINDOW` 启动 Node/cloudflared/托盘控制器、重定向日志，并以 kill-on-close Job Object 清理进程树，不保留 PowerShell/cmd supervisor。Linux 固定使用 `team-devspace-runtime.service` / `team-devspace-tunnel.service`，日志进入 journald。Windows 的 `test:installer` 和 Unix 的 `test:installer:unix` 仍可显式执行真实离线安装事务；Unix 打包仍会实际启动 native PTY。
+## 构建、发布与更新
 
-原生客户端打包已经从 GitHub Actions 拆出：Windows/Linux 只在原生主机本地按需构建；macOS arm64/Intel x64 共用 Codemagic `mac_mini_m2` 手动 workflow，并通过 `architecture` 输入选择，且不配置 push/PR 自动触发，以节省免费额度。Codemagic 按目标架构分别持久化经过 fingerprint、SHA-256、Mach-O 架构和最低系统版本校验的最终 `cloudflared` 产物，并缓存固定 SHA-256 的 Node 发布归档；不持久化 `node_modules`、npm cache、Cargo target/registry 或 Go SDK/build cache。AppKit helper 直接使用已固定的 Xcode 工具链编译，不安装 Rust 或维护 Tray 产物缓存；打包复用现有原生冒烟脚本，要求小于 4096 字节的命令在 stdin 未关闭时也能显示窗口、更新菜单并完成错误重试。cloudflared cache miss 时才下载 Go 工具链并从锁定源码重建，缓存损坏也自动回退重建；release layout 校验和对应架构的 Mach-O/最低系统版本检查始终保留。兼容性扫描只枚举可执行文件和 `.node`/`.dylib`/`.so`/`.bundle` 原生候选，不再逐个探测整个 `node_modules`。Intel 路径会先用固定 x64 Node/npm 通过 Rosetta 做可执行性预检，缺少 Rosetta 时直接失败而不静默产出错误架构包。它不跑完整单元测试矩阵，但必须通过 `platform-acceptance.mjs --system-macos-installer` 的真实系统级 `.pkg` 安装验收。当前 canonical trust profile 仍是 `internal-free`，员工机器不需要 GitHub Token。免费内部发行的操作边界见 [内部发行与信任](docs/internal-distribution.md)。
+[原生候选工作流](.github/workflows/build-installers.yml)使用 Windows、Linux、macOS ARM64 和原生 Intel runner；构建手动触发，不因每次 PR 自动消耗四平台打包额度。示例候选与生产配置候选明确分开，工作流不自动发布或调整版本策略。
 
-跨机器和真实 ChatGPT 验收使用 [验收流程](docs/acceptance.md)。
+**迁移状态：原生 GitHub 四平台工作流尚需实际运行验收。** 现有 Codemagic / 本地构建保留为过渡回退，不代表已经完成替代。构建成功也不等于跨版本安装、员工 UI、Gatekeeper 和真实 ChatGPT 验收成功。见 [公开准备状态](docs/public-readiness.md)。
 
-## 设计依据
+发行复用原安装器、不可变版本、Ed25519 更新签名和 `stable / auto / minimumSupported / enforceAfter`。正式包必须与验收的提交、发行配置及最终字节一致。不能重建已发布的同一版本，也不能重新生成现有客户端信任的更新密钥。
 
-术语在 `CONTEXT.md`；已确认边界见 `docs/adr/`。运行层、隧道、安装器、进程恢复优先使用官方或操作系统已有能力，只在个人 Key、Device Binding 和认证衔接处增加必要适配。
+GitHub Releases 是后续大文件分发的候选，而不是已经切换的生产源。旧客户端拒绝 HTTP 重定向，直接把旧下载地址改成 302 会破坏更新。现有静态下载源和旧版恢复包继续保留，待兼容客户端、公开匿名下载和四平台验证完成后再迁移。见 [分发迁移说明](docs/public-readiness.md#发行链与下载迁移)。
+
+## 管理员部署
+
+生产资源标识、管理员邮箱和凭据均在源码之外管理。复制 `config/*.example.json` 为私有 `.runtime` 配置，或通过受保护的 GitHub `production` Environment 注入；正式发行参数用 `TEAM_DEVSPACE_RELEASE_PROFILE` 或 `TEAM_DEVSPACE_RELEASE_PROFILE_JSON` 显式选择，不能同时设置两者。
+
+详见 [部署说明](docs/deployment.md)。部署和公开仓库是两个独立决定；合并 PR 不授权部署，切换仓库可见性不授权更换生产发行源。
+
+## 更多资料
+
+[架构与术语](CONTEXT.md) · [更新策略](docs/updates.md) · [安装验收](docs/acceptance.md) · [发行布局](docs/distribution.md) · [历史验证记录](docs/verification.md)
+
+历史记录描述当时的证据，不保证当前源码或候选已经通过同样验收。当前公开准备结论以 `docs/public-readiness.md` 为准。

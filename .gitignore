@@ -20,6 +20,14 @@ release/
 .dev.vars
 .dev.vars.*
 wrangler.local.json
+deployment.config.json
+downloads.config.json
+*.local.json
+*.pfx
+*.p12
+*.mobileprovision
+*credentials*.json
+*secrets*.json
 *.log
 *.token
 *.pem

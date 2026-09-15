@@ -8,13 +8,15 @@ import { dependencyFingerprint, pruneRuntime, RUNTIME_PROFILE } from './runtime-
 import { buildWindowsLauncher } from './windows-launcher.mjs';
 import { buildTray } from './tray-build.mjs';
 import { macosSigningConfiguration, notarizeMacPackage, signMacApplication } from './macos-signing.mjs';
+import release, { releaseProfileDigest } from './release-profile.mjs';
+import { collectRustNotices } from './native-notices.mjs';
 
 const { values } = parseArgs({ options: {
   'prepare-only': { type: 'boolean' }, 'reuse-dependencies': { type: 'boolean' },
+  output: { type: 'string' },
 } });
 const target = `${process.platform}-${process.arch}`;
 const tar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
-const release = JSON.parse(await readFile('release.config.json', 'utf8'));
 const macosSigning = process.platform === 'darwin' ? macosSigningConfiguration() : null;
 if (!release.distribution.targets.includes(target)) {
   throw new Error('Build release payloads on an enabled native target host; native dependencies must not be cross-copied');
@@ -39,7 +41,7 @@ if (packageJson.dependencies['@waishnav/devspace'] !== release.devspaceVersion) 
 }
 const cache = resolve('build/cache');
 const bundle = resolve(`build/bundle-${target}`);
-const outputDirectory = resolve('release');
+const outputDirectory = resolve(values.output ?? 'release');
 async function maximumRelativePathLength(directory, base = directory) {
   let maximum = 0;
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -141,7 +143,9 @@ if (process.platform === 'win32') {
   await run(process.execPath, [resolve('scripts/tray-smoke.mjs'),
     join(trayContents, 'MacOS', 'TeamDevSpaceTray')], { timeout: 45000 });
 }
-for (const file of ['package.json', 'package-lock.json', '.npmrc', 'release.config.json', 'README.md']) await cp(file, join(bundle, file));
+for (const file of ['package.json', 'package-lock.json', '.npmrc', 'README.md', 'LICENSE', 'NOTICE']) await cp(file, join(bundle, file));
+await cp('LICENSES', join(bundle, 'LICENSES'), { recursive: true });
+await writeFile(join(bundle, 'release.config.json'), `${JSON.stringify(release, null, 2)}\n`);
 const node = process.platform === 'win32' ? join(runtime, 'node.exe') : join(runtime, 'bin', 'node');
 // The pinned modern npm honors security overrides instead of dependency-published shrinkwrap trees.
 // Prefer the exact npm that invoked this script so hosted macOS packaging does not need a redundant
@@ -245,6 +249,7 @@ const sbom = await run(node, [npmCli, 'sbom', '--sbom-format=cyclonedx', ...depe
   { cwd: bundle, env: buildEnvironment, capture: true });
 const sbomDocument = JSON.parse(sbom.stdout);
 if (trayBuild?.implementation === 'rust') {
+  await collectRustNotices(trayBuild.metadata, join(bundle, 'LICENSES', 'rust'));
   const rustPackages = trayBuild.metadata.packages.filter(package_ =>
     trayBuild.metadata.resolve.nodes.some(node => node.id === package_.id));
   sbomDocument.components.push(...rustPackages.map(package_ => ({ type: 'library', name: package_.name,
@@ -260,7 +265,7 @@ await writeFile(join(bundle, 'THIRD-PARTY-NOTICES.txt'), [
   `Node.js ${release.nodeVersion}: https://nodejs.org/ (license and notices in runtime/LICENSE)`,
   `cloudflared ${release.cloudflaredVersion}: Apache-2.0, https://github.com/cloudflare/cloudflared`,
   ...(trayBuild?.implementation === 'appkit' ? ['The macOS UI uses system AppKit/Foundation, with no third-party UI dependencies.'] : []),
-  ...(trayBuild?.implementation === 'rust' ? ['The native tray and its exact Rust dependency graph are recorded in Cargo.lock and sbom.cdx.json.',
+  ...(trayBuild?.implementation === 'rust' ? ['The native tray dependency graph is recorded in Cargo.lock and sbom.cdx.json; original Cargo dependency license and notice files are retained in LICENSES/rust/.',
     'tray-icon 0.24.2: MIT OR Apache-2.0, https://github.com/tauri-apps/tray-icon'] : []),
   ...(process.platform === 'win32' ? [`Git for Windows ${release.gitFallbackVersion}: GPL-2.0 and bundled component licenses retained under git/.`,
     `Corresponding sources and redistribution notices: https://github.com/git-for-windows/git/releases/tag/v${release.gitFallbackVersion}`] : []),
@@ -274,6 +279,7 @@ if (process.platform === 'win32') {
   }
 }
 await writeFile(join(bundle, 'release-provenance.json'), JSON.stringify({
+  releaseProfileSha256: releaseProfileDigest(release),
   release: release.version, target, upstream: { package: '@waishnav/devspace', version: installed.version },
   binaries: Object.fromEntries(downloadKinds.map(kind => [kind, binaries[kind][target]])), lockSha256,
   dependencyFingerprint: fingerprint, dependencyInstallProfile, npmVersion,

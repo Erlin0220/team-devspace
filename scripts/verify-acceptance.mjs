@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packageName } from './download-catalog.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 import { sha256File } from './build-utils.mjs';
 
 export async function verifyAcceptance({ version = release.version, targets = release.distribution.targets,
   root = resolve('release', 'offline', version), expectedCommit,
   requireFinalWindows = false, requireInstalledUpgrade = false, requireNativeArchitecture = false,
-  allowRosettaDarwinX64 = false } = {}) {
+  allowRosettaDarwinX64 = false, expectedProfileSha256 } = {}) {
 for (const target of targets) {
   const path = join(root, target, 'acceptance.json');
   const evidence = JSON.parse(await readFile(path, 'utf8'));
@@ -17,6 +17,8 @@ for (const target of targets) {
   assert.equal(evidence.passed, true, `${target}: acceptance did not pass`);
   assert.equal(evidence.release, version, `${target}: acceptance release mismatch`);
   assert.equal(evidence.target, target, `${target}: acceptance target mismatch`);
+  if (expectedProfileSha256) assert.equal(evidence.releaseProfileSha256, expectedProfileSha256,
+    `${target}: acceptance release profile mismatch`);
   if (expectedCommit) {
     assert.equal(evidence.commit, expectedCommit, `${target}: acceptance came from another commit`);
     assert.equal(evidence.sourceDirty, false, `${target}: acceptance was produced from a dirty source checkout`);

@@ -1,0 +1,15 @@
+Required Notice: Copyright (c) 2026 Erlin0220
+
+Team DevSpace original code is available under the unmodified PolyForm Shield
+License 1.0.0 in LICENSE. This is source-available software, not an OSI-approved
+open-source license. The license text, rather than this description, controls.
+
+Third-party components, their source, and their notices retain their original
+licenses. PolyForm Shield does not replace, restrict, or relicense rights granted
+by MIT, Apache-2.0, GPL, or any other third-party license. See LICENSES/README.md,
+assets/admin/PICO-LICENSE.md, the installed dependency licenses and generated SBOM.
+
+Public source access is not access to an operator's infrastructure. Employees
+must use their operator's official builds and Access Keys. No production
+credentials, services, trademark rights or ownership of employee projects are
+granted by this notice.

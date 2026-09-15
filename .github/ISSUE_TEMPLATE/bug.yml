@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a reproducible product or installer failure (not a secret or security vulnerability).
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use SECURITY.md. Remove Access Keys, device identities, employee paths and private logs."
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected behavior and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence

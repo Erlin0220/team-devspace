@@ -1,0 +1,4 @@
+{
+  "sshHost": "downloads-server",
+  "serverRoot": "/srv/team-devspace"
+}

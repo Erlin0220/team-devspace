@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { access, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import release from '../release.config.json' with { type: 'json' };
-import { sha256File, sourceIdentity } from './build-utils.mjs';
+import release, { verifyProfileBinding } from './release-profile.mjs';
+import { run, sha256File, sourceIdentity } from './build-utils.mjs';
 
 const { values } = parseArgs({ options: {
   'direct-windows-installer': { type: 'boolean' },
@@ -48,6 +48,15 @@ const output = resolve(values.output ?? join(directory, 'acceptance.json'));
 // A failed rerun must not leave a previous green report eligible for publishing.
 await rm(output, { force: true });
 await runNode('scripts/verify-release.mjs', ['--target', target]);
+const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'));
+const app = manifest.components.find(component => component.name === 'app');
+if (!app || !/^objects\/sha256\/[a-f0-9]{64}\/app\.tar\.gz$/.test(app.path)) {
+  throw new Error('Acceptance requires the canonical app component');
+}
+const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : '/usr/bin/tar';
+const embedded = async name => JSON.parse((await run(tar, ['-xOf', join(directory, app.path), name], { capture: true })).stdout);
+const profileSha256 = verifyProfileBinding(await embedded('release.config.json'),
+  await embedded('release-provenance.json'), release);
 
 const entrypoint = process.platform === 'win32'
   ? join(directory, `Team-DevSpace-${release.version}-windows-x64-setup.exe`)
@@ -88,6 +97,7 @@ const evidence = {
   schema: 1,
   passed: true,
   release: release.version,
+  releaseProfileSha256: profileSha256,
   target,
   commit,
   sourceDirty,

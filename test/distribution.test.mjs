@@ -91,8 +91,9 @@ test('release layout separates app, upstream dependencies, runtimes and optional
     'runtime/node.exe': 'node', 'runtime/bin/node': 'node', 'bin/cloudflared.exe': 'cloudflared', 'bin/cloudflared': 'cloudflared',
     'bin/team-devspace.cmd': 'command', 'git/git.exe': 'git', 'package.json': '{}', 'package-lock.json': '{}', '.npmrc': '',
     'release.config.json': '{}', 'README.md': 'readme', 'sbom.cdx.json': '{}', 'THIRD-PARTY-NOTICES.txt': 'notices',
-    'release-provenance.json': '{}',
+    'release-provenance.json': '{}', 'LICENSE': 'license', 'NOTICE': 'notice', 'LICENSES/README.md': 'third-party licenses',
   };
+  await mkdir(join(bundle, 'LICENSES'));
   for (const [path, contents] of Object.entries(files)) await writeFile(join(bundle, path), contents);
   const tar = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32', 'tar.exe') : '/usr/bin/tar';
   const gitFallbackArchive = join(work, 'official-PortableGit.7z.exe');

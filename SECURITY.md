@@ -1,42 +1,59 @@
-# Security Policy
+# Security
 
-Team DevSpace connects a shared ChatGPT workspace application to authorized employee devices, so credential handling and remote-access failures are treated as security-sensitive issues.
+## Reporting
 
-## Supported versions
+Do not disclose a suspected vulnerability, credentials, exploit traces or
+employee data in a public Issue. Use this repository's GitHub private
+vulnerability reporting facility when it is enabled. Operators should use
+their established private maintainer contact while it is unavailable. Do not
+send secrets in ordinary chat or paste an unredacted diagnostic archive.
 
-Only the current `0.2.x` release line is actively maintained. Older `0.1.x` builds should be upgraded before relying on security fixes.
+Private reporting must be enabled and its contact route tested before this
+repository becomes Public. No response-time SLA is promised by this file.
 
-## Reporting a vulnerability
+## Trust boundaries
 
-Report suspected vulnerabilities privately to the repository owner or Team DevSpace administrator through the existing internal communication channel. Do not place vulnerability details, credentials, employee data, or exploitable reproduction steps in a broadly visible issue, chat, or document.
+Access Keys authorize remote development, not merely a status dashboard.
+The selected project directory constrains workspace/file tools; it is not a
+shell sandbox. Commands run with the employee's operating-system permissions.
+Protect that account and revoke credentials for lost or retired devices.
 
-A useful report should include:
+Gateway URLs, download URLs and update public keys are necessarily visible to
+clients. Hiding them is not authentication. Key hashes, current device bindings
+and MCP session ownership are checked independently of display caches.
+Admin browser access requires a validated Cloudflare Access identity and CSRF
+checks; CLI administration uses a separate secret. Avoid exposing alternate
+`workers.dev` or preview routes that bypass the intended edge boundary.
 
-- the affected Team DevSpace version and operating system;
-- the affected component, such as Gateway, Admin Web, installer, tray, Bridge, or DevSpace runtime;
-- clear reproduction steps and the observed security impact;
-- relevant logs with secrets, local project contents, personal paths, and employee data removed; and
-- whether the issue appears to permit unauthorized device access, credential disclosure, privilege escalation, persistence, or isolation bypass.
+Software download does not grant access to an employee computer. Installer
+payloads contain no employee key or Cloudflare management token. The updater
+verifies independent Ed25519 metadata and complete package size/hash before
+handing off to the existing OS installer. Never replace the deployed trust key
+without a compatible key-rotation plan, or silently downgrade clients.
 
-## Credential exposure
+## Resource-abuse controls
 
-Never include real Access Keys, `ADMIN_TOKEN`, `MASTER_KEY`, Cloudflare API tokens, Tunnel tokens, signing keys, certificates containing private keys, or passwords in a report.
+Reject malformed credentials before database/provider work. A syntactically
+valid but unknown credential may still require a D1 read; code-level rejection
+does not eliminate the cost of invoking a Worker. Use narrowly scoped WAF rules
+and appropriate edge rate limiting, not secret URLs or a global office-IP ban.
+The per-Key enrollment limiter protects Tunnel/DNS provisioning after identity
+validation; it is not a global billing cap or a replacement for edge limits.
 
-If a credential may already have been exposed, disable or rotate that credential first when possible, then report the incident privately. Do not wait for a code fix before containing an active credential leak.
+Anonymous update discovery remains available for recovery compatibility.
+Coalescing, bounded success caches and brief negative caching reduce origin
+and D1 work, not the number of HTTP requests an attacker can send. A stolen
+valid Key requires revocation, not just a rate-limit adjustment.
 
-## Security boundaries
+## Supply chain and incidents
 
-Team DevSpace is designed around these boundaries:
+Keep source/profile/accepted bytes bound together, Actions SHA-pinned,
+dependency/binary inputs locked, production secrets scoped and untrusted PRs
+unprivileged. Public downloads also require third-party license compliance.
+Do not turn off operating-system trust protections to suppress install prompts.
 
-- employee devices expose no intentional public inbound port; remote access is carried through authenticated Cloudflare Tunnel connectivity;
-- an Access Key is bound to one Device Binding and must not authorize another device without an administrator reset;
-- administrator routes are expected to remain protected by Cloudflare Access and application-level authorization;
-- local Allowed Roots define which project directories DevSpace may access;
-- pause, revoke, reset, and failed-recovery paths should fail closed rather than silently restore remote access; and
-- secrets must remain outside Git, release manifests, diagnostics, browser-visible administration responses, and normal logs.
-
-A change that weakens any of these boundaries should be treated as security-sensitive even if normal functional tests still pass.
-
-## Third-party vulnerabilities
-
-Team DevSpace includes or depends on third-party software such as DevSpace, Node.js, cloudflared, and other packaged dependencies. Report an issue here when Team DevSpace's integration, configuration, packaging, or delayed dependency update creates the exposure. Vulnerabilities that exist solely in an upstream project should also be reported to that upstream project according to its security policy.
+For suspected exposure, revoke/rotate affected credentials first; deleting a
+file or rewriting Git is not revocation. Inspect history, tags, PR refs, logs,
+artifacts, releases and clones before changing visibility. Coordinate history
+cleanup and backups as a separate approved operation. Never automatically
+rotate MASTER_KEY or update-signing keys during a source-cleanup task.

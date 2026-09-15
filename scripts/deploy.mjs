@@ -6,19 +6,22 @@ import { resolve, join, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { atomicJson, normalizeGateway, randomSecret, readJson, secureStateDirectory } from '../client/state.mjs';
 import { ensureAdminAccess, verifyAdminProtection } from './access.mjs';
+import { ensureGatewayWaf, verifyGatewayWaf } from './waf.mjs';
+import release, { requireProductionProfile } from './release-profile.mjs';
+import { deploymentConfig } from './private-config.mjs';
 
 const { values } = parseArgs({ options: { 'dry-run': { type: 'boolean' }, ci: { type: 'boolean' }, provision: { type: 'boolean' }, config: { type: 'string' } } });
 const directory = values.ci ? resolve(process.env.RUNNER_TEMP ?? 'build/deploy-ci') : resolve('.runtime');
 await secureStateDirectory(directory);
 const base = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
-const release = await readJson('release.config.json');
-let deployment = await readJson('deployment.config.json');
+let deployment = values['dry-run'] ? null : await deploymentConfig();
+const deploymentFile = join(directory, 'deployment.json');
 const credentials = values['dry-run'] ? null : values.ci ? {
   deployToken: process.env.CLOUDFLARE_API_TOKEN,
   runtimeToken: process.env.CF_RUNTIME_API_TOKEN,
   adminEmails: process.env.ADMIN_ACCESS_EMAILS?.split(','),
 } : await readJson(values.config ?? join(directory, 'cloudflare.json'));
-const config = credentials && { ...credentials, zoneId: release.cloudflareZoneId, gateway: release.gateway };
+const config = credentials && { ...credentials, zoneId: deployment.zoneId, gateway: release.gateway };
 const workerName = base.name;
 const environment = { ...process.env, WRANGLER_SEND_METRICS: 'false', CI: 'true',
   ...(config ? { CLOUDFLARE_API_TOKEN: config.deployToken } : {}) };
@@ -39,6 +42,10 @@ if (values['dry-run']) {
   await run(wrangler, ['deploy', '--dry-run', '--outdir', resolve('build/gateway'), '--minify', '--autoconfig=false']);
   console.log('Gateway bundle validated locally. No Cloudflare resources were created or changed.');
 } else {
+  requireProductionProfile(release);
+  if (values.ci && (!deployment.accessApplicationId || deployment.databaseId === '00000000-0000-0000-0000-000000000000' || values.provision)) {
+    throw new Error('CI deploy requires existing provisioned D1/Access identities in Environment variables; provisioning is a separate operator action');
+  }
   if (!/^[a-f0-9]{32}$/.test(config.zoneId ?? '') ||
       typeof config.deployToken !== 'string' || typeof config.runtimeToken !== 'string') {
     throw new Error('Run npm run configure in your local terminal first.');
@@ -46,7 +53,7 @@ if (values['dry-run']) {
   const gateway = normalizeGateway(config.gateway);
   if (new URL(gateway).protocol !== 'https:') throw new Error('A deployed gateway must use HTTPS');
   const hostname = new URL(gateway).hostname;
-  if (gateway !== normalizeGateway(release.gateway)) throw new Error('Gateway differs from the installer release configuration. Update release.config.json deliberately before deployment.');
+  if (gateway !== normalizeGateway(release.gateway)) throw new Error('Gateway differs from the explicitly selected installer release profile.');
   const zone = await api(`/zones/${config.zoneId}`);
   const accountId = zone?.account?.id;
   const deviceDomain = zone?.name;
@@ -81,15 +88,15 @@ if (values['dry-run']) {
     }
     database = await api(`/accounts/${accountId}/d1/database`, 'POST', { name: workerName });
     deployment = { ...deployment, databaseId: database.uuid };
-    await atomicJson('deployment.config.json', deployment);
-    console.log(`Recorded non-secret D1 database ID in deployment.config.json: ${database.uuid}`);
+    await atomicJson(deploymentFile, deployment);
+    console.log('Recorded D1 identity in private operator state; not in source control.');
   }
   const access = await ensureAdminAccess({
     api, accountId, hostname, administratorEmails: config.adminEmails,
     applicationId: deployment.accessApplicationId,
     onApplicationCreated: async applicationId => {
       deployment = { ...deployment, accessApplicationId: applicationId };
-      await atomicJson('deployment.config.json', deployment);
+      await atomicJson(deploymentFile, deployment);
     },
   });
   const organization = await api(`/accounts/${accountId}/access/organizations`);
@@ -110,6 +117,7 @@ if (values['dry-run']) {
     vars: { ...base.vars, RELEASE_VERSION: release.version, DEVSPACE_VERSION: release.devspaceVersion,
       CONTROL_API_VERSION: String(release.controlApiVersion), CF_ACCOUNT_ID: accountId, CF_ZONE_ID: config.zoneId,
       DEVICE_DOMAIN: deviceDomain, PUBLIC_ORIGIN: gateway,
+      DOWNLOAD_ORIGIN: release.distribution.origin, UPDATE_PUBLIC_KEY: release.distribution.updatePublicKey,
       ACCESS_TEAM_DOMAIN: accessTeamDomain, ACCESS_AUD: access.audience },
     d1_databases: [{ binding: 'DB', database_name: workerName, database_id: database.uuid,
       migrations_dir: resolve('migrations') }],
@@ -188,6 +196,15 @@ if (values['dry-run']) {
       recoveryFailures, d1AutomaticallyRolledBack: false, previousVersions }));
     throw error;
   } finally { await rm(secretsFile, { force: true }); }
+  // Sync the Edge contract only after the new Worker and public assets have
+  // passed readiness. A stricter WAF must never cut off currently running old
+  // clients before their replacement Gateway is accepted. If Edge sync fails,
+  // keep the already-verified Worker running and fail the deployment for retry;
+  // rolling the Worker back behind a possibly-updated WAF would be less safe.
+  const waf = await ensureGatewayWaf({ api, zoneId: config.zoneId, hostname });
+  await verifyGatewayWaf(gateway);
+  await verifyAdminProtection(gateway);
+  readiness = await waitForReadiness({ ...probes, asset });
   try {
     const remaining = await api(routesPath);
     if (remaining.some(route => route.script === `${workerName}-assets`) ||
@@ -199,6 +216,7 @@ if (values['dry-run']) {
   } catch { console.warn('Gateway is healthy; retired asset Worker cleanup will be retried on the next deploy.'); }
   console.log(JSON.stringify({ deployed: true, gateway, databaseId: database.uuid,
     accessApplicationId: access.applicationId, accessPolicyId: access.policyId, readiness,
+    wafRuleId: waf.ruleId,
     runtimeTokenReadPreflight: true, administratorConfig: adminFile ?? 'protected CI environment',
     paidPlanChanges: false }, null, 2));
 }

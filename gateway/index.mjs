@@ -30,6 +30,7 @@ function bearer(request) {
 }
 
 async function smallJson(request) {
+  if (Number(request.headers.get('Content-Length') ?? 0) > 16384) throw new HttpError(413, 'body_too_large');
   if (!request.headers.get('Content-Type')?.toLowerCase().startsWith('application/json')) {
     throw new HttpError(415, 'json_required');
   }
@@ -88,6 +89,11 @@ async function reportStartupVersion(store, row, body) {
 }
 async function enroll(request, env, store) {
   const key = await employeeKey(request, store);
+  // Protect provider provisioning independently per authenticated key, not per
+  // shared office IP. Edge WAF remains responsible for pre-Worker request cost.
+  if (env.ENROLLMENT_LIMITER && !(await env.ENROLLMENT_LIMITER.limit({ key: key.id })).success) {
+    throw new HttpError(429, 'enrollment_rate_limited');
+  }
   const body = await smallJson(request);
   if (!UUID.test(body.deviceId ?? '') || !SECRET.test(body.deviceSecret ?? '') ||
       !Number.isInteger(body.bridgePort) || body.bridgePort < 1024 || body.bridgePort > 65535) {
@@ -140,6 +146,7 @@ function publicOrigin(env) {
 
 async function deviceIdentity(request, store, allowedStates = ['active', 'suspended']) {
   const secret = bearer(request);
+  if (!SECRET.test(secret)) throw new HttpError(401, 'invalid_device_credential');
   const body = await smallJson(request);
   if (!UUID.test(body.keyId ?? '') || !UUID.test(body.bindingId ?? '')) throw new HttpError(400, 'invalid_device');
   const row = await store.byId(body.keyId);
@@ -413,6 +420,7 @@ export default {
     }
     response.headers.set('X-Request-Id', requestId);
     if (errorCode === 'client_update_in_progress') response.headers.set('Retry-After', '30');
+    if (response.status === 429) response.headers.set('Retry-After', '60');
     if (env.RELEASE_VERSION) response.headers.set('X-Team-Release', env.RELEASE_VERSION);
     if (!errorCode && response.status >= 400) {
       errorCode = response.status === 503 && ['admin_revoke', 'admin_reset'].includes(operation)

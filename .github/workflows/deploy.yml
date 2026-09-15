@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: team-devspace-production-deploy
@@ -12,44 +12,32 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
-    env:
-      CI: 'true'
-      WRANGLER_SEND_METRICS: 'false'
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
-      CF_RUNTIME_API_TOKEN: ${{ secrets.CF_RUNTIME_API_TOKEN }}
-      ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-      MASTER_KEY: ${{ secrets.MASTER_KEY }}
-      ADMIN_ACCESS_EMAILS: ${{ vars.ADMIN_ACCESS_EMAILS }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: release
+      - id: metadata
         run: node scripts/ci-metadata.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ steps.release.outputs.node }}
-          cache: npm
-      - run: npx --yes ${{ steps.release.outputs.npm }} ci --no-fund --no-audit
-      - run: npm run check && npm test
-      - name: Provision canonical D1 identity
-        run: npm run deploy -- --ci --provision
-      - name: Persist provisioned D1 identity
+          node-version: ${{ steps.metadata.outputs.node }}
+          package-manager-cache: false
+      - name: Install locked build tools (no production credentials)
         env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          if git diff --quiet -- deployment.config.json; then
-            exit 0
-          fi
-          sha="$(git rev-parse HEAD:deployment.config.json)"
-          content="$(base64 -w0 deployment.config.json)"
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/deployment.config.json" \
-            -f message='chore(deploy): 记录生产 D1 与 Access 标识' \
-            -f content="$content" \
-            -f sha="$sha" \
-            -f branch="$GITHUB_REF_NAME" >/dev/null
-      - run: npm run deploy -- --ci
+          BUILD_NPM: ${{ steps.metadata.outputs.npm }}
+        run: npx --yes "$BUILD_NPM" ci --no-audit --no-fund
+      - run: npm run check && npm test
+      - name: Deploy existing infrastructure, migrations before Worker
+        env:
+          TEAM_DEVSPACE_RELEASE_PROFILE_JSON: ${{ vars.TEAM_DEVSPACE_RELEASE_PROFILE }}
+          TEAM_DEVSPACE_DEPLOYMENT_JSON: ${{ secrets.TEAM_DEVSPACE_DEPLOYMENT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_DEPLOY_API_TOKEN }}
+          CF_RUNTIME_API_TOKEN: ${{ secrets.CF_RUNTIME_API_TOKEN }}
+          ADMIN_ACCESS_EMAILS: ${{ secrets.ADMIN_ACCESS_EMAILS }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          MASTER_KEY: ${{ secrets.MASTER_KEY }}
+        run: npm run deploy -- --ci

@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stateHome } from '../client/state.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 import { run } from './build-utils.mjs';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';

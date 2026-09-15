@@ -1,5 +1,14 @@
 # Codemagic manual macOS builds
 
+> Transitional after source-available preparation: the target is native GitHub
+> Actions, but this fallback stays until hosted final-byte acceptance passes.
+> Select `TEAM_DEVSPACE_RELEASE_PROFILE` or `TEAM_DEVSPACE_RELEASE_PROFILE_JSON`
+> before the API command. New source builds pass only that validated public
+> profile to Codemagic, distinguish reuse by profile digest and verify the full
+> digest in the downloaded receipt. Manual website builds need the same profile
+> variable. Never put deployment tokens or employee Keys in the profile. These
+> changes are locally tested; no new hosted build was triggered by preparation.
+
 ## Decision and verified upstream contract
 
 Use `npm run macos:ci -- <action>` through DevSpace in this checkout. It is a small release-operator command, not an employee runtime service. It reuses the single `macos-package` workflow and existing package, cache, system Installer acceptance and publication scripts. `start --arch both` starts/reuses two architecture-specific builds of that same workflow; it does not introduce a second workflow or claim to produce a Universal PKG.
@@ -69,3 +78,11 @@ After all four final targets match one clean source commit, use the unchanged `n
 The first updater rollout remains `stable -> observed canary -> auto -> minimumSupported`. Old clients without an updater require one manual covering install. Do not set auto/minimum to compensate for incomplete Mac acceptance. Codemagic M2 + Rosetta acceptance is not proof of physical Intel hardware, employee Enrollment input, Gatekeeper approval or Apple Developer ID signing/notarization.
 
 The focused tests in `test/codemagic.test.mjs` use synthetic bytes and mocked HTTP to exercise safety and both target paths. They are not successful Codemagic runs. Real authenticated start/status/download and final system PKG acceptance must be recorded separately before claiming release completion.
+
+During the source-available migration, the existing exact-byte Intel handoff is
+retained as `.github/workflows/accept-codemagic-intel.yml`. It is manual,
+main-only, uses the protected production operator profile, and checks that the
+Codemagic receipt has the same profile digest. It does not rebuild the PKG.
+The new four-platform workflow is separate and does not make this fallback
+obsolete until its native runs have actually passed. Do not dispatch either
+workflow to work around exhausted private-repository build quota.

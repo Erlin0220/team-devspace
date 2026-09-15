@@ -1,0 +1,18 @@
+title = "Team DevSpace secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "An upstream source commit is not a Cloudflare API key"
+condition = "AND"
+paths = ['''(^|/)release\.config\.json$''']
+regexTarget = "match"
+regexes = ['''cloudflaredSourceCommit["']?\s*:\s*["'][a-f0-9]{40}["']''']
+
+[[allowlists]]
+description = "An Access Application UUID is not a secret; historical production metadata is a separate publication blocker"
+condition = "AND"
+paths = ['''(^|/)deployment\.config\.json$''']
+regexTarget = "match"
+regexes = ['''accessApplicationId["']?\s*:\s*["'][a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}["']''']

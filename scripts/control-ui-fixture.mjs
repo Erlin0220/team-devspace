@@ -43,7 +43,7 @@ if (command === 'stop') {
     return { available: true, required: false, checkedAt: new Date().toISOString(), automatic: true,
       policy: { stable: '0.2.6', auto: null, minimumSupported: null, enforceAfter: null },
       releaseNotes: { version: '0.2.6', summary: ['修复安装期间的自动重连', '保留设备身份、项目目录和暂停意图'],
-        url: 'https://downloads.568920429.xyz/releases/0.2.6/release-notes.txt' } };
+        url: 'https://downloads.example.com/releases/0.2.6/release-notes.txt' } };
   };
   const controller = createDesktopController('unused', { refreshInterval: 500, operations: {
     status: async () => health(), localState: async () => ({ configured, accessKeyMode: configured ? 'replace-key' : 'setup', currentProjectRoot: root }),
@@ -56,7 +56,7 @@ if (command === 'stop') {
     'update-check': updateCheck,
     'release-notes': async ({ version }) => ({ version,
       summary: ['修复安装期间的自动重连', '保留设备身份、项目目录和暂停意图'],
-      url: `https://downloads.568920429.xyz/releases/${version}/release-notes.txt` }),
+      url: `https://downloads.example.com/releases/${version}/release-notes.txt` }),
     'update-apply': async ({ confirmedVersion }) => {
       calls['update-apply'] = (calls['update-apply'] ?? 0) + 1;
       if (confirmedVersion !== '0.2.6') throw new Error('测试确认版本不匹配');

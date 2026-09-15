@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { run, sha256File, sourceIdentity } from './build-utils.mjs';
 import { packageName } from '../client/release-catalog.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release, { requireProductionProfile, releaseProfileDigest } from './release-profile.mjs';
 
 // Re-accept Codemagic's exact x64 PKG on an Intel Mac. This never compiles,
 // repackages, signs or otherwise changes the candidate executable bytes.
@@ -29,6 +29,8 @@ assert.equal(prior.commit, identity.commit);
 assert.equal(prior.sourceDirty, false);
 assert.equal(prior.entrypoint.name, name);
 assert.equal(prior.entrypoint.sha256, expectedHash);
+requireProductionProfile(release);
+assert.equal(prior.releaseProfileSha256, releaseProfileDigest(release), 'Codemagic receipt must match the operator profile');
 const output = resolve('release/offline', release.version, target);
 await mkdir(output, { recursive: true });
 await cp(join(input, name), join(output, name));

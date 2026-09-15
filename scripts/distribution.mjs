@@ -74,7 +74,7 @@ export async function buildReleaseLayout({ bundle, target, release, tar, outputD
   try {
   const appPaths = [
     'client', 'platform', 'package.json', 'release.config.json', 'README.md',
-    'sbom.cdx.json', 'THIRD-PARTY-NOTICES.txt', 'release-provenance.json',
+    'sbom.cdx.json', 'THIRD-PARTY-NOTICES.txt', 'release-provenance.json', 'LICENSE', 'NOTICE', 'LICENSES',
     ...(target === 'win32-x64' ? ['bin/team-devspace.cmd'] : []),
   ];
   const cloudflaredPath = target === 'win32-x64' ? 'bin/cloudflared.exe' : 'bin/cloudflared';

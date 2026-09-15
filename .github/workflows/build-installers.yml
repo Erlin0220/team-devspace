@@ -1,58 +1,127 @@
-name: Validate accepted macOS x64 package on Intel
+name: Native installer candidates
 
 on:
   workflow_dispatch:
     inputs:
-      candidate_tag:
-        description: Private draft containing the Codemagic PKG and its acceptance receipt
-        type: string
-        required: true
-      package_sha256:
-        description: Exact accepted Codemagic PKG SHA-256
-        type: string
-        required: true
+      production_profile:
+        description: Build an operator candidate from main with the protected production profile (never publishes)
+        type: boolean
+        default: false
 
 permissions:
-  # GitHub only exposes draft releases to callers with repository push access.
-  # This manual trusted-source job still never publishes or changes a release.
-  contents: write
+  contents: read
 
 concurrency:
-  group: team-devspace-intel-acceptance
+  group: native-candidates-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  verify-existing-package:
-    runs-on: macos-15-intel
-    timeout-minutes: 30
+  validate-request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Reject production candidates from unreviewed branches
+        env:
+          PRODUCTION_PROFILE: ${{ inputs.production_profile }}
+        run: |
+          if [ "$PRODUCTION_PROFILE" = true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo 'Production candidates must use reviewed main and a branch-restricted Environment.' >&2
+            exit 1
+          fi
+
+  build:
+    needs: validate-request
+    environment: ${{ inputs.production_profile && 'production' || 'validation' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - runner: windows-2022
+            target: win32-x64
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      CANDIDATE_TAG: ${{ inputs.candidate_tag }}
-      TEAM_DEVSPACE_PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+      TEAM_DEVSPACE_RELEASE_PROFILE_JSON: ${{ inputs.production_profile && vars.TEAM_DEVSPACE_RELEASE_PROFILE || '{}' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - id: release
+      - id: metadata
         run: node scripts/ci-metadata.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ steps.release.outputs.node }}
-          cache: npm
-      - run: npx --yes ${{ steps.release.outputs.npm }} ci --no-fund --no-audit
-      - name: Download the existing bytes, without building
+          node-version: ${{ steps.metadata.outputs.node }}
+          package-manager-cache: false
+      - name: Check native architecture and operator profile
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+          PRODUCTION_PROFILE: ${{ inputs.production_profile }}
         run: |
-          mkdir -p build/intel-input
-          gh release download "$CANDIDATE_TAG" --dir build/intel-input \
-            --pattern '*macos-x64.pkg' --pattern 'acceptance-darwin-x64.json'
-      - run: node scripts/macos-accept-existing.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
+          node --input-type=module -e "import release,{requireProductionProfile} from './scripts/release-profile.mjs'; if(process.platform+'-'+process.arch!==process.env.EXPECTED_TARGET)throw Error('Native runner mismatch'); if(process.env.PRODUCTION_PROFILE==='true')requireProductionProfile(release);"
+      - name: Install locked build tools
+        env:
+          BUILD_NPM: ${{ steps.metadata.outputs.npm }}
+        run: npx --yes "$BUILD_NPM" ci --no-audit --no-fund
+      - id: go-version
+        if: runner.os == 'macOS'
+        run: node -e "const fs=require('fs'),r=require('./release.config.json');fs.appendFileSync(process.env.GITHUB_OUTPUT,'version='+r.cloudflaredGoVersion+'\n')"
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: runner.os == 'macOS'
         with:
-          name: macos-x64-native-acceptance
-          path: |
-            release/offline/*/darwin-x64/acceptance.json
-            build/macos-review/*.png
+          go-version: ${{ steps.go-version.outputs.version }}
+          cache: false
+      - name: Build pinned cloudflared on matching native macOS
+        if: runner.os == 'macOS'
+        run: node scripts/macos-cloudflared.mjs
+      - name: Build installer from this exact checkout
+        run: npm run package
+      - name: Sign final Windows candidate before acceptance
+        if: runner.os == 'Windows' && inputs.production_profile
+        shell: pwsh
+        env:
+          TEAM_DEVSPACE_RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          WINDOWS_INTERNAL_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_BASE64 }}
+          WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_INTERNAL_SIGNING_PFX_PASSWORD }}
+        run: ./scripts/sign-internal-windows.ps1
+      - name: Verify final package layout
+        run: node scripts/verify-release.mjs --target "$EXPECTED_TARGET"
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+      - name: Accept final Windows installer in the disposable runner
+        if: runner.os == 'Windows' && inputs.production_profile
+        run: npm run acceptance:platform -- --direct-windows-installer
+      - name: Accept final macOS package in the disposable runner
+        if: runner.os == 'macOS' && inputs.production_profile
+        run: npm run acceptance:platform -- --system-macos-installer
+      - name: Accept final Linux archive with the user service manager
+        if: runner.os == 'Linux' && inputs.production_profile
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          systemctl --user show-environment >/dev/null
+          npm run acceptance:platform
+      - name: Collect candidate bytes and receipts (not a release)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.production_profile && 'operator-candidate' || 'SAMPLE-NOT-FOR-EMPLOYEES' }}-${{ matrix.target }}-${{ github.sha }}
+          path: release/offline/${{ steps.metadata.outputs.version }}/${{ matrix.target }}/
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
+
+# No publication, tag creation, deployment, stable/auto/minimum policy changes,
+# arbitrary artifact URLs or external-CI handoff. Samples deliberately have no
+# existing-production-upgrade claim. Publication still requires all strict
+# acceptance gates; a green build alone is not release authorization.

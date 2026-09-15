@@ -174,8 +174,11 @@ test('stable discovery verifies signatures, coalesces reads, and permits only le
   assert.equal((await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy')).status, 503);
   bad.switches.invalidStableSignature = false; bad.switches.missingStableSignature = true;
   assert.equal((await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy')).status, 503);
-  bad.switches.legacyStable = true;
-  const legacy = await bad.mf.dispatchFetch('https://team.example.test/v1/update-policy');
+  assert.equal(bad.metadataTrace.filter(path => path === '/update.json').length, 1,
+    'A failing anonymous discovery must not hammer the metadata origin');
+  const old = await fixture(t);
+  old.switches.missingStableSignature = true; old.switches.legacyStable = true;
+  const legacy = await old.mf.dispatchFetch('https://team.example.test/v1/update-policy');
   assert.equal(legacy.status, 200); assert.equal((await legacy.json()).stable, '0.2.3');
 });
 
@@ -674,7 +677,7 @@ test('minimum support blocks only new unsupported work and retains version repor
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp', { headers: {
     Authorization: `Bearer ${key.accessKey}`, 'mcp-session-id': session } })).status, 200);
   assert.equal((await f.request('/v1/device/status-v2', device.deviceSecret, identity)).status, 200);
-  assert.equal((await f.request('/v1/device/version', key.accessKey, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 403);
+  assert.equal((await f.request('/v1/device/version', key.accessKey, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 401);
   assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: 'bad', platform: 'win32-x64' })).status, 400);
   assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: '0.2.5', platform: 'win32-x64' })).status, 200);
   const store = new KeyStore(f.db);

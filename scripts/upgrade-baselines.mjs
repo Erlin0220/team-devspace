@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { downloadPinned } from './build-utils.mjs';
 import { packageName } from '../client/release-catalog.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 
 // Previously published immutable bytes, not rebuilt approximations of an old
 // client. Pins were checked against the retained release catalogs on 2026-09-15.

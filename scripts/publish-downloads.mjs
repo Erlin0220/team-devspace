@@ -8,7 +8,7 @@ import { run, sha256File, sourceIdentity } from './build-utils.mjs';
 import { DOWNLOAD_TARGETS, packageName, VERSION, validateCatalog, httpsOrigin, packageUrls, downloadPage } from './download-catalog.mjs';
 import { installScripts } from './download-commands.mjs';
 import { verifyAcceptance } from './verify-acceptance.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release, { requireProductionProfile, releaseProfileDigest } from './release-profile.mjs';
 import { signUpdateCatalog } from './sign-updates.mjs';
 import { validateUpdatePolicy, verifySignedCatalog } from '../client/update-policy.mjs';
 import { administrator } from '../client/admin.mjs';
@@ -45,9 +45,9 @@ export async function prepareSite(directory, output, catalog, origin, notes, { s
     await writeFile(`${dest}.sha256`, `${item.sha256}\n`);
     // Acceptance contains build/test facts only, never employee state or credentials.
     const evidence = JSON.parse(await readFile(join(directory, target, 'acceptance.json'), 'utf8'));
-    const { schema, passed, release: version, commit, sourceDirty, entrypoint, checks, limitations } = evidence;
+    const { schema, passed, release: version, commit, sourceDirty, releaseProfileSha256, entrypoint, checks, limitations } = evidence;
     await writeFile(join(output, `acceptance-${target}.json`), `${JSON.stringify({ schema, passed, release: version,
-      target, commit, sourceDirty, entrypoint, checks, limitations }, null, 2)}\n`);
+      target, commit, sourceDirty, releaseProfileSha256, entrypoint, checks, limitations }, null, 2)}\n`);
   }
   const scripts = installScripts(catalog, origin);
   await writeFile(join(output, 'catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`);
@@ -186,7 +186,7 @@ async function publishHomepage({ origin, catalog, server, command }) {
 export async function main(argv = process.argv.slice(2)) {
   const { values } = parseArgs({ args: argv, options: {
     publish: { type: 'boolean' }, 'full-https-verify': { type: 'boolean' }, activate: { type: 'string' }, 'init-server': { type: 'boolean' }, 'site-only': { type: 'boolean' }, preview: { type: 'boolean' },
-    config: { type: 'string', default: 'downloads.config.json' }, version: { type: 'string' },
+    config: { type: 'string', default: '.runtime/downloads.json' }, version: { type: 'string' },
     commit: { type: 'string' }, directory: { type: 'string' }, help: { type: 'boolean' },
   } });
   if (values.help) {
@@ -207,6 +207,7 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const remote = values.publish || values.activate || values['init-server'] || values['site-only'];
+  if (remote) requireProductionProfile(release);
   let server, remoteScript, command, initialStable;
   if (remote) {
     server = JSON.parse(await readFile(values.config, 'utf8'));
@@ -252,7 +253,7 @@ export async function main(argv = process.argv.slice(2)) {
       const directory = resolve(values.directory ?? join('release', 'offline', version));
       await verifyAcceptance({ version, root: directory, targets: DOWNLOAD_TARGETS, expectedCommit: commit,
         requireFinalWindows: true, requireInstalledUpgrade: true, requireNativeArchitecture: true,
-        allowRosettaDarwinX64: true });
+        expectedProfileSha256: releaseProfileDigest(release) });
       catalog = await buildDownloadCatalog(directory, version, commit);
       const output = resolve('build', 'downloads', version);
       await rm(output, { recursive: true, force: true });

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { atomicJson, randomSecret } from '../client/state.mjs';
 import { run } from './build-utils.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 import { downloadUpgradeBaseline, UPGRADE_BASELINES } from './upgrade-baselines.mjs';
 
 if (!['darwin', 'linux'].includes(process.platform)) throw new Error('Run this installer test on native macOS/Linux');

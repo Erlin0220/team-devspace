@@ -2,11 +2,12 @@
   "name": "team-devspace",
   "version": "0.2.6",
   "private": true,
+  "license": "PolyForm-Shield-1.0.0",
   "type": "module",
   "description": "Pinned DevSpace distribution with per-device Cloudflare connectivity for a shared ChatGPT app",
   "author": {
-    "name": "常二林",
-    "email": "cerlin0220@gmail.com"
+    "name": "Erlin0220",
+    "email": "24458678+Erlin0220@users.noreply.github.com"
   },
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0",

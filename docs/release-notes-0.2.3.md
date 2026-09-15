@@ -8,7 +8,7 @@
 
 ## 同事安装入口
 
-统一访问 https://downloads.568920429.xyz/，Apple 芯片选择 arm64，Intel Mac 选择 x64。下载安装不需要 GitHub 登录、临时票据或管理员生成下载链接。安装后再输入管理员发放的 Access Key，选择实际项目目录；在 ChatGPT 的 Team DevSpace 连接中使用同一个 Key，并实际读取一次所选项目中的文件确认完整链路。
+访问组织管理员提供的固定下载站，Apple 芯片选择 arm64，Intel Mac 选择 x64。下载安装不需要 GitHub 登录、临时票据或管理员生成下载链接。安装后再输入管理员发放的 Access Key，选择实际项目目录；在 ChatGPT 的 Team DevSpace 连接中使用同一个 Key，并实际读取一次所选项目中的文件确认完整链路。
 
 系统安装器要求的本机管理员授权，与 Team DevSpace 的 Access Key 是两回事。升级、修复和默认卸载保留原绑定及用户项目；更换 Key 后，ChatGPT 连接也需要使用对应的新 Key。
 

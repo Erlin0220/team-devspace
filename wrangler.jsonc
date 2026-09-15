@@ -5,6 +5,9 @@
   "compatibility_date": "2026-06-01",
   "workers_dev": false,
   "preview_urls": false,
+  "ratelimits": [
+    { "name": "ENROLLMENT_LIMITER", "namespace_id": "240601", "simple": { "limit": 6, "period": 60 } }
+  ],
   "assets": { "directory": "./assets", "binding": "ASSETS", "run_worker_first": ["/*", "!/mcp-app-assets/*"], "html_handling": "none" },
   "observability": {
     "enabled": true,

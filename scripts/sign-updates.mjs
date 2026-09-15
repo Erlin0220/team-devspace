@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { secureStateDirectory } from '../client/state.mjs';
 import { validateCatalog } from '../client/release-catalog.mjs';
 import { updateSigningBytes, verifySignedCatalog } from '../client/update-policy.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 
 // Private signing material never enters the checkout, download host, Gateway or CI.
 export const defaultSigningKey = join(homedir(), '.team-devspace-admin', 'update-signing', 'release-key.pem');

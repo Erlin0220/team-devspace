@@ -12,7 +12,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { linuxServiceManager } from '../client/linux-lifecycle.mjs';
 import { processIdentity, isSameProcess, standaloneDirectory } from '../client/standalone.mjs';
 import { run } from './build-utils.mjs';
-import release from '../release.config.json' with { type: 'json' };
+import release from './release-profile.mjs';
 
 const { values } = parseArgs({ options: { archive: { type: 'string' } } });
 assert.equal(process.platform, 'linux');

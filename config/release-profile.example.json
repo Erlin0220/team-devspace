@@ -1,0 +1,5 @@
+{
+  "gateway": "https://gateway.example.com",
+  "downloadOrigin": "https://downloads.example.com",
+  "updatePublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}

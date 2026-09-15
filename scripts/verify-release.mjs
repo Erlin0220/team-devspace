@@ -8,7 +8,7 @@ import { run, sha256File } from './build-utils.mjs';
 const { values } = parseArgs({ options: {
   root: { type: 'string' }, target: { type: 'string' }, installed: { type: 'string' },
 } });
-const release = JSON.parse(await readFile('release.config.json', 'utf8'));
+const { default: release } = await import('./release-profile.mjs');
 const distribution = validateDistributionConfig(release);
 const root = resolve(values.root ?? join('release', 'offline', release.version));
 const targets = values.target ? [values.target] : distribution.targets;

@@ -1,54 +1,73 @@
 # Client distribution
 
-`release.config.json` is the canonical release declaration. The current release baseline supports four employee packages: Windows x64, Apple Silicon macOS (`darwin-arm64`, macOS 12.0+), Intel macOS (`darwin-x64`, macOS 12.0+) and Linux x64. Windows/Linux package on matching native hosts; both macOS targets share one Codemagic Apple Silicon workflow, with the Intel target running the complete x86_64 Node/npm packaging process through Rosetta instead of copying native dependencies across architectures. Every target produces four required immutable components (`app`, `devspace-runtime`, `node`, `cloudflared`) plus the conditional Windows `git-fallback` component. The Windows build uses the SHA-256-pinned official Zig 0.15.2 toolchain only to compile the native x64 no-console launcher; the compiler is not shipped. Employee machines never run `npm install` or a native build.
+`release.config.json` declares versions/platforms and a sample edition. The
+explicit operator release profile supplies the Gateway, download origin and
+existing update verification key. The resolved configuration is embedded in
+the client; environment variables cannot replace an installed client's trust
+anchor. Never stage production inputs by modifying tracked files.
 
-Each target first produces a content-addressed CI layout:
+## Components
 
-```text
-release/offline/<release>/<target>/
-  manifest.json
-  manifest.json.sha256
-  objects/sha256/<digest>/<component>.tar.gz
-  objects/sha256/<digest>/git-fallback.7z.exe  # Windows only
-  <platform package>
+Every enabled target has `app`, `devspace-runtime`, `node` and `cloudflared`
+content-addressed components. Windows also has the conditional, unmodified
+official PortableGit self-extractor. Component hashes/sizes are embedded in
+the final EXE, PKG or Linux archive through the installer manifest. Employees
+do not fetch runtime dependencies or build native modules during installation.
+
+The app component includes LICENSE, NOTICE and LICENSES. Upstream npm/runtime
+licenses remain in their packages. Source maps and TypeScript declarations
+are not employee runtime inputs; deleting them must not strip notices.
+See LICENSES/README.md for outstanding public-binary redistribution duties.
+
+Build input versions, binary SHA-256 pins, source commit, SBOM and release
+profile digest are recorded independently. An acceptance receipt must match
+the actual packaged profile and final entrypoint bytes, not merely the
+environment used to run acceptance.
+
+## Native candidates
+
+The manual GitHub Actions matrix uses `windows-2022`, `ubuntu-24.04`,
+`macos-15` ARM64 and `macos-15-intel`. Each runner builds its own native
+dependencies and final installer. Do not cross-copy PTY/SQLite modules or
+rebuild a different package after acceptance. macOS cloudflared uses the
+existing pinned upstream source/Go inputs on matching hardware.
+
+Sample candidates are labeled `SAMPLE-NOT-FOR-EMPLOYEES`. An operator candidate
+requires reviewed main and a branch-restricted production Environment. Neither
+workflow publishes bytes or changes stable/auto/minimum support automatically.
+
+The new hosted path is not accepted until actual runs pass. Current billing
+blocks GitHub runners, so the existing local/Codemagic path remains a temporary
+fallback. Historical M2/Rosetta receipts are not native Intel acceptance. Do
+not delete the fallback or its tests until the replacement has equivalent
+final-byte, cross-version, native lifecycle and recovery evidence.
+
+Local validation can keep outputs away from previously accepted artifacts:
+
+```sh
+npm run package -- --reuse-dependencies --output build/candidate-release
+node scripts/verify-release.mjs --root build/candidate-release/offline/0.2.6 --target win32-x64
 ```
 
-The component layout is a build/verification boundary, not the Windows employee installation contract. The release manifest contains no remote artifact URL and every component is checked for exact path, size and SHA-256 before a platform package is assembled.
+Use the actual declaration version/host target, not these example values.
+`build/bundle-<target>` remains a replaceable development workspace. Never run
+live employee-upgrade acceptance on a working employee installation without
+separate authorization. Windows Git Bash, Linux user systemd and disposable
+macOS Installer sessions have different native requirements.
 
-Windows embeds the fixed manifest and verified component objects into one NSIS installer EXE. Under the canonical `internal-free` trust profile, local builds do not claim public Authenticode trust. An administrator may retain an existing internal signature, but the fixed public download is the EXE itself; no certificate import or handoff ZIP is required by the installation flow. macOS embeds the same verified objects in a self-contained `.pkg`; protected Apple credentials optionally activate Developer ID signing/notarization, otherwise the package is explicitly unsigned/unnotarized. The PKG preflight records architecture/OS/CLI conflicts in `/var/log/team-devspace-install.log`. Postinstall auto-open remains best-effort so a launch failure cannot turn a successful payload install into a generic Installer failure, but it now removes the previous app-start marker, launches the installed App in the logged-in user session, waits for a fresh marker from the App wrapper, and shows an explicit desktop recovery alert if LaunchServices/Gatekeeper prevents confirmed first launch. Linux embeds the same verified objects in its offline bootstrap archive. GitHub credentials are never shipped to employee machines.
+## Publication
 
-Windows production dependencies are installed from the lockfile with `npm ci --omit=dev --omit=optional`. Team DevSpace disables upstream subagents and DevSpace uses its pipe implementation on Windows, so the optional platform Claude executable, Pi clipboard binding and `node-pty` are not part of that target artifact. The package build rejects `node-pty` or any platform `claude-agent-sdk-*` payload if either reappears, and records the install profile in both the cache fingerprint and release provenance. macOS/Linux retain `node-pty` for Unix TTY sessions, remove only lockfile-confirmed optional `claude-agent-sdk-<platform>` executables, and remove recognized foreign-platform PTY prebuild directories. Every platform runtime archive also excludes source maps and TypeScript declaration files because they are development metadata rather than runtime inputs. The SDK JavaScript, native current-target PTY and Linux build outputs remain intact. Every Unix build runs a real PTY process after pruning. The Linux release job also inspects shipped ELF executables/native modules with `readelf` and rejects any runtime that requires a GLIBC symbol newer than `GLIBC_2.34`, so the documented glibc floor cannot silently drift upward with a future native dependency build. SBOM generation inspects the installed tree, not an unpruned lockfile graph.
+The current publisher still uses the existing owned static HTTPS server and
+SSH. Its configuration lives in private `.runtime/downloads.json`; the public
+source contains only `config/downloads.example.json`. No R2 or download proxy
+is introduced. Software downloads do not need an employee Key or GitHub login.
 
-The Windows Git component is the byte-for-byte pinned official PortableGit SFX. The installer verifies its SHA-256 and expands it only when system Git is unavailable; Bash absence alone does not trigger the fallback because upstream DevSpace uses the Windows command processor for shell execution. The installed fallback is still checked for both Git and Bash integrity. `devspace-runtime` contains only `node_modules`; build lockfiles and `.npmrc` are excluded. bsdtar gzip timestamps are disabled so unchanged cached input is not invalidated just by wall-clock archive time. The reusable dependency fingerprint ignores only the app's own version fields; dependency versions, lifecycle scripts, npm policy, target and runtime/tool versions still invalidate it. The full original lock hash remains in provenance. This is not a claim that different machines or fresh native builds produce byte-identical archives.
+Before publishing, require one clean source commit, one operator profile,
+exact accepted final hashes, independent update signatures and all platform
+gates. Existing versions are immutable. The publisher retains the configured
+rollout/recovery versions and refuses unsafe pruning; it does not equate a
+new stable pointer with all devices having upgraded.
 
-## Fixed public software delivery
-
-[Fixed distribution](one-command-distribution.md) uses the existing Aliyun server and Caddy static HTTPS service at `https://downloads.568920429.xyz`. One immutable directory contains all four accepted packages, their checksums, sanitized acceptance records and version-pinned installation scripts. A single atomically replaced stable symlink supplies the permanent entrypoints. SSH publishing verifies uploaded files and reads all four packages back through public HTTPS before activation. There is no R2 binding, download ticket, administrator link generator or new HTTP write API. The old authenticated administrator download-command endpoint returns 410. Private GitHub Releases remain optional administrator archives. Software delivery never receives an employee Access Key and does not change the offline component manifest.
-
-Windows ordinary installation no longer asks for credentials or calls Enrollment. Its completion page opens the installed application, whose existing Control Center owns initial setup; silent installs leave that step to the Start Menu. Legacy explicit private request-file automation remains available. Linux `team-devspace setup` now supports hidden terminal input, and `access-key change` reuses the existing binding replacement transaction.
-
-## Install transaction
-
-The platform installer validates target, fixed version, artifact path, exact byte size and SHA-256 before extraction. There is no `latest` lookup and no runtime download origin.
-
-Windows extracts embedded objects into the short `s/` staging path, validates Node, DevSpace, cloudflared and native SQLite, then switches between fixed `v/0` and `v/1` slots. Full release and manifest identity lives in `active.json`. The short physical slots keep the unmodified upstream dependency tree below legacy MAX_PATH. Windows no longer persists a component archive cache after installation; re-running the same self-contained EXE is the repair source for damaged program files. The prior active slot remains available only until the new local version and its startup entries are safe to commit, then is retired. macOS/Linux keep their cache/staging/version implementation because their package contracts and platform installation paths are separate. Linux additionally exposes one stable `~/.local/bin/team-devspace` command and two fixed systemd user units; neither binds to a particular version directory. They resolve `active-path` at process start, so a successful upgrade can retire the previous version without leaving stale startup paths.
-
-Windows local installation and cloud Enrollment are separate states. For a new device, the verified candidate is committed to `active.json` before first Enrollment. If Access Key validation, Gateway provisioning, DNS or Tunnel connectivity fails, the installer retains the local application, writes an onboarding diagnostic and reports that connection setup is pending instead of rolling the software version back. Re-running setup resumes the pending identity. On an already enrolled device, upgrades reuse the existing `bindingId`, `keyId`, credentials, Tunnel token and Current Project Root without another `/v1/enroll` call; only local startup entries are refreshed. Network/Tunnel health is reported later by Status/Tray and never gates local installation success.
-
-`Repair connection` is intentionally local-first: with healthy retained Enrollment material it recreates startup/configuration without reinstalling payloads or contacting the Gateway. If a required Enrollment credential such as `tunnel.token` is missing, Repair performs one idempotent `/v1/enroll` recovery using the retained device identity and Access Key instead of forcing a new device binding. Program-file damage is repaired by re-running the trusted self-contained installer. Uninstall removes owned program/startup entries but retains Enrollment and employee project files.
-
-Unix activation and garbage collection share an atomic directory lock. Normal exits and signals clean the lock and partial files. After an uncatchable termination, the diagnostic identifies the owner PID and lock path; verify no installer remains before removing a stale lock. Never remove a live installer's lock. Linux bootstrap fails before extraction when run as root or when glibc is older than 2.34. An enrolled Linux reinstall/upgrade refreshes the fixed startup units automatically even when no setup mode was explicitly requested; suspended devices keep those unit definitions installed but disabled.
-
-## Build and publication gates
-
-Native packaging no longer runs in GitHub Actions. `.github/workflows/build-installers.yml` is a disabled migration marker only; Windows x64 and Linux x64 packages are built locally on matching native hosts when needed. macOS arm64 and Intel x64 are the only hosted package targets and share the root `codemagic.yaml` workflow on a Codemagic M2 runner; its `architecture` build input selects one target per build. The workflow is manual-only so repository pushes do not consume macOS minutes. Agents can use `npm run macos:ci -- start|status|collect` through DevSpace without routine browser clicks; see [Codemagic API operations](ops/codemagic-api.md) for one-time protected credentials, immutable source tags, existing-build reuse and exact-byte artifact import.
-
-The Codemagic path intentionally stays thin. arm64 uses the pinned hosted Node/npm directly; Intel x64 downloads the SHA-256-pinned official Node archive and runs the same package script under Rosetta with the pinned npm CLI. The source-built `cloudflared` final artifact is cached separately per target; its fingerprint covers the locked source/build inputs and target, every reuse verifies SHA-256 plus the expected Mach-O architecture/minimum-macOS compatibility, and a miss or invalid cache falls back to the canonical source build (`GOARCH=arm64` or `amd64`). The pinned Node download archive is also cached, but `node_modules`, npm cache, Cargo registry/target and Go SDK/build cache are not persisted. The macOS UI remains one Swift/AppKit source compiled with the pinned Xcode SDK and an explicit architecture/deployment target, followed by its non-GUI self-test and the existing real AppKit smoke on that exact packaged app. The smoke requires visible form/menu acknowledgements and immediate handling of short, fragmented JSON-lines while stdin stays open; successful process startup or input consumed only at EOF cannot pass. There is no macOS Rust toolchain, UI artifact cache or Cargo metadata. The package builder validates the invoking npm against `packageManager`, then verifies the release layout and scans only executable/native-module candidates for the selected Mach-O architecture plus minimum-OS compatibility. After packaging, the workflow runs `platform-acceptance.mjs --system-macos-installer` on the final PKG, including the actual system Installer, installed payload and LaunchAgent checks. Native UI smoke and disposable-runner acceptance are not substitutes for Intel hardware, employee login or Gatekeeper approval.
-
-A private GitHub Release may still be used as fixed-version administrator storage, but publication is no longer coupled to the package build. Employees use the fixed HTTPS download site and never authenticate to GitHub during installation.
-
-## Trust and remaining external gates
-
-The fixed-version manifest is embedded in each platform handoff, so this version does not add TUF or a second manifest-signing subsystem. Software downloads are anonymous public resources, while repository access and remote-device authorization remain private. The installation script's SHA-256 pins inherit the download site's HTTPS trust; they detect corruption but are not an independent publisher signature. Windows may retain an existing internal signature, but the script never installs certificate trust. Current macOS builds are unsigned/unnotarized and retain normal Gatekeeper approval. This is not equivalent to public CA trust, SmartScreen reputation, Developer ID signing or Apple notarization. A production handoff still requires native package construction, administrator checksum verification, real employee-machine installation and Enrollment. See `docs/internal-distribution.md` for the operator steps.
-
-The current Access Key and device-secret model remains in place until two distinct Workspace users pass Managed OAuth identity routing and Linked App Token is proven through the wildcard per-device Access application. Do not delete those credentials based only on protocol-level unit tests.
+GitHub Releases migration is pending compatibility and license verification;
+see [public readiness](public-readiness.md). Old clients reject HTTP redirects,
+so replacing the existing static files with 302 redirects is not compatible.

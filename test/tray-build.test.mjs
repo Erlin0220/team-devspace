@@ -39,7 +39,7 @@ test('AppKit build uses the pinned deployment floor and native target architectu
 });
 
 test('desktop About metadata has one author source and one shared Control Center', async () => {
-  assert.deepEqual(packageJson.author, { name: '常二林', email: 'cerlin0220@gmail.com' });
+  assert.deepEqual(packageJson.author, { name: 'Erlin0220', email: '24458678+Erlin0220@users.noreply.github.com' });
   const state = desktopState(null);
   assert.deepEqual(state.author, packageJson.author);
   assert.equal(state.version, release.version);
@@ -51,7 +51,7 @@ test('desktop About metadata has one author source and one shared Control Center
   assert.match(html, /id="author"/);
   assert.match(ui, /state\.author\.name/);
   assert.match(ui, /state\.author\.email/);
-  assert.doesNotMatch(html, /cerlin0220@gmail\.com/);
+  assert.doesNotMatch(html, /@users\.noreply\.github\.com/);
   assert.doesNotMatch(rust, /show_about|show_message_box/);
   assert.doesNotMatch(swift, /showAbout|orderFrontStandardAboutPanel/);
   assert.match(packaging, /TeamDevSpaceAuthorName/);
