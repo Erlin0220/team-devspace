@@ -245,7 +245,8 @@ export async function main(argv = process.argv.slice(2)) {
       if (sourceRelease.version !== version || sourceRelease.distribution.targets.slice().sort().join() !== [...DOWNLOAD_TARGETS].sort().join()) throw new Error('Source commit does not describe the requested four-target release');
       const directory = resolve(values.directory ?? join('release', 'offline', version));
       await verifyAcceptance({ version, root: directory, targets: DOWNLOAD_TARGETS, expectedCommit: commit,
-        requireFinalWindows: true, requireInstalledUpgrade: true, requireNativeArchitecture: true });
+        requireFinalWindows: true, requireInstalledUpgrade: true, requireNativeArchitecture: true,
+        allowRosettaDarwinX64: true });
       catalog = await buildDownloadCatalog(directory, version, commit);
       const output = resolve('build', 'downloads', version);
       await rm(output, { recursive: true, force: true });

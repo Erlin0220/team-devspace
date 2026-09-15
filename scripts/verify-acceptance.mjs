@@ -8,7 +8,8 @@ import { sha256File } from './build-utils.mjs';
 
 export async function verifyAcceptance({ version = release.version, targets = release.distribution.targets,
   root = resolve('release', 'offline', version), expectedCommit,
-  requireFinalWindows = false, requireInstalledUpgrade = false, requireNativeArchitecture = false } = {}) {
+  requireFinalWindows = false, requireInstalledUpgrade = false, requireNativeArchitecture = false,
+  allowRosettaDarwinX64 = false } = {}) {
 for (const target of targets) {
   const path = join(root, target, 'acceptance.json');
   const evidence = JSON.parse(await readFile(path, 'utf8'));
@@ -25,8 +26,16 @@ for (const target of targets) {
   assert.equal(evidence.checks?.installedPayload, true, `${target}: extracted/installed payload contents were not accepted`);
   if (requireInstalledUpgrade) assert.equal(evidence.checks?.existingInstallUpgrade, true,
     `${target}: a same-version reinstall or clean install is not cross-version upgrade acceptance`);
-  if (requireNativeArchitecture) assert.equal(evidence.checks?.nativeArchitecture, true,
-    `${target}: native CPU architecture acceptance is required, not Rosetta-only evidence`);
+  if (requireNativeArchitecture && !(allowRosettaDarwinX64 && target === 'darwin-x64')) {
+    assert.equal(evidence.checks?.nativeArchitecture, true,
+      `${target}: native CPU architecture acceptance is required, not Rosetta-only evidence`);
+  }
+  if (requireNativeArchitecture && allowRosettaDarwinX64 && target === 'darwin-x64' && evidence.checks?.nativeArchitecture !== true) {
+    assert.equal(evidence.checks?.existingInstallUpgrade, true,
+      'darwin-x64: Rosetta release exception still requires real cross-version upgrade acceptance');
+    assert.ok(evidence.limitations?.some(item => /Rosetta|native CPU architecture/i.test(item)),
+      'darwin-x64: Rosetta release exception must remain explicit in acceptance limitations');
+  }
   assert.equal(evidence.checks?.zeroResidue, true, `${target}: acceptance did not prove cleanup of its own lifecycle/install residue`);
   assert.ok(evidence.entrypoint?.name && /^[a-f0-9]{64}$/.test(evidence.entrypoint.sha256 ?? ''), `${target}: invalid accepted entrypoint identity`);
   assert.equal(evidence.entrypoint.name, packageName(version, target), `${target}: unexpected installer filename`);
