@@ -90,6 +90,15 @@ SHA-256 checked, deleted remotely, and each deletion read back as unavailable.
 The workflow run records themselves were retained; their commit-author metadata
 can still contain historical addresses.
 
+Integration activated the prepared Dependabot configuration and automatically
+opened dependency PRs #11 and #12, independently of the direct main integration.
+Their ordinary `verify`/`secret-scan` CI failed before running any steps; these
+were not the four-platform installer workflow. Version-update PR limits are now
+paused at zero while private quota is exhausted, without disabling security
+alerts. The integration follow-up closes only these newly generated bot PRs and
+records their metadata, CI failure evidence and cancellation/read-back results
+in Issue #9. No dependency-update PR is merged into the release candidate.
+
 All four old caches were deleted: **844,426,293 bytes**, with a live read-back of
 **zero remaining caches**. Cache contents were not represented as exhaustively
 audited; removing these regenerable objects removes their future cache-disclosure
@@ -219,6 +228,9 @@ no-deletion and no-force-push rules before dispatching the matrix. The current
 template requires PRs and `verify`/`secret-scan`, but zero independent approvals
 to avoid locking out a sole maintainer; it is not a claim of human reviewer
 approval. A multi-maintainer approval requirement needs its own explicit policy.
+Restore Dependabot's version-update limits to three per ecosystem only after
+this cutover is verified; a `[skip ci]` message on a maintainer commit does not
+suppress workflows triggered by later bot commits.
 
 ## Large-file distribution and remaining cutover work
 
