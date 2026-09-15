@@ -1,5 +1,5 @@
 {
-  "version": "0.2.5",
+  "version": "0.2.6",
   "gateway": "https://team-devspace.568920429.xyz",
   "cloudflareZoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
   "devspaceVersion": "1.0.8",
@@ -15,6 +15,11 @@
     "trustProfile": "internal-free",
     "updatePublicKey": "R4FMEsumpqfXa5iVX_xu05WAelFQMDWuOdevtUZbPmA",
     "macosMinimumVersion": "12.0",
-    "targets": ["win32-x64", "darwin-arm64", "darwin-x64", "linux-x64"]
+    "targets": [
+      "win32-x64",
+      "darwin-arm64",
+      "darwin-x64",
+      "linux-x64"
+    ]
   }
 }

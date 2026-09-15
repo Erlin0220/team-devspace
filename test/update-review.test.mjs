@@ -8,6 +8,10 @@ import { applyUpdate, checkForUpdates, startUpdateChecks } from '../client/updat
 import { createDesktopController } from '../client/desktop-controller.mjs';
 import { updateTestCatalog, updateTestBytes, updateTestPublicKey, signUpdateFixture } from './update-fixture.mjs';
 
+const parts = RELEASE_VERSION.split('.').map(Number);
+const nextVersion = [...parts.slice(0, 2), parts[2] + 1].join('.');
+const laterVersion = [...parts.slice(0, 2), parts[2] + 2].join('.');
+
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function temporary(t) {
   const home = await mkdtemp(join(tmpdir(), 'tds-update-review-'));
@@ -31,12 +35,12 @@ test('automatic handoff records the actual target, not a stale cached auto versi
   const stop = startUpdateChecks(home, () => {}, () => true, {
     now: () => now, schedule: callback => { next = callback; return {}; }, cancel: () => {},
     check: async () => ({ nextCheckAt: now + 21600000, automatic: true,
-      policy: { stable: '0.2.6', auto: '0.2.6' } }),
-    apply: async () => ({ handedOff: true, version: '0.2.7' }),
+      policy: { stable: nextVersion, auto: nextVersion } }),
+    apply: async () => ({ handedOff: true, version: laterVersion }),
   });
   t.after(stop);
   await next();
-  assert.equal((await readJson(join(home, 'updates/automatic-result.json'))).version, '0.2.7');
+  assert.equal((await readJson(join(home, 'updates/automatic-result.json'))).version, laterVersion);
 });
 
 test('a pending installer rejects duplicate apply before network reads or package hashing', async t => {
@@ -51,7 +55,7 @@ test('a pending installer rejects duplicate apply before network reads or packag
 });
 
 test('an apply failure carries the actual fresh target for scheduler inventory', async t => {
-  const home = await temporary(t), version = '0.2.7';
+  const home = await temporary(t), version = laterVersion;
   const catalog = await signUpdateFixture(updateTestCatalog(version));
   await assert.rejects(applyUpdate(home, { automatic: true, publicKey: updateTestPublicKey,
     distributionRoot: async () => { throw new Error('Synthetic preparation failure'); },

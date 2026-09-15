@@ -5,7 +5,7 @@ import { request as httpRequest, createServer } from 'node:http';
 import { createDesktopController } from '../client/desktop-controller.mjs';
 import { CONTROL_UI_PREFERRED_PORT, startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
 import { diagnosticReport, stopTeamDevSpace } from '../client/control.mjs';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +14,17 @@ const healthy = { ready: true, devspace: true, bridge: true, tunnel: true, gatew
 const paused = { ready: false, devspace: false, bridge: false, tunnel: false, gateway: 'suspended', remoteAccess: 'suspended', desiredRemoteAccess: 'suspended' };
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
+
+test('a successful setup keeps its auxiliary startup warning visible without marking the connection failed', async t => {
+  const warning = '托盘登录启动项暂不可用';
+  const controller = createDesktopController('unused', { operations: {
+    status: async () => healthy, setup: async () => ({ startup: 'partial', warning }),
+  } });
+  t.after(() => controller.dispose());
+  await controller.dispatch('setup');
+  assert.equal(controller.snapshot().notice, warning);
+  assert.equal(controller.snapshot().alert, undefined);
+});
 
 test('Control Center persists its chosen loopback port, retries brief ownership, and migrates a real collision', async t => {
   const home = await mkdtemp(join(tmpdir(), 'tds-control-port-'));
@@ -346,7 +357,7 @@ test('private Control Center capability survives restart while the instance iden
   assert.equal((await fetch(`${secondUrl.origin}/api/state`)).status, 401);
 });
 
-test('concurrent first Control Center starts read the atomic capability winner', async t => {
+test('concurrent explicit ephemeral Control Centers never share a capability across origins', async t => {
   const home = await mkdtemp(join(tmpdir(), 'tds-control-capability-race-'));
   const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
   const surfaces = [];
@@ -354,6 +365,68 @@ test('concurrent first Control Center starts read the atomic capability winner',
     await rm(home, { recursive: true, force: true }); });
   surfaces.push(...await Promise.all([startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 }),
     startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 })]));
-  assert.equal(new URL(surfaces[0].url).hash, new URL(surfaces[1].url).hash);
+  const urls = surfaces.map(surface => new URL(surface.url));
+  assert.notEqual(urls[0].hash, urls[1].hash);
+  for (let index = 0; index < urls.length; index++) {
+    assert.equal((await fetch(urls[index].origin + '/api/state', {
+      headers: { Authorization: 'Bearer ' + urls[index].hash.slice(1) } })).status, 200);
+    assert.equal((await fetch(urls[index].origin + '/api/state', {
+      headers: { Authorization: 'Bearer ' + urls[1 - index].hash.slice(1) } })).status, 401);
+  }
   assert.match((await readFile(join(home, 'control-capability.json'), 'utf8')), /"schema": 1/);
+});
+
+
+test('broken subscribers cannot abort core operations or starve healthy subscribers', async t => {
+  let calls = 0, seen = 0;
+  const controller = createDesktopController('unused', { operations: {
+    status: async () => healthy,
+    resume: async ({ onProgress }) => { calls++; onProgress('working'); return healthy; },
+  } });
+  t.after(() => controller.dispose());
+  assert.doesNotThrow(() => controller.subscribe(() => { throw new Error('render failed'); }));
+  controller.subscribe(async () => { throw new Error('async rendering failed'); });
+  controller.subscribe(() => { seen++; });
+  await controller.dispatch('resume'); await controller.dispatch('check'); await delay(5);
+  assert.equal(calls, 1); assert.equal(controller.snapshot().status, 'ready');
+  assert.equal(controller.snapshot().busy, false); assert.ok(seen > 2);
+});
+test('post-commit settings projection errors cannot turn successful mutations into failures', async t => {
+  let calls = 0;
+  const controller = createDesktopController('unused', { operations: {
+    status: async () => healthy,
+    localState: async () => { throw new Error('settings projection unavailable'); },
+    resume: async () => { calls++; return healthy; },
+  } });
+  t.after(() => controller.dispose());
+  await assert.doesNotReject(controller.dispatch('resume'));
+  assert.equal(calls, 1); assert.equal(controller.snapshot().status, 'ready'); assert.equal(controller.snapshot().busy, false);
+});
+
+test('endpoint cache failure cannot reuse a control capability across origins after restart', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-affinity-'));
+  const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
+  const servers = [], surfaces = [];
+  const reserve = async () => { const server = createServer(); servers.push(server); await listenOnBrowserPort(server, 0); return server; };
+  t.after(async () => {
+    await Promise.all(surfaces.map(surface => surface.close().catch(() => {})));
+    for (const server of servers) { server.close(); server.closeAllConnections(); }
+    await controller.dispose(); await rm(home, { recursive: true, force: true });
+  });
+  await mkdir(join(home, 'control-endpoint.json'));
+  const blocker = await reserve(), preferred = blocker.address().port;
+  const probe = await reserve(), fallback = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const options = { home, preferredPort: preferred, portRetryAttempts: 1, portRetryDelayMs: 1,
+    chooseFallbackPort: () => fallback, openBrowser: async () => {} };
+  const first = await startLocalControl(controller, options); surfaces.push(first);
+  assert.equal(first.endpointPersisted, false);
+  const original = new URL(first.url);
+  await first.close(); surfaces.splice(surfaces.indexOf(first), 1);
+  await new Promise(resolve => blocker.close(resolve));
+  const second = await startLocalControl(controller, options); surfaces.push(second);
+  const after = new URL(second.url);
+  assert.ok(original.origin === after.origin || original.hash !== after.hash,
+    'A missing endpoint cache cannot move an existing token onto another origin');
+  assert.equal(JSON.parse(await readFile(join(home, 'control-capability.json'), 'utf8')).port, second.port);
 });

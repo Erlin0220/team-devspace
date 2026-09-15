@@ -699,3 +699,35 @@ test('control routes reject invalid credentials and oversized/invalid enrollment
   assert.equal((await f.request('/mcp?key=secret', key.accessKey)).status, 400);
   assert.equal((await f.mf.dispatchFetch('https://team.example.test/mcp')).status, 401);
 });
+
+
+test('optional startup inventory failure cannot undo enrollment or resume', async t => {
+  const f = await fixture(t), key = await f.issue('Inventory isolation'), device = f.device();
+  await f.db.prepare("CREATE TRIGGER fail_inventory BEFORE UPDATE OF version_reported_at ON access_keys BEGIN SELECT RAISE(ABORT, 'inventory unavailable'); END").run();
+  const enrolled = await f.request('/v1/enroll', key.accessKey, { ...device, version: '0.2.6', platform: 'win32-x64' });
+  assert.equal(enrolled.status, 200);
+  const binding = await enrolled.json(), identity = { keyId: key.id, bindingId: binding.bindingId };
+  assert.equal((await f.request('/v1/device/suspend', device.deviceSecret, identity)).status, 200);
+  const resumed = await f.request('/v1/device/resume', device.deviceSecret, { ...identity, version: '0.2.6', platform: 'win32-x64' });
+  assert.equal(resumed.status, 200); assert.equal((await resumed.json()).state, 'active');
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: '0.2.6', platform: 'win32-x64' })).status, 503);
+  const policy = await f.request('/v1/admin/update-policy', f.adminToken,
+    { auto: '0.2.5', minimumSupported: '0.2.4', enforceAfter: new Date(Date.now() - 60000).toISOString(), revision: 0 });
+  assert.equal(policy.status, 200);
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 426);
+  await f.db.prepare('DROP TRIGGER fail_inventory').run();
+  assert.equal((await f.request('/v1/device/version', device.deviceSecret, { ...identity, version: '0.2.6', platform: 'win32-x64' })).status, 200);
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).status, 200);
+});
+
+test('a failed lower-version inventory report cannot keep a stale higher-version admission', async t => {
+  const f = await fixture(t), key = await f.issue('Downgrade guard'), device = f.device();
+  const enrolled = await f.request('/v1/enroll', key.accessKey, { ...device, version: '0.2.6', platform: 'win32-x64' });
+  const binding = await enrolled.json(), identity = { keyId: key.id, bindingId: binding.bindingId };
+  await f.db.prepare("CREATE TRIGGER fail_inventory BEFORE UPDATE OF version_reported_at ON access_keys BEGIN SELECT RAISE(ABORT, 'inventory unavailable'); END").run();
+  assert.equal((await f.request('/v1/device/resume', device.deviceSecret,
+    { ...identity, version: '0.2.3', platform: 'win32-x64' })).status, 503);
+  const status = await f.request('/v1/device/status-v2', device.deviceSecret, identity);
+  assert.equal((await status.json()).state, 'suspended');
+  assert.equal((await f.request('/mcp', key.accessKey, { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status, 403);
+});

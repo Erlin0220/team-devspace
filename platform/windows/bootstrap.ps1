@@ -107,6 +107,7 @@ function Test-LegacyTaskNeedsElevation([string]$Name) {
 
 function Remove-KnownStartupEntries {
   $schtasks = Join-Path $nativeSystemDirectory 'schtasks.exe'
+  $failures = @()
   foreach ($name in @(Get-KnownTaskNames)) {
     # Windows PowerShell 5 can promote native stderr to a terminating error when
     # ErrorActionPreference=Stop. Missing tasks are expected here, so inspect the
@@ -121,8 +122,9 @@ function Remove-KnownStartupEntries {
       & $schtasks /Delete /TN $name /F *> $null
       $deleteCode = $LASTEXITCODE
     } finally { $ErrorActionPreference = $savedPreference }
-    if ($deleteCode -ne 0) { throw "Could not remove Team DevSpace startup task: $name" }
+    if ($deleteCode -ne 0) { $failures += $name }
   }
+  if ($failures.Count) { throw "Could not remove Team DevSpace startup tasks: $($failures -join ", ")" }
 }
 
 function Invoke-LegacyTaskCleanupIfNeeded {
@@ -149,15 +151,29 @@ function Invoke-LegacyTaskCleanupIfNeeded {
 }
 
 function Get-InstallProcessIds {
-  $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\\') + '\\'
+  $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
   $names = @('tds-launcher.exe', 'node.exe', 'cloudflared.exe', 'team-devspace-tray.exe')
-  return @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
     $path = [string]$_.ExecutablePath
     $path -and $names -contains ([string]$_.Name).ToLowerInvariant() -and
       $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
   } | ForEach-Object { [int]$_.ProcessId })
 }
 
+function Stop-OwnedInstallProcess([int]$ProcessId) {
+  $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if (-not $process) { return }
+  try {
+    # Pin the native process object before validating its executable. A stale
+    # numeric PID must never authorize stopping a newly reused foreign process.
+    [void]$process.Handle
+    $path = [string]$process.Path
+    $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $names = @('tds-launcher.exe', 'node.exe', 'cloudflared.exe', 'team-devspace-tray.exe')
+    if ($path -and $names -contains ([IO.Path]::GetFileName($path).ToLowerInvariant()) -and
+        $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $process.Kill() }
+  } finally { $process.Dispose() }
+}
 function Stop-InstallProcesses {
   $deadline = [DateTime]::UtcNow.AddSeconds(3)
   do {
@@ -166,7 +182,9 @@ function Stop-InstallProcesses {
     Start-Sleep -Milliseconds 100
   } while ([DateTime]::UtcNow -lt $deadline)
 
-  foreach ($processId in $ids) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+  foreach ($processId in $ids) {
+    try { Stop-OwnedInstallProcess $processId } catch { } # The final ownership query still decides success.
+  }
   $deadline = [DateTime]::UtcNow.AddSeconds(3)
   do {
     $remaining = @(Get-InstallProcessIds)
@@ -370,6 +388,18 @@ function Assert-Version([string]$Root, [object]$Manifest) {
   }
 }
 
+function Stop-CandidateForRollback([string]$Candidate) {
+  $removed = $false
+  try { $removed = (Invoke-Client $Candidate @('uninstall') -AllowFailure) -eq 0 } catch {}
+  $failures = @()
+  if (-not $removed) {
+    try { Remove-KnownStartupEntries } catch { $failures += $_.Exception.Message }
+  }
+  # Reuse the existing owned-installation fallback; never delete a possibly live
+  # candidate or activate another version until all owned processes are stopped.
+  try { Stop-InstallProcesses } catch { $failures += $_.Exception.Message }
+  if ($failures.Count) { throw "Candidate cleanup failed; its payload was retained for repair: $($failures -join '; ')" }
+}
 function Restore-Previous([object]$Previous, [string]$InstallerRoot) {
   if (-not $Previous) { return }
   Write-Warning 'New version did not start successfully; restoring the previous startup entries.'
@@ -485,7 +515,7 @@ try {
         [void](Invoke-Client $candidate $setup)
       } catch {
         $setupFailure = $_.Exception.Message
-        [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
+        Stop-CandidateForRollback $candidate
         if ($active) { Restore-Previous $active $candidate }
         Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
         throw $setupFailure
@@ -503,7 +533,7 @@ try {
       $activationFailure = $_.Exception.Message
       $recovery = 'candidate startup was removed'
       if ($hasEnrollment) {
-        [void](Invoke-Client $candidate @('uninstall') -AllowFailure)
+        Stop-CandidateForRollback $candidate
         if ($active) { Restore-Previous $active $candidate; $recovery = 'previous version was restored' }
       }
       Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction SilentlyContinue
@@ -525,8 +555,10 @@ try {
         $failure = "Team DevSpace is installed, but connection setup did not complete: $setupFailure"
         $displayFailure = $setupFailure
         if ($setupFailure -match 'Team DevSpace:\s*(.+)$') { $displayFailure = $Matches[1] }
-        [IO.File]::AppendAllText((Join-Path $InstallPath 'onboarding-error.log'), "$(Get-Date -Format o) $failure`r`n")
-        [IO.File]::WriteAllText((Join-Path $InstallPath 'onboarding-message.txt'), $displayFailure, [Text.Encoding]::Unicode)
+        try {
+          [IO.File]::AppendAllText((Join-Path $InstallPath 'onboarding-error.log'), "$(Get-Date -Format o) $failure`r`n")
+          [IO.File]::WriteAllText((Join-Path $InstallPath 'onboarding-message.txt'), $displayFailure, [Text.Encoding]::Unicode)
+        } catch { Write-Warning 'Onboarding diagnostic files are unavailable.' }
         Write-Warning $failure
         Write-Warning 'Use Repair connection after network or credential issues are resolved. The installed application will not be rolled back.'
         exit 10
@@ -538,11 +570,11 @@ try {
     catch { Write-Warning 'Old version cleanup was deferred; the active version remains installed.' }
     Write-Step 'Installation complete. Runtime connectivity is reported separately by Status/Tray.'
   } finally {
-    if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force }
+    if ($stage -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
   }
 } catch {
   $failure = "Team DevSpace bootstrap failed: $($_.Exception.Message)"
-  [IO.File]::AppendAllText((Join-Path $InstallPath 'bootstrap-error.log'), "$(Get-Date -Format o) $failure`r`n")
+  try { [IO.File]::AppendAllText((Join-Path $InstallPath 'bootstrap-error.log'), "$(Get-Date -Format o) $failure`r`n") } catch {}
   Write-Error $failure
   exit 1
 } finally {

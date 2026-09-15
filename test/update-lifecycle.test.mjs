@@ -11,7 +11,8 @@ import { packageName } from '../client/release-catalog.mjs';
 import { boundedJson } from '../client/update-policy.mjs';
 import { updateTestCatalog, updateTestBytes, updateTestPublicKey, signUpdateFixture } from './update-fixture.mjs';
 
-const futureVersion = '0.2.6';
+const versionParts = RELEASE_VERSION.split('.').map(Number);
+const futureVersion = [...versionParts.slice(0, 2), versionParts[2] + 1].join('.');
 const policy = (auto = null) => ({ schema: 1, stable: futureVersion, auto,
   minimumSupported: null, enforceAfter: null, revision: 0 });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };

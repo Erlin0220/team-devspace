@@ -1,3 +1,4 @@
+import { notifyObserver } from './operation.mjs';
 import { diagnosticReport, openLogs, restartTeamDevSpace, resumeRemoteAccess,
   stopTeamDevSpace, suspendRemoteAccess } from './control.mjs';
 import { changeProjectRoot, configureFromDesktop, desktopLocalState, deviceStatus,
@@ -74,7 +75,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
   const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || utilities.has('choose-folder') || closing,
     exiting: closing, activity: !closing && utilities.has('choose-folder') ? '正在选择项目目录…' : activity,
     notice, alert: failure ?? probeFailure, updates }), checkedAt, updates });
-  const publish = () => { if (!disposed) for (const listener of listeners) listener(snapshot()); };
+  const publish = () => { if (!disposed) for (const listener of listeners) notifyObserver(listener, snapshot()); };
   const readLocal = async () => {
     const generation = revision;
     if (!operations.localState) return;
@@ -172,7 +173,8 @@ export function createDesktopController(home = stateHome(), options = {}) {
       }
       const result = await operations[action]({ ...parameters, signal: prompts.signal,
         onProgress: message => { if (!closing) { activity = macProgress(message); publish(); } } });
-      await readLocal();
+      // A failed projection cannot turn a committed operation into a retryable failure.
+      await readLocal().catch(() => {});
       if (action === 'update-check') {
         updates = result;
       } else if (action.startsWith('update-')) await refreshUpdates();
@@ -192,7 +194,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
           else setNotice('当前没有需要安装的新版本');
         } else if (action === 'update-check') {
           if (!result?.available && !result?.error && result?.checkedAt && result?.policy?.stable) setNotice('当前已是最新版本');
-        } else if (!result?.cancelled) setNotice(action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action]);
+        } else if (!result?.cancelled) setNotice(result?.warning ?? (action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action]));
         checkedAt = new Date().toISOString();
       }
       return result;
@@ -214,7 +216,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
   };
   return {
     snapshot, dispatch,
-    subscribe(listener) { listeners.add(listener); listener(snapshot()); return () => listeners.delete(listener); },
+    subscribe(listener) { listeners.add(listener); notifyObserver(listener, snapshot()); return () => listeners.delete(listener); },
     start() {
       if (started) return;
       started = true;

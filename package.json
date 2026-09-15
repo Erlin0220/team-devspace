@@ -1,13 +1,21 @@
 {
   "name": "team-devspace",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "description": "Pinned DevSpace distribution with per-device Cloudflare connectivity for a shared ChatGPT app",
-  "author": { "name": "常二林", "email": "cerlin0220@gmail.com" },
-  "engines": { "node": "^22.22.2 || ^24.15.0 || >=26.0.0", "npm": ">=11.19.1 <12" },
+  "author": {
+    "name": "常二林",
+    "email": "cerlin0220@gmail.com"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+    "npm": ">=11.19.1 <12"
+  },
   "packageManager": "npm@11.19.1",
-  "bin": { "team-devspace": "client/cli.mjs" },
+  "bin": {
+    "team-devspace": "client/cli.mjs"
+  },
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test --test-concurrency=1 test/*.test.mjs",

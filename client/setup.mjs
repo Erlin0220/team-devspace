@@ -12,7 +12,7 @@ import { readGatewayStatus } from './gateway-status.mjs';
 import { COMPONENTS, enabledStartupComponents, installServices, serviceAction } from './platform.mjs';
 
 import { chooseWindowsProject } from './windows-desktop.mjs';
-import { withDeviceOperation } from './operation.mjs';
+import { withDeviceOperation, notifyObserver } from './operation.mjs';
 import { runMacForm } from './macos-ui.mjs';
 import { trayExecutable, trayInstanceId } from './desktop.mjs';
 
@@ -43,7 +43,7 @@ export function configureDevice(input, options = {}) {
 }
 
 async function configureDeviceUnlocked(input, { home = stateHome(), startup = true, onProgress = () => {} } = {}) {
-  onProgress('Preparing private device state...');
+  notifyObserver(onProgress, 'Preparing private device state...');
   await secureStateDirectory(home);
   const release = await readJson(join(installRoot, 'release.config.json'));
   const previous = await readJson(join(home, 'state.json'), null);
@@ -89,7 +89,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
     }
   }
   if (previous?.bindingId && previous?.keyId && previous?.hostname && await hasTunnelCredential(home)) {
-    onProgress('Existing Enrollment found. Reusing the current Device Binding...');
+    notifyObserver(onProgress, 'Existing Enrollment found. Reusing the current Device Binding...');
     const remoteAccess = previous.remoteAccess === 'suspended' ? 'suspended' : 'active';
     state = { ...state, keyId: previous.keyId, bindingId: previous.bindingId, hostname: previous.hostname,
       endpoint: previous.endpoint ?? `${gateway}/mcp`, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
@@ -98,7 +98,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
     await atomicJson(join(home, 'state.json'), state);
     if (startup) {
       await serviceAction('stop', previous, home);
-      onProgress('Refreshing current-user login startup entries...');
+      notifyObserver(onProgress, 'Refreshing current-user login startup entries...');
       await installServices(state, home);
       const startComponents = enabledStartupComponents(state);
       if (startComponents.length) await serviceAction('start', state, home, startComponents);
@@ -109,7 +109,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
       startup: startup ? 'installed' : 'not-installed' };
   }
 
-  onProgress('Contacting the Team Gateway and confirming Enrollment...');
+  notifyObserver(onProgress, 'Contacting the Team Gateway and confirming Enrollment...');
   const binding = await control(gateway, '/v1/enroll', accessKey, {
     body: { deviceId: state.deviceId, deviceSecret: state.deviceSecret, bridgePort: state.ports.bridge,
       version: release.version, platform: `${process.platform}-${process.arch}` },
@@ -120,7 +120,7 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
       binding.devspaceVersion !== DEVSPACE_VERSION || binding.controlApiVersion !== release.controlApiVersion) {
     throw new Error('Gateway returned an incompatible Enrollment');
   }
-  onProgress('Enrollment confirmed. Preparing the local runtime...');
+  notifyObserver(onProgress, 'Enrollment confirmed. Preparing the local runtime...');
   state = { ...state, keyId: binding.keyId, bindingId: binding.bindingId, hostname: binding.hostname,
     endpoint: binding.endpoint, releaseVersion: release.version, devspaceVersion: DEVSPACE_VERSION,
     // Recovering credentials is not consent to resume. Only the explicit resume
@@ -130,11 +130,11 @@ async function configureDeviceUnlocked(input, { home = stateHome(), startup = tr
   await writeUpstreamConfig(state, home);
   await atomicJson(join(home, 'state.json'), state);
   if (startup) {
-    onProgress('Installing current-user login startup entries...');
+    notifyObserver(onProgress, 'Installing current-user login startup entries...');
     await installServices(state, home);
     const startComponents = enabledStartupComponents(state);
     if (startComponents.length) await serviceAction('start', state, home, startComponents);
-    onProgress(state.remoteAccess === 'suspended'
+    notifyObserver(onProgress, state.remoteAccess === 'suspended'
       ? 'Enrollment is complete. Remote access remains safely suspended.'
       : 'Enrollment is complete. Team DevSpace is connecting in the background.');
   }
@@ -200,19 +200,19 @@ async function changeProjectRootUnlocked(projectRoot, home, options = {}) {
   const shouldRun = Boolean(state.bindingId) && state.remoteAccess !== 'suspended';
   let stopAttempted = false;
   try {
-    onProgress('正在切换项目目录…');
+    notifyObserver(onProgress, '正在切换项目目录…');
     if (shouldRun) {
-      onProgress('正在停止当前项目连接…');
+      notifyObserver(onProgress, '正在停止当前项目连接…');
       stopAttempted = true;
       await service('stop', state);
     }
-    onProgress('正在保存新的项目目录…');
+    notifyObserver(onProgress, '正在保存新的项目目录…');
     await writeConfig(next);
     await saveState(next);
     if (shouldRun) {
-      onProgress('正在启动新的项目连接…');
+      notifyObserver(onProgress, '正在启动新的项目连接…');
       await service('start', next);
-      onProgress('正在确认新的项目连接…');
+      notifyObserver(onProgress, '正在确认新的项目连接…');
       await verifyRuntime(next);
     }
     return { changed: true, currentProjectRoot: nextRoot, previousProjectRoot: state.currentProjectRoot,
@@ -223,14 +223,20 @@ async function changeProjectRootUnlocked(projectRoot, home, options = {}) {
     if (shouldRun && stopAttempted) {
       try { await service('stop', next); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
     }
-    try { await writeConfig(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
-    try { await saveState(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
-    if (shouldRun && stopAttempted) {
+    // A failed stop leaves ownership unresolved. Do not change the running
+    // owner's configuration or start another owner until cleanup is confirmed.
+    if (!rollbackFailures.length) {
+      try { await writeConfig(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+      try { await saveState(state); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+    }
+    if (shouldRun && stopAttempted && !rollbackFailures.length) {
       try { await service('start', state); await verifyRuntime(state); }
       catch (rollbackError) { rollbackFailures.push(rollbackError); }
     }
     if (rollbackFailures.length) {
-      throw Object.assign(new Error(`项目目录切换失败，且原目录恢复未完成：${error.message}`), { code: 'project_root_rollback_failed' });
+      throw Object.assign(new Error(`项目目录切换失败，且原目录恢复未完成：${error.message}`,
+        { cause: new AggregateError([error, ...rollbackFailures], 'Project rollback could not safely restore the runtime') }),
+      { code: 'project_root_rollback_failed' });
     }
     throw Object.assign(new Error(`项目目录切换失败，已恢复原目录：${error.message}`), { code: 'project_root_change_failed' });
   }
@@ -240,23 +246,31 @@ export function configureFromDesktop(home, options) {
   return withDeviceOperation(home, () => configureFromDesktopUnlocked(home, options));
 }
 
-async function configureFromDesktopUnlocked(home, { onProgress, startup, input = {} }) {
+async function configureFromDesktopUnlocked(home, { onProgress, startup, input = {},
+  installServices: install = installServices, serviceAction: service = serviceAction }) {
   const enrolled = await configureDevice(input, { home, startup: false, onProgress });
   if (!startup) return { ...enrolled, startup: 'not-installed' };
   const state = await loadState(home);
-  await installServices(state, home, undefined, COMPONENTS);
+  await install(state, home, undefined, COMPONENTS);
+  const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
+  if (startComponents.length) await service('start', state, home, startComponents);
+  let warning;
   if (process.platform === 'win32') {
     // First-run Windows desktop can exist before Enrollment. Register its login
-    // entry now without replacing/restarting the currently visible tray owner.
-    try { await readFile(join(home, 'startup', 'tray.xml')); }
-    catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      await installServices(state, home, undefined, ['tray']);
+    // entry without making that optional presentation entry block core startup.
+    // Its failure must not undo Enrollment or stop the currently visible tray.
+    try {
+      try { await readFile(join(home, 'startup', 'tray.xml')); }
+      catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        await install(state, home, undefined, ['tray']);
+      }
+    } catch {
+      warning = '设备绑定已保留，托盘登录启动项暂不可用；当前连接不受影响，可通过安装器修复。';
+      notifyObserver(onProgress, warning);
     }
   }
-  const startComponents = enabledStartupComponents(state).filter(component => COMPONENTS.includes(component));
-  if (startComponents.length) await serviceAction('start', state, home, startComponents);
-  return { ...enrolled, startup: 'installed' };
+  return { ...enrolled, startup: warning ? 'partial' : 'installed', ...(warning ? { warning } : {}) };
 }
 
 export function replaceAccessKey(accessKey, home = stateHome(), options = {}) {
@@ -271,11 +285,11 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   if (sameAccessKey && !state.bindingId) {
     // Enrollment may have committed remotely before its response was lost.
     // Retry with the retained identity, not a preflight that rejects bound keys.
-    onProgress('正在继续未完成的设备绑定…');
+    notifyObserver(onProgress, '正在继续未完成的设备绑定…');
     return { ...await configureFromDesktop(home, { onProgress, startup }), recoveredEnrollment: true };
   }
 
-  onProgress(sameAccessKey ? '正在确认管理员重置后的设备绑定状态…' : '正在验证新的 Access Key…');
+  notifyObserver(onProgress, sameAccessKey ? '正在确认管理员重置后的设备绑定状态…' : '正在验证新的 Access Key…');
   const preflight = await control(state.gateway, '/v1/enrollment/preflight', accessKey, { body: {}, timeout: 15000 })
     .catch(error => {
       if (error.status === 404) throw Object.assign(new Error('网关尚未部署更换 Access Key 所需接口，请先更新网关；当前 Key 和连接未更改'), { code: 'gateway_update_required' });
@@ -293,7 +307,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   state = { ...state, pendingAccessKey: accessKey, remoteAccess: 'suspended' };
   await atomicJson(join(home, 'state.json'), state);
 
-  onProgress('正在释放当前设备绑定…');
+  notifyObserver(onProgress, '正在释放当前设备绑定…');
   const localStop = serviceAction('remove', state, home, COMPONENTS);
   const remoteRelease = state.keyId && state.bindingId
     ? control(state.gateway, '/v1/device/release', state.deviceSecret, {
@@ -321,7 +335,7 @@ async function replaceAccessKeyUnlocked(accessKey, home = stateHome(), { onProgr
   delete next.endpoint;
   await atomicJson(join(home, 'state.json'), next);
 
-  onProgress('正在使用新的 Access Key 重新绑定…');
+  notifyObserver(onProgress, '正在使用新的 Access Key 重新绑定…');
   return { ...await configureFromDesktop(home, { onProgress, startup }), replacedAccessKey: true };
 }
 
@@ -333,24 +347,24 @@ async function repairDeviceUnlocked(home = stateHome(), { preserveTray = false, 
   const previous = await readJson(join(home, 'state.json'), null);
   if (!previous) throw new Error('Team DevSpace is installed but has not been configured yet; run setup with the administrator-issued Access Key and project directory');
   if (previous.pendingAccessKey) {
-    onProgress('正在继续未完成的 Access Key 设置…');
+    notifyObserver(onProgress, '正在继续未完成的 Access Key 设置…');
     const replaced = await replaceAccessKey(previous.pendingAccessKey, home, { onProgress });
     return { ...replaced, repaired: true, recoveredEnrollment: true };
   }
   const recoveredEnrollment = !previous.bindingId || !await hasTunnelCredential(home);
   if (recoveredEnrollment) {
-    onProgress('正在恢复设备绑定…');
+    notifyObserver(onProgress, '正在恢复设备绑定…');
     await configureDevice({}, { home, startup: false, onProgress });
   }
   const state = await loadState(home);
   const scope = preserveTray ? COMPONENTS : undefined;
-  onProgress('正在重建本机连接服务…');
+  notifyObserver(onProgress, '正在重建本机连接服务…');
   await serviceAction('remove', state, home, scope);
   await writeUpstreamConfig(state, home);
   await installServices(state, home, undefined, scope);
   const startComponents = enabledStartupComponents(state).filter(component => !preserveTray || component !== 'tray');
   if (startComponents.length) {
-    onProgress('正在启动本机连接…');
+    notifyObserver(onProgress, '正在启动本机连接…');
     await serviceAction('start', state, home, startComponents);
   }
   return { repaired: true, enrolled: true, recoveredEnrollment,

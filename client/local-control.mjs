@@ -88,11 +88,11 @@ async function readControlEndpoint(path) {
 }
 
 async function listenOnPersistentControlPort(server, home, {
-  preferredPort = CONTROL_UI_PREFERRED_PORT, retryAttempts = 12, retryDelayMs = 250, legacyEndpointExpected = false,
+  preferredPort = CONTROL_UI_PREFERRED_PORT, retryAttempts = 12, retryDelayMs = 250, legacyEndpointExpected = false, boundPort,
   chooseFallbackPort = () => randomInt(CONTROL_UI_FALLBACK_MIN, CONTROL_UI_FALLBACK_MAX + 1),
 } = {}) {
   const previous = await readControlEndpoint(join(home, 'control-endpoint.json'));
-  const requested = previous?.port ?? preferredPort;
+  const requested = validControlPort(boundPort) ? boundPort : previous?.port ?? preferredPort;
   let lastError;
   for (let attempt = 0; attempt < retryAttempts; attempt++) {
     try {
@@ -111,7 +111,7 @@ async function listenOnPersistentControlPort(server, home, {
     try {
       await listenOnBrowserPort(server, candidate);
       const actual = server.address().port;
-      return { port: actual, migratedFrom: previous?.port ?? (legacyEndpointExpected ? requested : null) };
+      return { port: actual, fallback: true, migratedFrom: validControlPort(boundPort) ? boundPort : previous?.port ?? (legacyEndpointExpected ? requested : null) };
     } catch (error) {
       if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
       lastError = error;
@@ -121,24 +121,22 @@ async function listenOnPersistentControlPort(server, home, {
     { code: lastError?.code ?? 'control_port_unavailable' });
 }
 
-async function rotateControlCapability(home) {
-  const token = randomSecret();
-  await atomicJson(join(home, 'control-capability.json'), { schema: 1, token });
-  return token;
+function validCapabilityState(value) {
+  return value?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(value.token ?? '') &&
+    (value.port === undefined || (Number.isInteger(value.port) && value.port > 0 && value.port <= 65535));
 }
-
 async function controlCapability(home) {
   await secureStateDirectory(home);
   const path = join(home, 'control-capability.json');
   const existing = await readJson(path, null);
   if (existing !== null) {
-    if (existing?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(existing.token ?? '')) return { token: existing.token, existing: true };
+    if (validCapabilityState(existing)) return { token: existing.token, existing: true, port: existing.port };
     throw new Error('本机控制中心 capability 凭据无效；请从受信任的安装恢复本机状态。');
   }
   const token = randomSecret();
   if (await atomicJson(path, { schema: 1, token }, { createOnly: true })) return { token, existing: false };
   const winner = await readJson(path);
-  if (winner?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(winner.token ?? '')) return { token: winner.token, existing: true };
+  if (validCapabilityState(winner)) return { token: winner.token, existing: true, port: winner.port };
   throw new Error('本机控制中心 capability 凭据无效；请从受信任的安装恢复本机状态。');
 }
 
@@ -227,11 +225,17 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   try {
     endpoint = port === undefined
       ? await listenOnPersistentControlPort(server, home, { preferredPort, retryAttempts: portRetryAttempts,
-        retryDelayMs: portRetryDelayMs, chooseFallbackPort, legacyEndpointExpected: resolvedCapability.existing })
+        retryDelayMs: portRetryDelayMs, chooseFallbackPort, legacyEndpointExpected: resolvedCapability.existing, boundPort: resolvedCapability.port })
       : (await listenOnBrowserPort(server, port), { port: server.address().port, migratedFrom: null });
-    if (endpoint.migratedFrom && capability === undefined) {
-      token = await rotateControlCapability(home);
+    if (capability === undefined && (port === 0 || endpoint.fallback || endpoint.migratedFrom ||
+        (resolvedCapability.port !== undefined && resolvedCapability.port !== endpoint.port))) {
+      token = randomSecret();
       authorization = Buffer.from(`Bearer ${token}`);
+    }
+    // Port affinity belongs to the credential, not the optional endpoint cache.
+    // Cache write failure must never allow the same token to cross origins later.
+    if (capability === undefined && (resolvedCapability.port !== endpoint.port || token !== resolvedCapability.token)) {
+      await atomicJson(join(home, 'control-capability.json'), { schema: 1, token, port: endpoint.port });
     }
     endpoint.persisted = port === undefined
       ? await atomicJson(join(home, 'control-endpoint.json'), { schema: 1, port: endpoint.port }).then(() => true, () => false)

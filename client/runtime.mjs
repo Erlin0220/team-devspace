@@ -65,7 +65,14 @@ export async function closeService(service) {
   const closeHttp = new Promise((resolve, reject) => service.server.close(error => error ? reject(error) : resolve()));
   const timeout = setTimeout(() => service.server.closeAllConnections(), 2000);
   timeout.unref();
-  try { await service.close(); await closeHttp; } finally { clearTimeout(timeout); }
+  try {
+    // Attach both rejection handlers immediately and retain the HTTP deadline
+    // even when application cleanup fails; one failure must not skip the other.
+    const outcomes = await Promise.allSettled([Promise.resolve().then(() => service.close()), closeHttp]);
+    const failures = outcomes.filter(value => value.status === 'rejected').map(value => value.reason);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length) throw new AggregateError(failures, 'Runtime shutdown failed');
+  } finally { clearTimeout(timeout); }
 }
 
 export async function runComponent(component, home = stateHome()) {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -11,7 +11,9 @@ import { applyUpdate, checkForUpdates, downloadVerifiedPackage, fetchReleaseNote
 import { atomicJson, RELEASE_VERSION } from '../client/state.mjs';
 import { updateTestCatalog, updateTestBytes, updateTestPublicKey, signUpdateFixture } from './update-fixture.mjs';
 
-const NEXT_VERSION = '0.2.6';
+const versionParts = RELEASE_VERSION.split('.').map(Number);
+const NEXT_VERSION = [...versionParts.slice(0, 2), versionParts[2] + 1].join('.');
+const LATER_VERSION = [...versionParts.slice(0, 2), versionParts[2] + 2].join('.');
 const policy = overrides => ({ schema: 1, stable: NEXT_VERSION, auto: null, minimumSupported: null, enforceAfter: null, revision: 0, ...overrides });
 const nextCatalog = () => updateTestCatalog(NEXT_VERSION);
 async function temporary(t) {
@@ -36,7 +38,7 @@ test('version policy uses numeric ordering and explicit grace, never aliases or 
   assert.equal(compareVersions('0.2.10', '0.2.9'), 1);
   assert.equal(compareVersions('1.0.0', '1.0.0'), 0);
   for (const invalid of ['latest', '0.2.4-rc1', '00.2.4', '../0.2.4', '1.2']) assert.throws(() => compareVersions(invalid, '0.2.4'));
-  assert.throws(() => validateUpdatePolicy(policy({ auto: '0.2.7' })));
+  assert.throws(() => validateUpdatePolicy(policy({ auto: LATER_VERSION })));
   assert.throws(() => validateUpdatePolicy(policy({ minimumSupported: '0.2.4', enforceAfter: new Date().toISOString() })));
   assert.throws(() => validateUpdatePolicy(policy({ auto: NEXT_VERSION, minimumSupported: '0.2.4', enforceAfter: 'tomorrow' })));
   const p = validateUpdatePolicy(policy({ auto: NEXT_VERSION, minimumSupported: '0.2.4', enforceAfter: '2026-09-15T00:00:00.000Z' }));
@@ -50,7 +52,7 @@ test('signed catalogs bind all package bytes, target identities and release vers
   const catalog = nextCatalog(), signed = await signUpdateFixture(catalog);
   assert.deepEqual(await verifySignedCatalog(signed, updateTestPublicKey, catalog.version), catalog);
   await assert.rejects(verifySignedCatalog({ ...signed, signature: 'a'.repeat(86) }, updateTestPublicKey, catalog.version), /signature/);
-  await assert.rejects(verifySignedCatalog(signed, updateTestPublicKey, '0.2.7'), /identity/);
+  await assert.rejects(verifySignedCatalog(signed, updateTestPublicKey, LATER_VERSION), /identity/);
   const changed = { ...catalog, targets: { ...catalog.targets, 'win32-x64': { ...catalog.targets['win32-x64'], sha256: 'b'.repeat(64) } } };
   await assert.rejects(verifySignedCatalog({ ...signed, payload: Buffer.from(JSON.stringify(changed)).toString('base64url') }, updateTestPublicKey, catalog.version), /signature/);
   const partial = await signUpdateFixture({ ...catalog, targets: { 'win32-x64': catalog.targets['win32-x64'] } });
@@ -158,11 +160,40 @@ test('manual apply installs only the exact confirmed version and handles no-chan
   const fetcher = async url => url.endsWith('/v1/update-policy') ? Response.json(policy())
     : url.endsWith('/update.json') ? Response.json(signed) : new Response(updateTestBytes);
   const common = { fetcher, publicKey: updateTestPublicKey, distributionRoot: async () => home };
-  await assert.rejects(applyUpdate(home, { ...common, confirmedVersion: '0.2.7', handoff: () => { handoffs++; } }), /版本已变化/);
+  await assert.rejects(applyUpdate(home, { ...common, confirmedVersion: LATER_VERSION, handoff: () => { handoffs++; } }), /版本已变化/);
   assert.equal(handoffs, 0);
   assert.equal((await applyUpdate(home, { ...common, confirmedVersion: RELEASE_VERSION, handoff: () => { handoffs++; } })).changed, false);
   const cancelled = await applyUpdate(home, { ...common, confirmedVersion: NEXT_VERSION,
     handoff: async () => ({ cancelled: true }) });
   assert.equal(cancelled.cancelled, true); assert.equal(handoffs, 0);
   assert.equal((await updateStatus(home)).installation, null);
+});
+
+test('corrupted discovery cache is recoverable without resetting the automatic-update preference', async t => {
+  const home = await temporary(t);
+  await atomicJson(join(home, 'updates/settings.json'), { automatic: false });
+  await writeFile(join(home, 'updates/check.json'), '{invalid cache');
+  const status = await checkForUpdates(home, { force: true, fetcher: async () => Response.json(policy()) });
+  assert.equal(status.available, true); assert.equal(status.automatic, false); assert.equal(status.error, null);
+});
+test('post-handoff phase persistence is optional but the durable initial installer guard is mandatory', async t => {
+  const home = await temporary(t), signed = await signUpdateFixture(nextCatalog());
+  let handoffs = 0;
+  const options = { publicKey: updateTestPublicKey, distributionRoot: async () => home,
+    fetcher: async url => url.endsWith('/v1/update-policy') ? Response.json(policy())
+      : url.endsWith('/update.json') ? Response.json(signed) : new Response(updateTestBytes),
+    onProgress: async () => { throw new Error('observer unavailable'); },
+    persistAttempt: async (path, value) => {
+      if (value.phase !== 'starting') throw new Error('disk unavailable after handoff');
+      return atomicJson(path, value);
+    },
+    handoff: async () => { handoffs++; return { handedOff: true }; } };
+  assert.equal((await applyUpdate(home, options)).handedOff, true);
+  assert.equal(JSON.parse(await readFile(join(home, 'updates/attempt.json'), 'utf8')).phase, 'starting');
+  await assert.rejects(applyUpdate(home, options), { code: 'installer_pending' });
+  assert.equal(handoffs, 1);
+  const fresh = await temporary(t);
+  await assert.rejects(applyUpdate(fresh, { ...options, distributionRoot: async () => fresh,
+    persistAttempt: async () => { throw new Error('initial guard unavailable'); } }), /initial guard unavailable/);
+  assert.equal(handoffs, 1, 'Never hand off without a durable duplicate-install guard');
 });

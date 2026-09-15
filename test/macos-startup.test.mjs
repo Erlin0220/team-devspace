@@ -147,3 +147,31 @@ test ! -e "$HOME/Library/Application Support/TeamDevSpace/app-launch.lock"
   assert.match(log, /setup-reopened/);
   assert.doesNotMatch(log, /falling back to bootstrap/);
 });
+
+test('reopening a configured macOS payload reuses healthy startup even when its log directory is unavailable', async t => {
+  const work = await mkdtemp(join(tmpdir(), 'tds-macos-reuse-'));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  for (const blocked of [false, true]) {
+    const cwd = join(work, String(blocked)), home = join(cwd, 'home');
+    const contents = join(cwd, 'Team DevSpace.app', 'Contents');
+    const resources = join(contents, 'Resources'), macos = join(contents, 'MacOS');
+    const stateHome = join(home, 'Library', 'Application Support', 'TeamDevSpace');
+    const current = join(stateHome, 'distribution', 'versions', 'configured');
+    for (const path of [resources, macos, join(current, 'runtime', 'bin'), join(current, 'client')]) await mkdir(path, { recursive: true });
+    await writeFile(join(macos, 'TeamDevSpace'), launch, { mode: 0o755 });
+    await writeFile(join(resources, 'release-manifest.json'), '{}');
+    await writeFile(join(current, 'install-manifest.json'), '{}');
+    await writeFile(join(current, 'client', 'cli.mjs'), '');
+    await writeFile(join(stateHome, 'state.json'), '{}');
+    if (blocked) await writeFile(join(stateHome, 'logs'), 'not a directory');
+    await writeFile(join(current, 'runtime', 'bin', 'node'), '#!/bin/sh\n[ "$2" = start ] || exit 8\nprintf "start-once\\n" >> "$HOME/proof"\n', { mode: 0o755 });
+    const script = [
+      'set -eu', 'export HOME="$PWD/home"',
+      'D="$HOME/Library/Application Support/TeamDevSpace/distribution"',
+      'printf "%s\\n" "$D/versions/configured" > "$D/active-path"',
+      '/bin/sh "$PWD/Team DevSpace.app/Contents/MacOS/TeamDevSpace"',
+    ].join('\n');
+    await exec('bash', ['-c', script], { cwd, timeout: 10000, env: { ...process.env, NODE_OPTIONS: '' } });
+    assert.equal(await readFile(join(home, 'proof'), 'utf8'), 'start-once\n');
+  }
+});

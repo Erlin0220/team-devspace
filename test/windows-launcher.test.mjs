@@ -79,3 +79,19 @@ test('closing the Windows launcher job terminates its child process tree', windo
     try { process.kill(pid, 0); resolveProcess(false); } catch (error) { resolveProcess(error.code === 'ESRCH'); }
   }), value => value, 'Launcher job did not terminate its child');
 });
+
+
+test('Windows launcher retains process ownership when log files degrade to NUL', windowsOnly, async t => {
+  const work = await mkdtemp(join(tmpdir(), 'tds launcher log failure '));
+  t.after(() => rm(work, { recursive: true, force: true }));
+  const launcher = await buildWindowsLauncher(join(work, 'tds-launcher.exe'));
+  for (const blocked of ['stdout', 'stderr', 'both']) {
+    const proof = join(work, blocked + '.proof');
+    const script = "process.stdout.write('out');process.stderr.write('err');require('node:fs').writeFileSync(process.argv.at(-1),'ran')";
+    const result = await run(launcher, ['--cwd', work,
+      '--stdout', blocked === 'stderr' ? join(work, 'out.log') : work,
+      '--stderr', blocked === 'stdout' ? join(work, 'error.log') : work,
+      '--', process.execPath, '-e', script, '--', proof]);
+    assert.deepEqual(result, { code: 0, signal: null }); assert.equal(await readFile(proof, 'utf8'), 'ran');
+  }
+});

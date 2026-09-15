@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { approvedProjectRoot, atomicJson, loadState, normalizeGateway, randomSecret, readJson, upstreamEnvironment } from '../client/state.mjs';
-import { changeProjectRoot, configureDevice, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
+import { changeProjectRoot, configureDevice, configureFromDesktop, deviceStatus, replaceAccessKey, requestFromFile } from '../client/setup.mjs';
 import { trayState } from '../client/tray.mjs';
 import { createAccessKey } from '../client/admin.mjs';
 import { launchAgentXml, removeWindowsTask, systemdUserUnit, waitForMacJobsUnloaded, windowsTaskXml, serviceLabel, windowsTaskNames } from '../client/platform.mjs';
@@ -30,7 +30,7 @@ async function fixture(t) {
     let body = '';
     for await (const chunk of request) body += chunk;
     const data = body ? JSON.parse(body) : null;
-    requests.push({ path: request.url, body: data, authorization: request.headers.authorization });
+    requests.push({ path: request.url, method: request.method, body: data, authorization: request.headers.authorization });
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/v1/admin/keys' && request.method === 'GET') {
       response.end(JSON.stringify({ keys: [...adminKeys.values()] })); return;
@@ -555,7 +555,13 @@ test('concurrent administrator issuance reuses one persisted employee credential
   ]);
   assert.equal(a.id, b.id);
   assert.equal(a.accessKey, b.accessKey);
-  assert.equal(new Set(f.requests.map(request => request.body.keyHash)).size, 1);
+  // The second caller may observe an already confirmed record and legitimately
+  // GET the key list first. Compare actual issuance writes, not body-less reads.
+  const writes = f.requests.filter(request => request.method === 'POST' && request.path === '/v1/admin/keys');
+  assert.equal(writes.length, 2);
+  assert.deepEqual([...new Set(writes.map(request => request.body.keyHash))],
+    [createHash('sha256').update(a.accessKey).digest('hex')]);
+  assert.equal(f.adminKeys.size, 1);
 });
 
 test('setup request accepts NSIS UTF-16LE and consumes only the temporary request', async t => {
@@ -843,4 +849,96 @@ test('private upstream environment cannot inherit a personal DevSpace public URL
     if (old === undefined) delete process.env.DEVSPACE_ALLOWED_ROOTS; else process.env.DEVSPACE_ALLOWED_ROOTS = old;
     if (oldUrl === undefined) delete process.env.DEVSPACE_PUBLIC_BASE_URL; else process.env.DEVSPACE_PUBLIC_BASE_URL = oldUrl;
   }
+});
+
+
+test('progress observer failures do not roll back a project root or resumed connection', async t => {
+  const f = await fixture(t);
+  const onProgress = () => { throw new Error('presentation unavailable'); };
+  await configureDevice({ gateway: f.gateway, accessKey: 'tds_' + randomSecret(), currentProjectRoot: f.project },
+    { home: f.home, startup: false, onProgress });
+  const nextRoot = join(f.home, 'observer-project'); await mkdir(nextRoot);
+  const actions = [];
+  await changeProjectRoot(nextRoot, f.home, { onProgress,
+    serviceAction: async action => { actions.push(action); }, verifyRuntime: async () => {} });
+  assert.equal((await loadState(f.home)).currentProjectRoot, await realpath(nextRoot));
+  assert.deepEqual(actions, ['stop', 'start']);
+  await atomicJson(join(f.home, 'state.json'), { ...await loadState(f.home), remoteAccess: 'suspended' });
+  let gateway = 'suspended';
+  await resumeRemoteAccess(f.home, { onProgress, control: async (_gateway, path) => {
+    if (path.endsWith('/resume')) gateway = 'active'; else if (path.endsWith('/suspend')) gateway = 'suspended';
+  }, installServices: async () => {}, serviceAction: async () => {},
+  deviceStatus: async () => ({ localReady: true, gateway, ready: gateway === 'active' }) });
+  assert.equal(gateway, 'active'); assert.equal((await loadState(f.home)).remoteAccess, 'active');
+});
+
+test('project rollback never rewrites configuration or restarts an unresolved runtime owner', async t => {
+  for (const initialStopFails of [true, false]) {
+    const f = await fixture(t);
+    await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+      { home: f.home, startup: false });
+    const before = await loadState(f.home);
+    const nextRoot = join(f.home, 'rollback-project'); await mkdir(nextRoot);
+    const actions = []; let stops = 0;
+    await assert.rejects(changeProjectRoot(nextRoot, f.home, {
+      serviceAction: async action => {
+        actions.push(action);
+        if (action === 'stop' && (++stops > 1 || initialStopFails)) throw new Error('owner remains running');
+      },
+      verifyRuntime: async () => { throw new Error('candidate not ready'); },
+    }), { code: 'project_root_rollback_failed' });
+    assert.deepEqual(actions, initialStopFails ? ['stop', 'stop'] : ['stop', 'start', 'stop']);
+    const expectedRoot = initialStopFails ? before.currentProjectRoot : await realpath(nextRoot);
+    const after = await loadState(f.home);
+    assert.equal(after.currentProjectRoot, expectedRoot, 'Do not replace facts while an unresolved owner may still use them');
+    assert.deepEqual((await readJson(join(f.home, 'devspace', 'config.json'))).allowedRoots, [expectedRoot]);
+    assert.equal(after.deviceId, before.deviceId); assert.equal(after.bindingId, before.bindingId);
+  }
+});
+
+test('project rollback cannot start a runtime until both original configuration and state are restored', async t => {
+  for (const failingWrite of ['writeUpstreamConfig', 'saveState']) {
+    const f = await fixture(t);
+    await configureDevice({ gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project },
+      { home: f.home, startup: false });
+    const nextRoot = join(f.home, 'rollback-storage-project'); await mkdir(nextRoot);
+    const actions = []; let writes = 0;
+    await assert.rejects(changeProjectRoot(nextRoot, f.home, {
+      [failingWrite]: async () => { if (++writes > 1) throw new Error('original storage unavailable'); },
+      serviceAction: async action => { actions.push(action); },
+      verifyRuntime: async () => { throw new Error('candidate not ready'); },
+    }), { code: 'project_root_rollback_failed' });
+    assert.deepEqual(actions, ['stop', 'start', 'stop'], 'Restoration failure must leave the stopped runtime stopped');
+  }
+});
+
+test('desktop enrollment starts core services despite an unavailable tray login entry',
+  { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t);
+  const events = [];
+  const result = await configureFromDesktop(f.home, {
+    input: { gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project }, startup: true,
+    installServices: async (_state, _home, _root, components) => {
+      events.push(`install:${components.join(',')}`);
+      if (components.includes('tray')) throw new Error('tray registration unavailable');
+    },
+    serviceAction: async (action, _state, _home, components) => { events.push(`${action}:${components.join(',')}`); },
+  });
+  assert.equal(result.bindingId, f.bindingId);
+  assert.equal(result.startup, 'partial');
+  assert.match(result.warning, /托盘/);
+  assert.ok(events.includes('start:runtime,tunnel'));
+  assert.equal((await loadState(f.home)).bindingId, f.bindingId);
+  assert.equal(f.requests.filter(item => item.path === '/v1/enroll').length, 1);
+});
+
+test('desktop enrollment never downgrades a required core startup failure to a tray warning', async t => {
+  const f = await fixture(t);
+  let starts = 0;
+  await assert.rejects(configureFromDesktop(f.home, {
+    input: { gateway: f.gateway, accessKey: `tds_${randomSecret()}`, currentProjectRoot: f.project }, startup: true,
+    installServices: async () => { throw new Error('required startup unavailable'); },
+    serviceAction: async () => { starts++; },
+  }), /required startup unavailable/);
+  assert.equal(starts, 0);
 });

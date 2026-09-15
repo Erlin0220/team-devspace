@@ -11,6 +11,9 @@ import { linuxServiceManager } from './linux-lifecycle.mjs';
 
 const exec = promisify(execFile);
 export const COMPONENTS = ['runtime', 'tunnel'];
+// A function invocation can fail its redirections before exec. Once exec succeeds,
+// the shell is replaced: runtime errors are never retried as logging failures.
+export const MAC_DIAGNOSTIC_LAUNCH = 'umask 077; run() { exec "$@"; }; run "$@" >>"$TEAM_DEVSPACE_STDOUT" 2>>"$TEAM_DEVSPACE_STDERR" || run "$@" >/dev/null 2>&1';
 export const STARTUP_COMPONENTS = process.platform === 'win32' || process.platform === 'darwin'
   ? [...COMPONENTS, 'tray'] : COMPONENTS;
 export const enabledStartupComponents = state => state.remoteAccess === 'suspended'
@@ -112,15 +115,13 @@ export function launchAgentXml(state, component, home, paths, root = installRoot
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
-<key>ProgramArguments</key><array>${[program, ...componentArguments(component, home, state, root)].map(arg => `<string>${xml(arg)}</string>`).join('')}</array>
+<key>ProgramArguments</key><array>${['/bin/sh', '-c', MAC_DIAGNOSTIC_LAUNCH, 'team-devspace', program, ...componentArguments(component, home, state, root)].map(arg => `<string>${xml(arg)}</string>`).join('')}</array>
 <key>WorkingDirectory</key><string>${xml(root)}</string>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string><key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string><key>NODE_OPTIONS</key><string></string>${uiEnvironment}</dict>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string><key>TEAM_DEVSPACE_HOME</key><string>${xml(home)}</string><key>NODE_OPTIONS</key><string></string>${uiEnvironment}<key>TEAM_DEVSPACE_STDOUT</key><string>${xml(join(home, "logs", component + ".log"))}</string><key>TEAM_DEVSPACE_STDERR</key><string>${xml(join(home, "logs", component + ".error.log"))}</string></dict>
 <key>RunAtLoad</key><true/>${component === 'tray'
     ? '<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>LimitLoadToSessionType</key><string>Aqua</string>'
     : '<key>KeepAlive</key><true/>'}<key>ThrottleInterval</key><integer>15</integer>
 <key>ProcessType</key><string>${component === 'tray' ? 'Interactive' : 'Background'}</string>
-<key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string>
-<key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string>
 </dict></plist>\n`;
 }
 
@@ -240,7 +241,7 @@ export async function installServices(state, home = stateHome(), root = installR
   const desired = enabledStartupComponents(state);
   const components = scope.filter(component => desired.includes(component));
   const disabled = scope.filter(component => !desired.includes(component));
-  await privateDirectory(join(home, 'logs'));
+  await privateDirectory(join(home, 'logs')).catch(() => {}); // Native launchers have a null diagnostics sink fallback.
   await privateDirectory(join(home, 'startup'));
   await access(join(root, 'client', 'cli.mjs'));
   const paths = await executablePaths(root);
@@ -348,13 +349,14 @@ async function waitForStopped(state, components) {
   throw new Error('An owned service port is still open after stop. Upgrade/uninstall was halted instead of replacing running binaries.');
 }
 
-export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS) {
+export async function serviceAction(action, state, home = stateHome(), components = STARTUP_COMPONENTS,
+  { runNative = native, allowTrayFailure = false } = {}) {
   if (!['start', 'stop', 'restart', 'enable', 'disable', 'remove'].includes(action)) throw new Error('Unknown service action');
   if (action === 'disable' && !['win32', 'linux'].includes(process.platform)) throw new Error('Disable without removing startup is unsupported on this platform');
   if (action === 'enable' && process.platform !== 'win32') throw new Error('Explicit startup enable is only required on Windows');
   if (action === 'restart') {
-    await serviceAction('stop', state, home, components);
-    return serviceAction('start', state, home, components);
+    await serviceAction('stop', state, home, components, { runNative });
+    return serviceAction('start', state, home, components, { runNative });
   }
   if (components.some(component => !STARTUP_COMPONENTS.includes(component))) throw new Error('Unknown startup component');
   const ordered = ['stop', 'disable', 'remove'].includes(action) ? [...components].reverse() : components;
@@ -378,68 +380,85 @@ export async function serviceAction(action, state, home = stateHome(), component
     ? await linuxOwnedLegacyUnits(home, components) : [];
   const macDomain = process.platform === 'darwin' ? `gui/${process.getuid()}` : null;
   const macBootedOut = [];
+  const failures = [];
+  let warning;
   for (const component of ordered) {
-    const label = serviceLabel(state, component);
-    if (process.platform === 'win32') {
-      if (action === 'start') await native('schtasks.exe', ['/Run', '/TN', label]);
-      else {
-        const labels = [...new Set([label, legacyServiceLabel(state, component),
-          ...windowsOwned.filter(owned => owned.endsWith(`.${component}`))])];
-        for (const ownedLabel of labels) {
-          const existing = await native('schtasks.exe', ['/Query', '/TN', ownedLabel, '/XML'], true);
-          if (existing) {
-            if (action === 'remove') await removeWindowsTask(ownedLabel);
-            else if (action === 'disable') {
-              await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
-              await native('schtasks.exe', ['/Change', '/TN', ownedLabel, '/DISABLE']);
-            } else if (action === 'enable') {
-              await native('schtasks.exe', ['/Change', '/TN', ownedLabel, '/ENABLE']);
-            } else await native('schtasks.exe', ['/End', '/TN', ownedLabel]);
+    try {
+      const label = serviceLabel(state, component);
+      if (process.platform === 'win32') {
+        if (action === 'start') await runNative('schtasks.exe', ['/Run', '/TN', label]);
+        else {
+          const labels = [...new Set([label, legacyServiceLabel(state, component),
+            ...windowsOwned.filter(owned => owned.endsWith(`.${component}`))])];
+          for (const ownedLabel of labels) {
+            const existing = await runNative('schtasks.exe', ['/Query', '/TN', ownedLabel, '/XML'], true);
+            if (existing) {
+              if (action === 'remove') await removeWindowsTask(ownedLabel);
+              else if (action === 'disable') {
+                await runNative('schtasks.exe', ['/End', '/TN', ownedLabel]);
+                await runNative('schtasks.exe', ['/Change', '/TN', ownedLabel, '/DISABLE']);
+              } else if (action === 'enable') {
+                await runNative('schtasks.exe', ['/Change', '/TN', ownedLabel, '/ENABLE']);
+              } else await runNative('schtasks.exe', ['/End', '/TN', ownedLabel]);
+            }
           }
         }
-      }
-    } else if (process.platform === 'darwin') {
-      const directory = join(homedir(), 'Library', 'LaunchAgents');
-      const plist = join(directory, `${label}.plist`);
-      if (action === 'start') {
-        const existing = await native('launchctl', ['print', `${macDomain}/${label}`], true);
-        if (!existing) await native('launchctl', ['bootstrap', macDomain, plist]);
-        await native('launchctl', ['kickstart', `${macDomain}/${label}`]);
-      } else {
-        const labels = [...new Set([label, legacyServiceLabel(state, component),
-          ...macOwned.filter(owned => owned.endsWith(`.${component}`))])];
-        for (const ownedLabel of labels) {
-          await native('launchctl', ['bootout', `${macDomain}/${ownedLabel}`], true);
-          macBootedOut.push(ownedLabel);
-          if (action === 'remove') await rm(join(directory, `${ownedLabel}.plist`), { force: true });
+      } else if (process.platform === 'darwin') {
+        const directory = join(homedir(), 'Library', 'LaunchAgents');
+        const plist = join(directory, `${label}.plist`);
+        if (action === 'start') {
+          const existing = await runNative('launchctl', ['print', `${macDomain}/${label}`], true);
+          if (!existing) await runNative('launchctl', ['bootstrap', macDomain, plist]);
+          await runNative('launchctl', ['kickstart', `${macDomain}/${label}`]);
+        } else {
+          const labels = [...new Set([label, legacyServiceLabel(state, component),
+            ...macOwned.filter(owned => owned.endsWith(`.${component}`))])];
+          for (const ownedLabel of labels) {
+            await runNative('launchctl', ['bootout', `${macDomain}/${ownedLabel}`], true);
+            macBootedOut.push(ownedLabel);
+            if (action === 'remove') await rm(join(directory, `${ownedLabel}.plist`), { force: true });
+          }
         }
-      }
-    } else if (process.platform === 'linux') {
-      const unit = `${label}.service`;
-      const directory = systemdUserDirectory();
-      const unitFile = join(directory, unit);
-      const ownedUnits = [...new Set([`${legacyServiceLabel(state, component)}.service`,
-        ...linuxOwned.filter(owned => owned.endsWith(`.${component}.service`))])];
-      if (action === 'start') await native('systemctl', ['--user', 'start', unit]);
-      else if (action === 'disable') {
-        await native('systemctl', ['--user', 'disable', '--now', unit], true);
-        for (const owned of ownedUnits) await native('systemctl', ['--user', 'disable', '--now', owned], true);
-      } else if (action === 'remove') {
-        await native('systemctl', ['--user', 'disable', '--now', unit], true);
-        for (const owned of ownedUnits) {
-          await native('systemctl', ['--user', 'disable', '--now', owned], true);
-          await rm(join(directory, owned), { force: true });
+      } else if (process.platform === 'linux') {
+        const unit = `${label}.service`;
+        const directory = systemdUserDirectory();
+        const unitFile = join(directory, unit);
+        const ownedUnits = [...new Set([`${legacyServiceLabel(state, component)}.service`,
+          ...linuxOwned.filter(owned => owned.endsWith(`.${component}.service`))])];
+        if (action === 'start') await runNative('systemctl', ['--user', 'start', unit]);
+        else if (action === 'disable') {
+          await runNative('systemctl', ['--user', 'disable', '--now', unit], true);
+          for (const owned of ownedUnits) await runNative('systemctl', ['--user', 'disable', '--now', owned], true);
+        } else if (action === 'remove') {
+          await runNative('systemctl', ['--user', 'disable', '--now', unit], true);
+          for (const owned of ownedUnits) {
+            await runNative('systemctl', ['--user', 'disable', '--now', owned], true);
+            await rm(join(directory, owned), { force: true });
+          }
+          await rm(unitFile, { force: true });
+        } else {
+          await runNative('systemctl', ['--user', 'stop', unit], true);
+          for (const owned of ownedUnits) await runNative('systemctl', ['--user', 'stop', owned], true);
         }
-        await rm(unitFile, { force: true });
-      } else {
-        await native('systemctl', ['--user', 'stop', unit], true);
-        for (const owned of ownedUnits) await native('systemctl', ['--user', 'stop', owned], true);
+      } else throw new Error('Unsupported runtime platform');
+    } catch (error) {
+      // Ordinary reopening is not installer activation. A missing presentation
+      // job must not trigger bootstrap and recycle otherwise healthy core jobs.
+      if (action === 'start' && component === 'tray' && allowTrayFailure) {
+        warning = '托盘暂未启动，核心连接未因此停止；可重新打开应用重试或通过安装器修复。';
+        continue;
       }
-    } else throw new Error('Unsupported runtime platform');
+      if (!['stop', 'disable', 'remove'].includes(action)) throw error;
+      failures.push(error); // Still stop the other independently owned components.
+    }
   }
-  if (process.platform === 'darwin' && macBootedOut.length) {
-    await waitForMacJobsUnloaded(macDomain, macBootedOut);
-  }
-  if (process.platform === 'linux' && action === 'remove') await native('systemctl', ['--user', 'daemon-reload']);
-  if (['stop', 'disable', 'remove'].includes(action)) await waitForStopped(state, components);
+  try {
+    if (process.platform === 'darwin' && macBootedOut.length) {
+      await waitForMacJobsUnloaded(macDomain, macBootedOut);
+    }
+    if (process.platform === 'linux' && action === 'remove') await runNative('systemctl', ['--user', 'daemon-reload']);
+    if (['stop', 'disable', 'remove'].includes(action)) await waitForStopped(state, components);
+  } catch (error) { failures.push(error); }
+  if (failures.length) throw new AggregateError(failures, 'Owned service cleanup failed; no replacement was started');
+  if (warning) return { warning };
 }

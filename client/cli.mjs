@@ -122,8 +122,9 @@ async function executeCommand(command, action, argument, values, home) {
         // Opening the desktop is not consent to resume remote access. Reuse the
         // existing login jobs and their single-instance policy, never reinstall.
         const components = command === 'start' ? enabledStartupComponents(state) : undefined;
-        if (!components || components.length) await serviceAction(command, state, home, components);
-        result = { action: command, deviceId: state.deviceId };
+        const startup = !components || components.length
+          ? await serviceAction(command, state, home, components, { allowTrayFailure: command === 'start' }) : undefined;
+        result = { action: command, deviceId: state.deviceId, ...startup };
       }
     } else if (command === 'startup') {
       if (action === 'install') {

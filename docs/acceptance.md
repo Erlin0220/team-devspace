@@ -4,7 +4,7 @@
 
 单元/边界测试可以证明 D1 的绑定、凭据校验、流量路由和错误处理。原生启动测试可以证明本机运行和停止没有残留。**它们不能代替真实 Cloudflare Tunnel、真实 ChatGPT 工作空间以及另一台 Mac 的验证。**
 
-最终验收需要独立真实设备覆盖实际发布架构：至少一台 Windows，并分别用 Apple Silicon macOS 验收 `darwin-arm64`、Intel macOS 验收 `darwin-x64`。两个 macOS 候选 `.pkg` 共用 Codemagic workflow 构建。已有 Rosetta 且能够执行 x86_64 的 Apple Silicon 可以安装和运行 x64 包；安装器不会自动安装 Rosetta，ARM64 包仍不能安装到 Intel。Rosetta 上的安装运行证据不能替代 Intel Mac 的最终验收。用同一电脑启动多个测试进程只能作为开发测试。
+正式发布必须覆盖 Windows、Linux 和两个 macOS 目标的真实安装器事务与安装后运行验证。darwin-arm64 使用 Apple Silicon；darwin-x64 优先使用 Intel。按当前内部发行决策，在没有 Intel 机器时，允许免费 Codemagic M2 上用 Rosetta 完整安装、升级和运行同一份 x64 PKG，发布验证仍要求所有其余门禁通过，并保留 nativeArchitecture: false 与 Intel 实机未验收的明确限制。这不是物理 Intel 验收，也不能用来宣称最低 macOS 版本、Gatekeeper 或员工交互已验证。安装器不会自动安装 Rosetta，ARM64 包仍不能安装到 Intel；不得修改机器类型或付费套餐来绕过限制。两个 macOS 目标继续共用一个既有 workflow。
 
 ## 无凭据的本地验证
 

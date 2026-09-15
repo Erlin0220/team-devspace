@@ -176,6 +176,14 @@ static int run_child(const LauncherOptions *options) {
   input = open_inherited_file(L"NUL", GENERIC_READ, OPEN_EXISTING);
   output = open_inherited_file(options->stdout_path, GENERIC_WRITE, OPEN_ALWAYS);
   error = open_inherited_file(options->stderr_path, GENERIC_WRITE, OPEN_ALWAYS);
+  // Diagnostics are optional. Keep a valid inherited sink when a log is locked
+  // or unavailable; process ownership and Job Object setup remain mandatory.
+  if (output == INVALID_HANDLE_VALUE) {
+    append_error(L"stdout log unavailable; using NUL", GetLastError());
+    output = open_inherited_file(L"NUL", GENERIC_WRITE, OPEN_EXISTING);
+  }
+  if (error == INVALID_HANDLE_VALUE)
+    error = open_inherited_file(L"NUL", GENERIC_WRITE, OPEN_EXISTING);
   job = create_job();
   if (input == INVALID_HANDLE_VALUE || output == INVALID_HANDLE_VALUE || error == INVALID_HANDLE_VALUE || !job) {
     fail(L"Cannot initialize child handles");

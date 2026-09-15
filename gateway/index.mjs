@@ -6,7 +6,7 @@ import { logRequest } from './observability.mjs';
 import { AdminService, AdminServiceError } from './admin-service.mjs';
 import { adminWeb, adminWebError, AdminWebError } from './admin-web.mjs';
 import { adminUpdatePolicy, publicUpdatePolicy, saveUpdatePolicy, updateRules, publicationLease } from './update-policy.mjs';
-import { UPDATE_VERSION, versionUnsupported } from '../client/update-policy.mjs';
+import { UPDATE_VERSION, versionUnsupported, compareVersions } from '../client/update-policy.mjs';
 import { DOWNLOAD_TARGETS } from '../client/release-catalog.mjs';
 import { validateUpdateReport } from '../client/update-report.mjs';
 
@@ -73,6 +73,19 @@ function validateClientInventory(body, required = false) {
   return true;
 }
 
+async function reportStartupVersion(store, row, body) {
+  try { await store.reportVersion(row.id, row.binding_id, body.version, body.platform); }
+  catch (error) {
+    // A stale lower/unknown version is conservative for minimum-version admission.
+    // Never retain a higher version after a failed downgrade report: that could
+    // incorrectly admit an unsupported client. The explicit report route stays strict.
+    if (row.client_version && compareVersions(body.version, row.client_version) < 0) {
+      await store.suspend(row.id, row.binding_id);
+      throw error;
+    }
+    console.warn(JSON.stringify({ event: 'inventory_report_failed' }));
+  }
+}
 async function enroll(request, env, store) {
   const key = await employeeKey(request, store);
   const body = await smallJson(request);
@@ -108,7 +121,7 @@ async function enroll(request, env, store) {
     await cloud.remove({ ...row, dns_id: configured.dnsId });
     throw new HttpError(409, 'enrollment_cancelled');
   }
-  if (hasVersion) await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
+  if (hasVersion) await reportStartupVersion(store, row, body);
   const controlApiVersion = Number(env.CONTROL_API_VERSION);
   if (!Number.isInteger(controlApiVersion) || controlApiVersion < 1) throw new HttpError(503, 'release_not_configured');
   return json({ keyId: row.id, deviceId: row.device_id, bindingId: row.binding_id,
@@ -186,8 +199,8 @@ async function resumeDevice(request, store) {
     }
     await health.body?.cancel();
   }
+  if (hasVersion) await reportStartupVersion(store, row, body);
   if (!await store.resume(row.id, row.binding_id)) throw new HttpError(409, 'access_lifecycle_changed');
-  if (hasVersion) await store.reportVersion(row.id, row.binding_id, body.version, body.platform);
   return json({ state: 'active', deviceId: row.device_id, bindingId: row.binding_id });
 }
 

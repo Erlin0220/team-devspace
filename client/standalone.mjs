@@ -204,17 +204,19 @@ async function startOne(home, directory, component) {
     const root = await jobRoot(home, component);
     const paths = await executablePaths(root);
     await access(paths.node);
-    await privateDirectory(join(home, 'logs'));
-    const errorLog = await open(join(home, 'logs', `${component}.error.log`), 'a', 0o600);
+    const errorLog = await (async () => {
+      await privateDirectory(join(home, 'logs'));
+      return open(join(home, 'logs', component + '.error.log'), 'a', 0o600);
+    })().catch(() => null);
     nonce = randomUUID();
     try {
       const child = spawn(paths.node, [join(root, 'client', 'standalone.mjs'), '--keeper', component, '--home', home, '--nonce', nonce], {
-        cwd: root, detached: true, stdio: ['ignore', errorLog.fd, errorLog.fd],
+        cwd: root, detached: true, stdio: ['ignore', errorLog?.fd ?? 'ignore', errorLog?.fd ?? 'ignore'],
         env: { ...process.env, NODE_OPTIONS: '', TEAM_DEVSPACE_HOME: home, TEAM_DEVSPACE_KEEPER_NONCE: '' },
       });
       await new Promise((ready, reject) => { child.once('error', reject); child.once('spawn', ready); });
       child.unref();
-    } finally { await errorLog.close(); }
+    } finally { await errorLog?.close().catch(() => {}); }
   }
   const until = Date.now() + 20000;
   do {
@@ -231,33 +233,51 @@ export async function standaloneAction(action, state, home, components) {
   return withDeviceOperation(home, async () => {
     home = await realpath(home);
     const directory = await standaloneDirectory(home);
+    const failures = [];
     for (const component of components) {
       componentName(component);
       if (action === 'start') await startOne(home, directory, component);
       else {
-        await stopOne(home, directory, component);
-        if (action === 'remove') await rm(startupPath(home, component), { force: true });
+        try {
+          await stopOne(home, directory, component);
+          if (action === 'remove') await rm(startupPath(home, component), { force: true });
+        } catch (error) { failures.push(error); }
       }
     }
+    if (failures.length) throw new AggregateError(failures, 'Standalone cleanup failed; unresolved owners were retained');
     if (action === 'remove' && !(await readdir(directory)).length) await rm(directory, { recursive: true });
   });
 }
 
-async function logWriter(path) {
-  const file = await open(path, 'a', 0o600);
-  let size = (await file.stat()).size;
-  let pending = Promise.resolve();
+// A failed diagnostics sink keeps draining the worker's pipes. Retry disk
+// access at a bounded cadence, without retaining log chunks or restarting it.
+export async function logWriter(path, { openFile = open, now = Date.now, retryDelayMs = 60000 } = {}) {
+  let file, size = 0, retryAt = 0, closed = false, pending = Promise.resolve();
+  const closeFile = async () => {
+    const handle = file; file = undefined;
+    try { await handle?.close(); } catch {}
+  };
+  const acquire = async () => {
+    if (closed || file || now() < retryAt) return;
+    try { file = await openFile(path, 'a', 0o600); size = (await file.stat()).size; }
+    catch { retryAt = now() + retryDelayMs; await closeFile(); }
+  };
+  await acquire();
   return {
     write(value) {
       pending = pending.then(async () => {
-        const buffer = Buffer.from(value);
-        if (size + buffer.length > MAX_LOG) { await file.truncate(0); size = 0; }
-        const limited = buffer.subarray(Math.max(0, buffer.length - MAX_LOG));
-        await file.write(limited); size += limited.length;
+        await acquire();
+        if (!file || closed) return;
+        try {
+          const buffer = Buffer.from(value);
+          if (size + buffer.length > MAX_LOG) { await file.truncate(0); size = 0; }
+          const limited = buffer.subarray(Math.max(0, buffer.length - MAX_LOG));
+          await file.write(limited); size += limited.length;
+        } catch { retryAt = now() + retryDelayMs; await closeFile(); }
       });
       return pending;
     },
-    async close() { try { await pending; } finally { await file.close(); } },
+    async close() { await pending; closed = true; await closeFile(); },
   };
 }
 
@@ -329,13 +349,16 @@ async function runKeeper(home, component, nonce) {
   } catch (error) {
     await event(`stopped safely (${error.code ?? error.message})`);
   } finally {
-    await clearSession(owner, nonce);
-    record.child = null;
-    record.finished = true;
-    await atomicJson(recordPath(directory, component), record);
-    await Promise.all([output.close(), errors.close()]);
-    await release().catch(() => {});
-    for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.off(signal, stop);
+    try {
+      await clearSession(owner, nonce);
+      record.child = null;
+      record.finished = true;
+      await atomicJson(recordPath(directory, component), record);
+    } finally {
+      await Promise.allSettled([output.close(), errors.close()]);
+      await release().catch(() => {});
+      for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.off(signal, stop);
+    }
   }
 }
 

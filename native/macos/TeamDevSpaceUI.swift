@@ -34,6 +34,7 @@ func validInstanceID(_ value: String) -> Bool {
 
 func markUIVisible() {
     guard let path = ProcessInfo.processInfo.environment["TEAM_DEVSPACE_UI_READY_MARKER"], !path.isEmpty else { return }
+    if FileManager.default.fileExists(atPath: path) { return }
     let data = Data("\(Date().timeIntervalSince1970)\n".utf8)
     do {
         try data.write(to: URL(fileURLWithPath: path), options: .atomic)
@@ -194,6 +195,7 @@ final class Application: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.length = marker.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
         button.toolTip = summary
         button.setAccessibilityLabel(summary)
+        if item.isVisible { markUIVisible() }
     }
 
     private func receive(_ data: Data) {

@@ -31,3 +31,9 @@ export async function withDeviceOperation(home, task) {
   try { return await operation.run(key, task); }
   finally { await release(); }
 }
+
+// Progress and presentation observers never own a lifecycle transaction. Handle
+// both synchronous throws and async rejections without suppressing core errors.
+export function notifyObserver(observer, ...args) {
+  try { Promise.resolve(observer?.(...args)).catch(() => {}); } catch {}
+}

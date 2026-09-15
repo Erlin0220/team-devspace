@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import http from 'node:http';
 import lockfile from 'proper-lockfile';
 import { atomicJson, installRoot, loadState, privateDirectory, readJson, RELEASE_VERSION, stateHome } from './state.mjs';
-import { withDeviceOperation } from './operation.mjs';
+import { withDeviceOperation, notifyObserver } from './operation.mjs';
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { boundedJson, compareVersions, UPDATE_VERSION, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from './update-policy.mjs';
 import { DOWNLOAD_TARGETS, packageUrls } from './release-catalog.mjs';
@@ -103,7 +103,8 @@ export async function checkForUpdates(home = stateHome(), { force = false, fetch
   try { unlock = await lockfile.lock(join(directory, '.check'), { realpath: false, lockfilePath: join(directory, '.check.lock'), stale: 30000, update: 5000 }); }
   catch (error) { if (error.code === 'ELOCKED') return updateStatus(home); throw error; }
   try {
-    const previous = await readJson(join(directory, 'check.json'), {});
+    // This is a discovery cache, not an installation guard or authorization setting.
+    const previous = await readJson(join(directory, 'check.json'), {}).catch(() => ({}));
     const clockMovedBack = previous.checkedAt && Date.parse(previous.checkedAt) > now;
     if (!force && !clockMovedBack && previous.currentVersion === RELEASE_VERSION && previous.nextCheckAt > now) return updateStatus(home);
     // Repeated button clicks are bounded, but a restart cannot postpone a due check.
@@ -163,13 +164,13 @@ export async function downloadVerifiedPackage(url, item, destination, { fetcher 
       size += chunk.byteLength;
       if (size > item.size) throw new Error('Update package exceeds its signed size');
       hash.update(chunk); await file.writeFile(chunk);
-      if (Date.now() - lastProgress > 1000) { onProgress(`正在下载更新… ${Math.floor(size * 100 / item.size)}%`); lastProgress = Date.now(); }
+      if (Date.now() - lastProgress > 1000) { notifyObserver(onProgress, `正在下载更新… ${Math.floor(size * 100 / item.size)}%`); lastProgress = Date.now(); }
     }
     if (size !== item.size || hash.digest('hex') !== item.sha256) throw new Error('Update package checksum verification failed');
     await file.sync(); await file.close();
     await rm(destination, { force: true }); await rename(temporary, destination);
     return destination;
-  } finally { await file.close().catch(() => {}); await rm(temporary, { force: true }); }
+  } finally { await file.close().catch(() => {}); await rm(temporary, { force: true }).catch(() => {}); }
 }
 
 export function updateBridge(state, method, automatic = false) {
@@ -260,7 +261,7 @@ Start-ScheduledTask -TaskName $env:TDS_UPDATE_TASK
 
 export async function applyUpdate(home = stateHome(), { automatic = false, repair = false, fetcher = request, onProgress = () => {},
   handoff = handoffInstaller, distributionRoot = installedDistributionRoot, publicKey = release.distribution.updatePublicKey,
-  signal, canApply = () => true, confirmedVersion } = {}) {
+  signal, canApply = () => true, confirmedVersion, persistAttempt = atomicJson } = {}) {
   if (repair && automatic) throw new Error('Software repair requires an explicit user request');
   if (confirmedVersion !== undefined && (automatic || repair || !UPDATE_VERSION.test(confirmedVersion))) {
     throw new Error('Invalid confirmed update version');
@@ -296,7 +297,7 @@ export async function applyUpdate(home = stateHome(), { automatic = false, repai
     if (!DOWNLOAD_TARGETS.includes(target)) throw new Error('No update package for this platform');
     const catalog = await verifySignedCatalog(await boundedJson(await fetcher(`${release.distribution.origin}/releases/${version}/update.json`)), publicKey, version);
     const root = await distributionRoot();
-    onProgress('正在校验并准备更新…');
+    notifyObserver(onProgress, '正在校验并准备更新…');
     const file = await downloadVerifiedPackage(packageUrls(catalog, release.distribution.origin)[target], catalog.targets[target],
       join(directory, version, catalog.targets[target].file), { fetcher, onProgress });
     // Downloads may take a while. Re-check withdrawal and local opt-out before applying.
@@ -319,19 +320,21 @@ export async function applyUpdate(home = stateHome(), { automatic = false, repai
       let drained = false;
       if (state?.bindingId && state.remoteAccess !== 'suspended') { await updateBridge(state, 'POST', automatic); drained = true; }
       try {
-        onProgress('已验证更新，正在交给安装器；连接将短暂重启…');
+        notifyObserver(onProgress, '已验证更新，正在交给安装器；连接将短暂重启…');
         await rm(join(directory, 'result.json'), { force: true });
         const attemptId = randomUUID();
         const attempt = { version, sourceVersion: RELEASE_VERSION, repair, startedAt: Date.now(), attemptId, phase: 'starting' };
-        await atomicJson(join(directory, 'attempt.json'), attempt);
+        await persistAttempt(join(directory, 'attempt.json'), attempt);
         const result = await handoff(file, version, home, root, { attemptId });
         if (result?.cancelled) {
           if (drained) await updateBridge(state, 'DELETE').catch(() => {});
           await rm(join(directory, 'attempt.json'), { force: true });
           return { ...result, version };
         }
-        await atomicJson(join(directory, 'attempt.json'), { ...attempt,
-          phase: result?.requiresAuthorization ? 'awaiting-authorization' : 'installing' });
+        await persistAttempt(join(directory, 'attempt.json'), { ...attempt,
+          phase: result?.requiresAuthorization ? 'awaiting-authorization' : 'installing' }).catch(() => {});
+        // The durable starting guard already exists. A cosmetic phase write may
+        // not undo a successful handoff, release its drain, or invite a duplicate installer.
         // Native macOS authorization happens after open(1) returns. Do not keep
         // remote admission paused while the user reads or cancels Installer UI.
         if (process.platform === 'darwin' && drained) await updateBridge(state, 'DELETE').catch(() => {});
@@ -404,7 +407,7 @@ export function startUpdateChecks(home, onChange = () => {}, canApply = () => tr
         const deadlines = [Number.isFinite(status?.nextCheckAt) ? status.nextCheckAt : now() + FAILURE_INTERVAL];
         if (Number.isFinite(outcome?.nextAttemptAt) && status?.automatic && !status.error) deadlines.push(outcome.nextAttemptAt);
         timer = schedule(tick, Math.max(1000, Math.min(...deadlines) - now())); timer.unref?.();
-        try { onChange(); } catch { /* A presentation failure cannot stop update scheduling. */ }
+        notifyObserver(onChange);
       }
     }
   };
