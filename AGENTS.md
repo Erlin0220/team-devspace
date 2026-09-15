@@ -66,6 +66,7 @@ The update controller is a thin control layer over the existing installers. Veri
 
 ### Desktop and lifecycle invariants
 
+- 本机 WebUI 固定监听浏览器可用的 loopback 端口 `127.0.0.1:53682`；端口冲突必须明确失败，不得随机回退。其 capability 只保存在既有私有状态目录并通过 URL fragment 交付，以支持正常升级重启后的原页面重连，禁止提供未认证 token 接口。
 - `desiredRemoteAccess` is user intent. Suspend/pause survives app restart, connection restart, repair, and software upgrade; opening Team DevSpace is never implicit consent to resume remote access.
 - Each Device has one **Current Project Root**. A selected directory is the actual operation root; do not create a nested `team-devspace` directory or maintain competing root lists.
 - Long operations must acknowledge immediately with busy/progress feedback and converge to the real runtime state when complete. Prior reports of project changes, pause/resume, Access Key replacement, or restart appearing unresponsive were feedback/state-projection problems, not a reason to duplicate the operation itself.

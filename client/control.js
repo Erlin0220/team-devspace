@@ -4,8 +4,19 @@ const fragment = location.hash.slice(1);
 if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) sessionStorage.setItem('tds-control-token', fragment);
 history.replaceState(null, '', location.pathname);
 const token = sessionStorage.getItem('tds-control-token') ?? '';
-let current, clientError, submitting = false, polling = false, rootEdited = false, loadingReport = false, keyEditorOpen = false;
-let activeAction;
+let current, clientError, transportError, clientNotice, submitting = false, refreshTask, rootEdited = false, loadingReport = false, keyEditorOpen = false;
+let activeAction, modalVersion, modalReturnFocus, notesGeneration = 0, noticeTimer, reconnectTimedOutVersion;
+const notesCache = new Map();
+const RECONNECT_KEY = 'tds-update-reconnect';
+const RECONNECT_LIMIT = 35 * 60 * 1000;
+function readReconnect() {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(RECONNECT_KEY));
+    if (/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(value?.version) && value.deadline > Date.now()) return value;
+  } catch {}
+  sessionStorage.removeItem(RECONNECT_KEY); return null;
+}
+let reconnecting = readReconnect();
 const ROUTE_VIEW = { '/diagnostics': 'diagnostics', '/about': 'about', '/updates': 'updates' };
 const VIEW_META = {
   overview: ['概览', '查看连接状态、项目信息和本机运行情况。'],
@@ -36,6 +47,7 @@ function showView(name, { user = false, focus = false } = {}) {
   $('view-title').textContent = VIEW_META[name][0];
   $('view-description').textContent = VIEW_META[name][1];
   if (focus) document.querySelector(`[data-view="${name}"] h2`)?.focus({ preventScroll: true });
+  if (name === 'updates' && current?.updates?.available) void loadReleaseNotes(current.updates.policy.stable);
 }
 showView(activeView);
 const feedback = (message, error = false) => {
@@ -43,6 +55,59 @@ const feedback = (message, error = false) => {
   $('feedback').textContent = message ?? '';
   $('feedback').dataset.error = String(error);
 };
+const replaceList = (element, entries = []) => element.replaceChildren(...entries.map(text => {
+  const item = document.createElement('li'); item.textContent = text; return item;
+}));
+function temporaryNotice(message, milliseconds = 6000) {
+  clearTimeout(noticeTimer); clientNotice = message;
+  noticeTimer = setTimeout(() => { clientNotice = undefined; if (current) render(current); }, milliseconds);
+}
+function updateModalAvailability() {
+  $('update-confirm').disabled = !current || submitting || current.busy || current.exiting || !current.updates?.available ||
+    current.updates.policy?.stable !== modalVersion || Boolean(transportError);
+}
+function closeUpdateModal() {
+  if ($('update-confirmation').hidden) return;
+  notesGeneration++;
+  $('update-confirmation').hidden = true; modalVersion = undefined;
+  const shell = document.querySelector('.app-shell'); shell.inert = false; shell.removeAttribute('aria-hidden');
+  modalReturnFocus?.focus?.({ preventScroll: true }); modalReturnFocus = undefined;
+}
+function showNotes(notes, modal = false) {
+  const prefix = modal ? 'update-modal-' : 'update-';
+  replaceList($(modal ? 'update-modal-notes' : 'update-notes-list'), notes?.summary ?? []);
+  $(`${prefix}notes-link`).hidden = !notes?.url;
+  if (notes?.url) $(`${prefix}notes-link`).href = notes.url;
+  if (modal) $('update-modal-notes-fallback').hidden = !notes?.error;
+  else $('update-notes-fallback').hidden = !notes?.error;
+}
+async function loadReleaseNotes(version) {
+  if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(version ?? '')) return null;
+  if (!notesCache.has(version)) notesCache.set(version, request(`/api/release-notes?version=${encodeURIComponent(version)}`)
+    .then(value => { notesCache.set(version, value); return value; }, error => {
+      notesCache.delete(version); return { version, summary: null, error: error.message || '暂时无法读取更新说明' };
+    }));
+  const notes = await notesCache.get(version);
+  if (current?.updates?.available && current.updates.policy?.stable === version) {
+    $('update-notes').hidden = false; showNotes(notes);
+  }
+  return notes;
+}
+async function openUpdateModal(version, currentVersion, returnFocus = document.activeElement) {
+  const generation = ++notesGeneration;
+  modalVersion = version;
+  $('update-modal-title').textContent = `更新到 ${modalVersion}`;
+  $('update-modal-detail').textContent = `当前版本 ${currentVersion}，目标版本 ${modalVersion}。安装期间连接会短暂中断，本页面会自动重新连接。`;
+  showNotes({}, true);
+  $('update-confirmation').hidden = false;
+  modalReturnFocus = returnFocus;
+  const shell = document.querySelector('.app-shell'); shell.inert = true; shell.setAttribute('aria-hidden', 'true');
+  updateModalAvailability();
+  $('update-later').focus();
+  const notes = await loadReleaseNotes(version);
+  if (generation !== notesGeneration || modalVersion !== version || current?.updates?.policy?.stable !== version) return;
+  showNotes(notes, true);
+}
 async function request(path, body) {
   // Safari 15 (included with supported macOS 12) lacks AbortSignal.timeout.
   // One standard controller also lets successful requests release their timer.
@@ -54,7 +119,7 @@ async function request(path, body) {
       headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error ?? '本地控制请求失败');
+    if (!response.ok) throw Object.assign(new Error(result.error ?? '本地控制请求失败'), { status: response.status });
     return result;
   } catch (error) {
     // Losing the HTTP response does not cancel the controller transaction.
@@ -62,12 +127,36 @@ async function request(path, body) {
     if (signal.aborted) throw new Error(body
       ? '请求超时，操作结果尚未确认。请查看当前状态与日志，确认后再重试。'
       : '读取状态超时，请检查本地控制器。');
-    if (body && error.name === 'TypeError') throw new Error('本地连接中断，操作结果尚未确认。请查看当前状态与日志。');
+    if (body && error.name === 'TypeError') throw Object.assign(new Error('本地连接中断，操作结果尚未确认。请查看当前状态与日志。'), { transport: true });
     throw error;
   } finally { clearTimeout(timer); }
 }
 function render(state) {
+  const knownInstance = sessionStorage.getItem('tds-control-instance');
+  if (knownInstance && state.controlInstance && knownInstance !== state.controlInstance) {
+    sessionStorage.setItem('tds-control-instance', state.controlInstance);
+    location.reload(); return;
+  }
+  if (state.controlInstance) sessionStorage.setItem('tds-control-instance', state.controlInstance);
   current = state;
+  transportError = undefined;
+  const installation = state.updates?.installation;
+  if (['installing', 'awaiting-authorization', 'waiting-restart'].includes(installation?.status)) {
+    const deadline = Number.isFinite(installation.startedAt) ? installation.startedAt + RECONNECT_LIMIT : Date.now() + RECONNECT_LIMIT;
+    if (deadline <= Date.now()) {
+      reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY); reconnectTimedOutVersion = installation.version;
+      clientError = `等待 ${installation.version} 重新启动已超时，请检查安装结果后重试`;
+    } else if ((!reconnecting || reconnecting.version !== installation.version) && reconnectTimedOutVersion !== installation.version) {
+      reconnecting = { version: installation.version, deadline };
+      sessionStorage.setItem(RECONNECT_KEY, JSON.stringify(reconnecting));
+    }
+  } else if (['failed', 'expired'].includes(installation?.status)) {
+    reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY);
+  } else if ((!installation || installation.status === 'installed') && reconnecting?.version === state.version) {
+    reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY);
+    if (reconnectTimedOutVersion === state.version) { reconnectTimedOutVersion = undefined; clientError = undefined; }
+    temporaryNotice(`已更新到 ${state.version}，连接已恢复`);
+  }
   document.body.dataset.clientState = state.activity ? 'busy' : state.status;
   const setup = state.accessKeyMode === 'setup';
   const windowsSetup = setup && state.platform === 'win32';
@@ -130,10 +219,18 @@ function render(state) {
   if (updates?.policy?.minimumSupported && !updates.required) updateDetails.push(`最低支持 ${updates.policy.minimumSupported} · ${new Date(updates.policy.enforceAfter).toLocaleString()} 生效`);
   if (updates?.available && updates.automaticResult?.deferred) updateDetails.push(updates.automaticResult.message);
   if (updates?.lastInstall && updates.lastInstall.exitCode !== 0) updateDetails.push('上次安装未完成，请重新更新或运行固定下载站的安装包。');
+  if (updates?.installation?.status === 'installing') updateDetails.push(`正在安装 ${updates.installation.version}，等待服务重新连接`);
+  if (updates?.installation?.status === 'awaiting-authorization') updateDetails.push(`正在等待系统授权安装 ${updates.installation.version}`);
+  if (updates?.installation?.status === 'waiting-restart') updateDetails.push(`安装器已完成，等待 ${updates.installation.version} 启动确认`);
+  if (updates?.installation?.status === 'failed') updateDetails.push(`安装 ${updates.installation.version} 未完成，可重新检查后重试`);
+  if (updates?.installation?.status === 'expired') updateDetails.push(updates.installation.message);
   $('update-detail').textContent = updateDetails.join(' · ');
+  $('update-notes').hidden = !updates?.available;
+  if (updates?.available && activeView === 'updates') void loadReleaseNotes(updates.policy.stable);
   $('update-auto').checked = updates?.automatic !== false;
   $('update-check').disabled = submitting || state.busy || state.exiting;
-  $('update-apply').disabled = submitting || state.busy || state.exiting || !updates?.available;
+  const installationBusy = ['installing', 'awaiting-authorization', 'waiting-restart'].includes(updates?.installation?.status);
+  $('update-apply').disabled = submitting || state.busy || state.exiting || !updates?.available || installationBusy;
   $('update-auto').disabled = submitting || state.busy || state.exiting;
   $('summary').textContent = state.summary.replace(/^Team DevSpace /, '');
   $('checked-at').textContent = state.checkedAt ? `本机检查：${new Date(state.checkedAt).toLocaleTimeString()}${state.gatewayCheckedAt ? ` · 服务端检查：${new Date(state.gatewayCheckedAt).toLocaleTimeString()}` : ''}` : '尚未完成状态检查';
@@ -195,29 +292,51 @@ function render(state) {
     // The request stays pending while lifecycle work runs. Polling must still
     // render controller progress rather than freeze on the initial placeholder.
     if (state.activity || state.alert) feedback(state.alert ?? state.activity, Boolean(state.alert));
-  } else feedback(clientError ?? state.alert ?? state.activity ?? state.notice, Boolean(clientError ?? state.alert));
+  } else feedback(clientError ?? transportError ?? state.alert ?? state.activity ?? clientNotice ?? state.notice, Boolean(clientError ?? transportError ?? state.alert));
+  if (modalVersion && (!updates?.available || updates.policy?.stable !== modalVersion)) closeUpdateModal();
+  else if (modalVersion) updateModalAvailability();
 }
-async function refresh() {
-  if (polling) return;
-  polling = true;
-  try { render(await request('/api/state')); }
-  catch (error) {
-    feedback(`${error.message}。若应用已退出，请重新启动并从托盘打开控制中心。`, true);
-    $('connection').textContent = '本地控制器不可用';
-    $('connection').dataset.state = 'stopped';
-    $('feedback').dataset.busy = 'false';
-    $('feedback').setAttribute('aria-busy', 'false');
-    for (const button of document.querySelectorAll('button')) button.disabled = true;
-  } finally { polling = false; }
+function refresh(force = false) {
+  if (refreshTask) return force ? refreshTask.then(() => refresh(true)) : refreshTask;
+  refreshTask = (async () => {
+    try { render(await request('/api/state')); }
+    catch (error) {
+      transportError = error.message;
+      if (error.status === 401) { reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY); }
+      if (reconnecting && reconnecting.deadline > Date.now() && error.status !== 401) {
+        feedback(`正在安装 ${reconnecting.version}，等待 Team DevSpace 重新启动并自动连接…`);
+        $('connection').textContent = '正在安装，等待重新连接'; $('connection').dataset.state = 'busy';
+        $('feedback').dataset.busy = 'true'; $('feedback').setAttribute('aria-busy', 'true');
+      } else {
+        if (reconnecting && reconnecting.deadline <= Date.now()) {
+          reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY);
+          transportError = '等待更新重启已超时，请从系统托盘重新打开控制中心并检查安装结果';
+        }
+        feedback(`${transportError}。若应用已退出，请重新启动并从托盘打开控制中心。`, true);
+        $('connection').textContent = '本地控制器不可用'; $('connection').dataset.state = 'stopped';
+        $('feedback').dataset.busy = 'false'; $('feedback').setAttribute('aria-busy', 'false');
+      }
+      for (const id of ['remote', 'restart', 'repair', 'check', 'overview-check', 'save-project', 'save-key', 'edit-key',
+        'choose-folder', 'setup-submit', 'setup-choose-folder', 'logs', 'diagnostics', 'update-check', 'update-apply', 'update-confirm']) {
+        $(id).disabled = true;
+      }
+    }
+  })().finally(() => { refreshTask = undefined; });
+  return refreshTask;
 }
+
 async function action(name, input = {}) {
   if (submitting) return;
   submitting = true; activeAction = name; clientError = undefined;
   if (current) render(current);
   feedback(name === 'choose-folder' || (name === 'project-root' && input.projectRoot === undefined)
     ? '正在打开目录选择窗口…' : '正在处理，请稍候…');
+  let result;
   try {
-    const result = await request('/api/action', { action: name, ...input });
+    result = await request('/api/action', { action: name, ...input });
+    if (name === 'update-apply' && result.updateOutcome?.state !== 'handed-off') {
+      reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY);
+    }
     if (name === 'choose-folder' && result.projectRoot) {
       $('project-root').value = result.projectRoot;
       $('setup-project-root').value = result.projectRoot;
@@ -229,8 +348,15 @@ async function action(name, input = {}) {
       keyEditorOpen = false;
     }
     if (['project-root', 'setup'].includes(name)) rootEdited = false;
-  } catch (error) { clientError = error.message; feedback(clientError, true); }
-  finally { submitting = false; activeAction = undefined; await refresh(); }
+  } catch (error) {
+    if (name === 'update-apply' && error.transport && reconnecting) feedback(`正在安装 ${reconnecting.version}，等待服务重新连接…`);
+    else {
+      if (name === 'update-apply') { reconnecting = null; sessionStorage.removeItem(RECONNECT_KEY); }
+      clientError = error.message; feedback(clientError, true);
+    }
+  }
+  finally { submitting = false; activeAction = undefined; await refresh(true); }
+  return result;
 }
 $('project-root').addEventListener('input', () => { rootEdited = true; if (current) render(current); });
 $('setup-access-key').addEventListener('input', () => { if (current) render(current); });
@@ -244,9 +370,40 @@ for (const item of document.querySelectorAll('[data-view-target]')) item.addEven
 $('remote').addEventListener('click', () => action(current.remoteAction));
 $('edit-key').addEventListener('click', () => { keyEditorOpen = true; if (current) render(current); $('access-key').focus(); });
 $('cancel-key').addEventListener('click', () => { clearSensitiveDrafts(); if (current) render(current); });
-$('update-check').addEventListener('click', () => action('update-check'));
-$('update-apply').addEventListener('click', () => {
-  if (confirm('更新会短暂重启连接，保留设备绑定、项目目录和暂停状态。继续吗？')) action('update-apply');
+async function manualUpdateCheck() {
+  const generation = ++notesGeneration;
+  const result = await action('update-check');
+  const checked = result?.updateCheck;
+  if (!checked?.available || checked.error || !checked.targetVersion || generation !== notesGeneration) return;
+  if (!current?.updates?.available || current.updates.policy?.stable !== checked.targetVersion) return;
+  notesCache.delete(checked.targetVersion);
+  await openUpdateModal(checked.targetVersion, current.version, $('update-check'));
+}
+$('update-check').addEventListener('click', () => void manualUpdateCheck());
+$('update-apply').addEventListener('click', () => current?.updates?.available &&
+  void openUpdateModal(current.updates.policy.stable, current.version, $('update-apply')));
+$('update-later').addEventListener('click', closeUpdateModal);
+$('update-confirm').addEventListener('click', () => {
+  if (!modalVersion) return;
+  if ($('update-confirm').disabled) return;
+  const version = modalVersion; closeUpdateModal();
+  reconnecting = { version, deadline: Date.now() + RECONNECT_LIMIT };
+  sessionStorage.setItem(RECONNECT_KEY, JSON.stringify(reconnecting));
+  action('update-apply', { version });
+});
+$('update-confirmation').addEventListener('click', event => { if (event.target === $('update-confirmation')) closeUpdateModal(); });
+document.addEventListener('keydown', event => {
+  if ($('update-confirmation').hidden) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeUpdateModal(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = [...$('update-confirmation').querySelectorAll('button:not(:disabled),a[href]:not([hidden])')];
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (!$('update-confirmation').contains(document.activeElement)) {
+    event.preventDefault(); (event.shiftKey ? last : first).focus(); return;
+  }
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 });
 $('update-auto').addEventListener('change', () => action('update-auto', { enabled: $('update-auto').checked }));
 for (const name of ['restart', 'check', 'repair', 'logs']) $(name).addEventListener('click', () => action(name));

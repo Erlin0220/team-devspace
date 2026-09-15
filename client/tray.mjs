@@ -18,7 +18,7 @@ export async function runTray(home = stateHome(), options = {}) {
     env: { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: await trayInstanceId(home) },
   });
   let closed = false, visible = false, duplicate = false, exiting = false, ready = false;
-  let controlSurface, opening, shutdownTimer, unsubscribe;
+  let controlSurface, controlStarting, controlStartError, opening, shutdownTimer, unsubscribe;
   const requireVisible = options.requireVisible ?? (process.platform === 'darwin' && !options.helper);
   const startupTimer = requireVisible ? setTimeout(() => {
     if (!visible && !duplicate && !closed) child.kill();
@@ -29,10 +29,19 @@ export async function runTray(home = stateHome(), options = {}) {
   const send = state => {
     if (!closed && !child.stdin.destroyed && child.stdin.writable) child.stdin.write(`${JSON.stringify(state)}\n`);
   };
+  const ensureControlSurface = () => {
+    if (!controlStarting) controlStarting = (options.startLocalControl ?? startLocalControl)(controller, { home })
+      .then(value => (controlSurface = value), error => {
+        controlStartError = error;
+        if (!closed) child.kill();
+        throw error;
+      });
+    return controlStarting;
+  };
   const openSettings = section => {
     if (opening) return opening;
     opening = (async () => {
-      controlSurface ??= await (options.startLocalControl ?? startLocalControl)(controller);
+      await ensureControlSurface();
       await controlSurface.open(section);
     })().finally(() => { opening = undefined; });
     return opening;
@@ -66,6 +75,7 @@ export async function runTray(home = stateHome(), options = {}) {
       const event = JSON.parse(line);
       if (event.event === 'ready' && !ready) {
         ready = true;
+        void ensureControlSurface().catch(() => {});
         unsubscribe = controller.subscribe(send);
         controller.start();
         if (options.openSettings) void openSettings().catch(error => {
@@ -82,12 +92,14 @@ export async function runTray(home = stateHome(), options = {}) {
       child.once('error', reject);
       child.once('exit', (code, signal) => { closed = true; resolve({ code, signal }); });
     });
+    if (controlStartError) throw controlStartError;
     if (requireVisible && !visible && !duplicate) throw new Error('Native macOS tray exited before its menu bar item became visible');
     if (!exiting && (exit.signal || exit.code !== 0)) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
   } finally {
     closed = true; clearTimeout(startupTimer); clearTimeout(shutdownTimer); unsubscribe?.(); lines.close();
     await controller.dispose();
     await opening?.catch(() => {});
+    await controlStarting?.catch(() => {});
     await controlSurface?.close();
   }
 }

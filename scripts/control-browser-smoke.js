@@ -112,6 +112,7 @@ async (page) => {
       });
       await updatePage.goto(`${url.split('/').slice(0, 3).join('/')}/updates#${capability}`);
       await settled(updatePage);
+      check(await updatePage.locator('#update-confirmation').isHidden(), 'background discovery never opens the confirmation modal');
       check(await updatePage.locator('#update-state-icon').getAttribute('data-state') === expected.state,
         `update UI renders ${expected.state} state icon`);
       check((await updatePage.locator('#update-version').textContent()) === expected.badge,
@@ -124,6 +125,70 @@ async (page) => {
         `update action availability matches ${expected.state}`);
       await updatePage.close();
     }
+
+    const origin = new URL(url).origin;
+    const sibling = await context.newPage();
+    await sibling.goto(origin + '/updates#' + capability); await settled(sibling);
+    await p.goto(origin + '/updates#' + capability); await settled();
+    check(await p.locator('#update-confirmation').isHidden(), 'opening Updates does not treat background state as a manual check');
+    // Hold a pre-check snapshot until the action response has arrived. The
+    // initiating page must await a fresh read instead of losing its modal.
+    let releaseOldPoll, markOldPoll, holdOldPoll = true;
+    const oldPollReleased = new Promise(resolve => { releaseOldPoll = resolve; });
+    const oldPollCaptured = new Promise(resolve => { markOldPoll = resolve; });
+    await p.route('**/api/state', async route => {
+      if (!holdOldPoll) return route.continue();
+      holdOldPoll = false;
+      const response = await route.fetch(), json = await response.json();
+      markOldPoll(); await oldPollReleased; await route.fulfill({ response, json });
+    });
+    await p.bringToFront();
+    await Promise.race([oldPollCaptured, p.waitForTimeout(6000).then(() => { throw new Error('Status poll was not captured'); })]);
+    const checkedResponse = p.waitForResponse(response => response.url().endsWith('/api/action'));
+    await p.locator('#update-check').click(); await checkedResponse;
+    await p.waitForTimeout(100); releaseOldPoll();
+    await p.locator('#update-confirmation').waitFor({ state: 'visible' });
+    await p.unroute('**/api/state');
+    check(true, 'manual discovery survives an overlapping stale status response');
+    await p.waitForFunction(() => document.querySelectorAll('#update-modal-notes li').length === 2);
+    check((await p.locator('#update-modal-detail').textContent()).includes('当前版本 0.2.5') &&
+      (await p.locator('#update-modal-detail').textContent()).includes('目标版本 0.2.6'), 'manual discovery modal correlates current and target versions');
+    check(await p.locator('#update-modal-notes li').count() === 2, 'manual discovery modal renders bounded key notes as text');
+    await sibling.waitForTimeout(1700);
+    check(await sibling.locator('#update-confirmation').isHidden(), 'a manual check never opens a modal in another tab');
+    await p.locator('#update-confirm').focus(); await p.keyboard.press('Tab');
+    check(await p.evaluate(() => document.activeElement.id === 'update-modal-notes-link'), 'Tab stays inside the confirmation dialog');
+    await p.keyboard.press('Shift+Tab');
+    check(await p.evaluate(() => document.activeElement.id === 'update-confirm'), 'reverse Tab stays inside the confirmation dialog');
+    await p.screenshot({ path: 'control-update-modal-desktop.png', fullPage: true });
+    await p.setViewportSize({ width: 390, height: 844 });
+    check(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'update modal fits a narrow viewport');
+    await p.screenshot({ path: 'control-update-modal-mobile.png', fullPage: true });
+    await p.setViewportSize({ width: 1100, height: 900 });
+    await p.locator('#update-later').click();
+    check(await p.locator('#update-confirmation').isHidden(), 'Later closes the modal without installing');
+    check(await p.evaluate(() => document.activeElement.id === 'update-check'), 'closing the modal restores focus to its trigger');
+
+    const notesFailure = await context.newPage();
+    await notesFailure.route('**/api/release-notes?*', route => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ version: '0.2.6', summary: null, error: 'Temporary notes failure',
+        url: 'https://downloads.568920429.xyz/releases/0.2.6/release-notes.txt' }) }));
+    await notesFailure.goto(origin + '/updates#' + capability); await settled(notesFailure);
+    await notesFailure.locator('#update-apply').click();
+    await notesFailure.locator('#update-modal-notes-fallback').waitFor({ state: 'visible' });
+    check(await notesFailure.locator('#update-confirm').isEnabled(), 'notes failure does not block a confirmed update');
+    check((await notesFailure.locator('#update-modal-notes-link').getAttribute('href')).includes('/0.2.6/release-notes.txt'), 'notes failure preserves the complete versioned release-notes link');
+    await notesFailure.locator('#update-later').click(); await notesFailure.close();
+
+    await p.locator('#update-apply').click(); await p.locator('#update-confirmation').waitFor({ state: 'visible' });
+    await p.locator('#update-confirm').click(); await settled();
+    check((await p.locator('#feedback').textContent()).includes('已取消软件更新'), 'cancelled handoff returns to the same page without stale installing state');
+    await p.locator('#update-check').click(); await settled();
+    check(await p.locator('#update-confirmation').isHidden(), 'manual latest-version result never opens the modal');
+    check((await p.locator('#feedback').textContent()).includes('当前已是最新版本'), 'manual latest-version result uses a temporary notice');
+    await p.waitForFunction(() => document.querySelector('#feedback').hidden, {}, { timeout: 9000 });
+    check(await p.locator('#feedback').isHidden(), 'latest-version feedback really disappears while normal polling continues');
+    await sibling.close();
 
     check(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'desktop layout has no horizontal overflow');
     await p.screenshot({ path: 'control-center-desktop.png', fullPage: true });

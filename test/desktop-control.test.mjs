@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest, createServer } from 'node:http';
 import { createDesktopController } from '../client/desktop-controller.mjs';
-import { startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
+import { CONTROL_UI_PORT, startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
 import { diagnosticReport, stopTeamDevSpace } from '../client/control.mjs';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
@@ -15,25 +15,18 @@ const paused = { ready: false, devspace: false, bridge: false, tunnel: false, ga
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
 
-test('Control Center binds browser-safe ports and retries occupied ports without leaking listeners', async t => {
+test('Control Center uses one fixed loopback port and reports collisions without random fallback', async t => {
   const blocker = createServer(), server = createServer((_request, response) => response.end('reachable'));
   const listeningHandlers = server.listenerCount('listening'); // Node HTTP owns a connection-tracking listener.
   t.after(() => { blocker.close(); blocker.closeAllConnections(); server.close(); server.closeAllConnections(); });
-  await listenOnBrowserPort(blocker);
+  await listenOnBrowserPort(blocker, 0);
   const occupied = blocker.address().port;
-  assert.ok(occupied >= 49152 && occupied <= 65535, 'Do not inherit a host ephemeral range containing Fetch-blocked ports');
-  let attempts = 0;
-  await listenOnBrowserPort(server, () => 49152 + ((occupied - 49152 + attempts++) % 16384));
-  assert.ok(attempts >= 2, 'The first candidate was actually occupied');
-  assert.equal(server.address().address, '127.0.0.1');
-  assert.equal(await (await fetch(`http://127.0.0.1:${server.address().port}`)).text(), 'reachable');
+  assert.equal(CONTROL_UI_PORT, 53682);
+  await assert.rejects(listenOnBrowserPort(server, occupied), error =>
+    error.code === 'EADDRINUSE' && error.port === occupied && /端口.*无法使用/.test(error.message));
+  assert.equal(server.listening, false, 'A collision must not silently bind a different port');
   assert.equal(server.listenerCount('error'), 0);
   assert.equal(server.listenerCount('listening'), listeningHandlers);
-  const exhausted = createServer(); let rejected = 0;
-  const originalHandlers = exhausted.listenerCount('error') + exhausted.listenerCount('listening');
-  await assert.rejects(listenOnBrowserPort(exhausted, () => { rejected++; return occupied; }), { code: 'EADDRINUSE' });
-  assert.equal(rejected, 16, 'Contention is bounded, never an infinite startup wait');
-  assert.equal(exhausted.listenerCount('error') + exhausted.listenerCount('listening'), originalHandlers);
 });
 
 test('Control Center bounds stalled requests without retrying an uncertain mutation', async t => {
@@ -224,12 +217,16 @@ test('unconfigured desktop can exit but corrupt state is not silently accepted',
 });
 
 test('loopback Control Center protects reads and writes against cross-origin, rebinding and missing capability', async t => {
-  const calls = [];
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-security-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const calls = []; let notesReads = 0;
   const controller = createDesktopController('unused', { operations: { status: async () => healthy,
     diagnostics: async () => ({ remoteAccess: 'active' }), logs: async () => calls.push('logs'),
+    'update-check': async () => ({ available: true, required: false, error: null, policy: { stable: '0.2.6' } }),
+    'release-notes': async ({ version }) => { notesReads++; return { version, summary: ['安全文本'], url: `https://downloads.test/releases/${version}/release-notes.txt` }; },
     'choose-folder': async () => '/selected-project',
     'project-root': async ({ projectRoot }) => { calls.push(projectRoot); return healthy; } } });
-  const ui = await startLocalControl(controller, { openBrowser: async () => {} });
+  const ui = await startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 });
   t.after(async () => { await ui.close(); await controller.dispose(); });
   const url = new URL(ui.url), base = url.origin, authorization = `Bearer ${url.hash.slice(1)}`;
   const api = (path, options = {}) => fetch(base + path, { ...options, headers: { Authorization: authorization, ...options.headers } });
@@ -242,6 +239,7 @@ test('loopback Control Center protects reads and writes against cross-origin, re
   assert.equal(logo.headers.get('content-type'), 'image/png');
   assert.ok((await logo.arrayBuffer()).byteLength > 0, 'The shared Control Center product logo is bundled with the client');
   assert.equal((await fetch(base + '/api/state')).status, 401);
+  assert.equal((await fetch(base + '/api/token')).status, 401, 'There is no unauthenticated capability endpoint');
   assert.equal((await api('/api/state', { headers: { Origin: 'https://evil.example' } })).status, 403);
   // Fetch normalizes Host; use a real raw HTTP request to exercise rebinding.
   const forgedHost = await new Promise((resolve, reject) => {
@@ -252,6 +250,11 @@ test('loopback Control Center protects reads and writes against cross-origin, re
   assert.equal(forgedHost, 403);
   assert.equal((await api('/api/state', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
   assert.equal((await api('/api/state')).status, 200);
+  assert.equal((await fetch(base + '/api/release-notes?version=0.2.6')).status, 401);
+  assert.equal((await api('/api/release-notes?version=../latest')).status, 400);
+  const notes = await (await api('/api/release-notes?version=0.2.6')).json();
+  assert.deepEqual(notes.summary, ['安全文本']); assert.equal(notes.version, '0.2.6');
+  await api('/api/release-notes?version=0.2.6'); assert.equal(notesReads, 1, 'Immutable notes are cached by version');
   const post = (body, headers = {}) => api('/api/action', { method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   assert.equal((await post({ action: 'logs' }, { Origin: 'https://evil.example' })).status, 403);
   assert.equal((await post({ action: 'exit' })).status, 400);
@@ -259,10 +262,42 @@ test('loopback Control Center protects reads and writes against cross-origin, re
   assert.equal((await post({ action: 'logs', projectRoot: 'x'.repeat(9000) })).status, 413);
   assert.equal((await post({ action: 'switch-key', accessKey: 'tds_short' })).status, 400);
   assert.equal((await post({ action: 'logs' })).status, 200);
+  const checked = await (await post({ action: 'update-check' })).json();
+  assert.deepEqual(checked.updateCheck, { available: true, required: false, targetVersion: '0.2.6', error: null });
   assert.deepEqual(calls, ['logs']);
   assert.equal((await api('/api/diagnostics')).status, 200);
   assert.equal((await fetch(base + '/diagnostics')).status, 200);
   assert.equal((await post({ action: 'project-root', projectRoot: '' })).status, 400);
   assert.equal((await post({ action: 'project-root' })).status, 200);
   assert.deepEqual(calls, ['logs', '/selected-project'], 'A pathless authorized request performs selection and one actual change');
+});
+
+test('private Control Center capability survives restart while the instance identity changes', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-restart-'));
+  const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
+  t.after(async () => { await controller.dispose(); await rm(home, { recursive: true, force: true }); });
+  const first = await startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 });
+  const firstUrl = new URL(first.url), authorization = { Authorization: `Bearer ${firstUrl.hash.slice(1)}` };
+  const firstState = await (await fetch(`${firstUrl.origin}/api/state`, { headers: authorization })).json();
+  const port = Number(firstUrl.port); await first.close();
+  const second = await startLocalControl(controller, { openBrowser: async () => {}, home, port });
+  t.after(() => second.close());
+  const secondUrl = new URL(second.url);
+  assert.equal(secondUrl.hash, firstUrl.hash, 'An already-open page keeps its private capability across normal restart');
+  assert.equal(secondUrl.origin, firstUrl.origin, 'The fixed origin is reusable after the old server closes');
+  const secondState = await (await fetch(`${secondUrl.origin}/api/state`, { headers: authorization })).json();
+  assert.notEqual(secondState.controlInstance, firstState.controlInstance, 'A restarted app forces stale assets to reload');
+  assert.equal((await fetch(`${secondUrl.origin}/api/state`)).status, 401);
+});
+
+test('concurrent first Control Center starts read the atomic capability winner', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-capability-race-'));
+  const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
+  const surfaces = [];
+  t.after(async () => { await Promise.all(surfaces.map(surface => surface.close())); await controller.dispose();
+    await rm(home, { recursive: true, force: true }); });
+  surfaces.push(...await Promise.all([startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 }),
+    startLocalControl(controller, { openBrowser: async () => {}, home, port: 0 })]));
+  assert.equal(new URL(surfaces[0].url).hash, new URL(surfaces[1].url).hash);
+  assert.match((await readFile(join(home, 'control-capability.json'), 'utf8')), /"schema": 1/);
 });

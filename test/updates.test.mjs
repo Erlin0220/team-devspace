@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import { boundedJson, compareVersions, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from '../client/update-policy.mjs';
-import { applyUpdate, checkForUpdates, downloadVerifiedPackage, setAutomaticUpdates, updateStatus } from '../client/updates.mjs';
+import { applyUpdate, checkForUpdates, downloadVerifiedPackage, fetchReleaseNotes, releaseNotesUrl, setAutomaticUpdates, updateStatus } from '../client/updates.mjs';
 import { atomicJson, RELEASE_VERSION } from '../client/state.mjs';
 import { updateTestCatalog, updateTestBytes, updateTestPublicKey, signUpdateFixture } from './update-fixture.mjs';
 
@@ -61,6 +61,20 @@ test('signed catalogs bind all package bytes, target identities and release vers
 test('metadata reader rejects oversized and unsuccessful responses', async () => {
   await assert.rejects(boundedJson(new Response('x'.repeat(65537))), /size limit/);
   await assert.rejects(boundedJson(new Response('redirect', { status: 302 })), /HTTP 302/);
+});
+
+test('release notes use only the fixed versioned distribution URL and remain strictly bounded', async () => {
+  const requests = [];
+  const notes = await fetchReleaseNotes(NEXT_VERSION, { fetcher: async (url, options) => {
+    requests.push({ url, options }); return new Response('# 0.2.6\n- 修复更新重连\n- 保留设备身份\n\n更多细节');
+  } });
+  assert.equal(requests[0].url, releaseNotesUrl(NEXT_VERSION));
+  assert.deepEqual(notes.summary, ['修复更新重连', '保留设备身份']);
+  assert.match(notes.url, new RegExp(`/releases/${NEXT_VERSION}/release-notes\\.txt$`));
+  assert.ok(requests[0].options.signal, 'Release notes have their own deadline');
+  assert.throws(() => releaseNotesUrl('../latest'), /Invalid/);
+  await assert.rejects(fetchReleaseNotes(NEXT_VERSION, { limit: 8, fetcher: async () => new Response('123456789') }), /size limit/);
+  await assert.rejects(fetchReleaseNotes(NEXT_VERSION, { fetcher: async () => new Response('missing', { status: 404 }) }), /unavailable/);
 });
 
 test('checks persist jittered deadlines across restarts and upgrade forces fresh version reporting', async t => {
@@ -136,4 +150,19 @@ test('installed versions never automatically downgrade or execute an unsigned up
   }
   let calls = 0;
   await assert.rejects(applyUpdate(home, { fetcher: async () => Response.json(++calls === 1 ? policy() : nextCatalog()), handoff: noHandoff }), /Signed update metadata/);
+});
+
+test('manual apply installs only the exact confirmed version and handles no-change or cancellation without a stale attempt', async t => {
+  const home = await temporary(t), catalog = nextCatalog(), signed = await signUpdateFixture(catalog);
+  let handoffs = 0;
+  const fetcher = async url => url.endsWith('/v1/update-policy') ? Response.json(policy())
+    : url.endsWith('/update.json') ? Response.json(signed) : new Response(updateTestBytes);
+  const common = { fetcher, publicKey: updateTestPublicKey, distributionRoot: async () => home };
+  await assert.rejects(applyUpdate(home, { ...common, confirmedVersion: '0.2.7', handoff: () => { handoffs++; } }), /版本已变化/);
+  assert.equal(handoffs, 0);
+  assert.equal((await applyUpdate(home, { ...common, confirmedVersion: RELEASE_VERSION, handoff: () => { handoffs++; } })).changed, false);
+  const cancelled = await applyUpdate(home, { ...common, confirmedVersion: NEXT_VERSION,
+    handoff: async () => ({ cancelled: true }) });
+  assert.equal(cancelled.cancelled, true); assert.equal(handoffs, 0);
+  assert.equal((await updateStatus(home)).installation, null);
 });

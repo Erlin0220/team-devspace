@@ -119,7 +119,8 @@ test('native startup keeps tray separate from runtime and never embeds credentia
 test('macOS tray startup requires actual visibility, not merely process readiness', { timeout: 3000 }, async () => {
   await assert.rejects(runTray('unused', { helper: process.execPath,
     helperArgs: ['-e', "console.log(JSON.stringify({event:'ready'}));process.stdin.resume()"], requireVisible: true,
-    startupTimeout: 150, operations: { status: async () => null } }), /became visible/);
+    startupTimeout: 150, operations: { status: async () => null },
+    startLocalControl: async () => ({ open: async () => {}, close: async () => {} }) }), /became visible/);
 });
 
 test('diagnostic redaction removes employee and bearer credentials', () => {

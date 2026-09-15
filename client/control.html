@@ -142,6 +142,10 @@
         <div><h3 id="update-description" role="status">尚未检查软件更新</h3><p id="update-detail" class="hint">版本检查不会中断正在执行的远程请求。</p></div>
         <div class="update-actions"><button id="update-check" class="secondary">检查更新</button><button id="update-apply" disabled>更新并重新连接</button></div>
       </article>
+      <div id="update-notes" class="settings-group release-notes" hidden>
+        <div class="release-notes-heading"><strong>本次更新要点</strong><a id="update-notes-link" target="_blank" rel="noopener noreferrer">查看完整更新说明 ↗</a></div>
+        <ul id="update-notes-list"></ul><p id="update-notes-fallback" class="hint" hidden>暂时无法读取更新说明；这不会阻止检查或安装已签名的更新。</p>
+      </div>
       <label class="settings-group switch-row" for="update-auto"><div><h3>自动更新</h3><p>自动安装管理员已批准的版本；保留设备绑定、Access Key、项目目录和暂停状态。</p></div><span class="switch-control"><input id="update-auto" type="checkbox"><span aria-hidden="true"></span></span></label>
       <div class="settings-group policy-details"><strong>更新策略说明</strong><p class="hint">低频检查，不打断正在执行的远程请求。macOS 安装仍需系统授权。关闭自动更新不会取消企业最低支持版本要求。</p></div>
     </section>
@@ -169,6 +173,17 @@
       </article>
     </section>
   </main>
+</div>
+<div id="update-confirmation" class="modal-backdrop" hidden>
+  <section class="update-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title" aria-describedby="update-modal-detail">
+    <span class="update-checkmark" data-state="available" aria-hidden="true"></span>
+    <div><h2 id="update-modal-title">软件更新可用</h2><p id="update-modal-detail" class="hint"></p>
+      <ul id="update-modal-notes" class="modal-notes"></ul>
+      <p id="update-modal-notes-fallback" class="hint" hidden>暂时无法读取更新说明；这不会阻止安装已签名的更新。</p>
+      <a id="update-modal-notes-link" target="_blank" rel="noopener noreferrer">查看完整更新说明 ↗</a>
+    </div>
+    <div class="modal-actions"><button id="update-later" class="secondary">稍后</button><button id="update-confirm">更新并重新连接</button></div>
+  </section>
 </div>
 </body>
 </html>

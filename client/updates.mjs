@@ -8,7 +8,7 @@ import lockfile from 'proper-lockfile';
 import { atomicJson, installRoot, loadState, privateDirectory, readJson, RELEASE_VERSION, stateHome } from './state.mjs';
 import { withDeviceOperation } from './operation.mjs';
 import { runWindowsDesktop } from './windows-desktop.mjs';
-import { boundedJson, compareVersions, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from './update-policy.mjs';
+import { boundedJson, compareVersions, UPDATE_VERSION, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from './update-policy.mjs';
 import { DOWNLOAD_TARGETS, packageUrls } from './release-catalog.mjs';
 import { pruneUpdateCache } from './update-cache.mjs';
 import { buildUpdateReport } from './update-report.mjs';
@@ -20,17 +20,71 @@ const FAILURE_INTERVAL = 60 * 60 * 1000;
 const BUSY_INTERVAL = 10 * 60 * 1000;
 const request = (url, options = {}) => fetch(url, { redirect: 'error', signal: AbortSignal.timeout(20000), ...options });
 const updateDirectory = home => join(home, 'updates');
+const NOTES_LIMIT = 16 * 1024;
+
+export function releaseNotesUrl(version) {
+  if (!UPDATE_VERSION.test(version ?? '')) throw new Error('Invalid release notes version');
+  return `${release.distribution.origin}/releases/${version}/release-notes.txt`;
+}
+
+export async function fetchReleaseNotes(version, { fetcher = request, signal, limit = NOTES_LIMIT } = {}) {
+  const url = releaseNotesUrl(version);
+  const deadline = AbortSignal.timeout(5000);
+  const response = await fetcher(url, { headers: { Accept: 'text/plain', 'Accept-Encoding': 'identity' },
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
+  if (response.status !== 200 || !response.body) { await response.body?.cancel(); throw new Error('Release notes unavailable'); }
+  const declared = Number(response.headers.get('Content-Length'));
+  if (Number.isFinite(declared) && declared > limit) { await response.body.cancel(); throw new Error('Release notes exceed size limit'); }
+  const chunks = []; let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.byteLength;
+    if (size > limit) throw new Error('Release notes exceed size limit');
+    chunks.push(chunk);
+  }
+  const lines = textLines(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+  const meaningful = line => line && !/^(?:changes?|release notes?|更新说明|更新日志|版本\s*)[:：]?\s*v?\d*(?:\.\d+)*$/i.test(line) &&
+    !/^v?\d+\.\d+\.\d+$/.test(line);
+  const bullets = lines.filter(line => /^\s*(?:[-*+]\s+|\d+[.)]\s+)/.test(line))
+    .map(line => line.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '').trim()).filter(meaningful);
+  const fallback = lines.map(line => line.trim()).filter(line => line && !/^#{1,6}\s/.test(line) &&
+    meaningful(line));
+  const summary = (bullets.length ? bullets : fallback).filter(Boolean).slice(0, 4).map(line => line.slice(0, 180));
+  return { version, summary, url };
+}
+
+function textLines(text) { return text.split(/\r?\n/); }
 
 export async function updateStatus(home = stateHome()) {
   const directory = updateDirectory(home);
-  const [cache, settings, lastInstall, automaticResult] = await Promise.all([
+  const [cache, settings, lastInstall, automaticResult, attempt] = await Promise.all([
     readJson(join(directory, 'check.json'), {}), readJson(join(directory, 'settings.json'), { automatic: true }),
     readJson(join(directory, 'result.json'), null), readJson(join(directory, 'automatic-result.json'), null),
+    readJson(join(directory, 'attempt.json'), null),
   ]);
+  const matchingResult = attempt && lastInstall?.version === attempt.version &&
+    (!attempt.attemptId || lastInstall.attemptId === attempt.attemptId);
+  const currentAttemptResult = matchingResult ? lastInstall : null;
+  const expired = attempt && (!Number.isFinite(attempt.startedAt) || Date.now() - attempt.startedAt >= FAILURE_INTERVAL);
+  // This is a pure projection. Only an actual matching result or a different
+  // sourceVersion now running at the attempted target can prove completion.
+  const runningTarget = attempt?.version === RELEASE_VERSION && attempt.sourceVersion &&
+    attempt.sourceVersion !== RELEASE_VERSION;
+  const installation = !attempt ? null
+    : currentAttemptResult?.exitCode !== undefined && currentAttemptResult.exitCode !== 0
+      ? { status: 'failed', version: attempt.version, startedAt: attempt.startedAt }
+    : runningTarget || (currentAttemptResult?.exitCode === 0 && attempt.version === RELEASE_VERSION)
+      ? { status: 'installed', version: attempt.version, startedAt: attempt.startedAt }
+    : expired
+      ? { status: 'expired', version: attempt.version, startedAt: attempt.startedAt,
+        message: '上次安装等待已结束；请确认系统安装器已关闭，再重新检查并确认更新。' }
+    : currentAttemptResult?.exitCode === 0
+      ? { status: 'waiting-restart', version: attempt.version, startedAt: attempt.startedAt }
+      : { status: attempt.phase === 'awaiting-authorization' ? 'awaiting-authorization' : 'installing',
+        version: attempt.version, startedAt: attempt.startedAt };
   return { ...cache, currentVersion: RELEASE_VERSION, automatic: settings.automatic === true, lastInstall, automaticResult,
     available: Boolean(cache.policy && compareVersions(cache.policy.stable, RELEASE_VERSION) > 0),
     required: Boolean(cache.policy && versionUnsupported(RELEASE_VERSION, cache.policy)),
-    requiresAuthorization: process.platform === 'darwin' };
+    requiresAuthorization: process.platform === 'darwin', installation };
 }
 
 export async function setAutomaticUpdates(enabled, home = stateHome()) {
@@ -206,8 +260,11 @@ Start-ScheduledTask -TaskName $env:TDS_UPDATE_TASK
 
 export async function applyUpdate(home = stateHome(), { automatic = false, repair = false, fetcher = request, onProgress = () => {},
   handoff = handoffInstaller, distributionRoot = installedDistributionRoot, publicKey = release.distribution.updatePublicKey,
-  signal, canApply = () => true } = {}) {
+  signal, canApply = () => true, confirmedVersion } = {}) {
   if (repair && automatic) throw new Error('Software repair requires an explicit user request');
+  if (confirmedVersion !== undefined && (automatic || repair || !UPDATE_VERSION.test(confirmedVersion))) {
+    throw new Error('Invalid confirmed update version');
+  }
   const baseFetcher = fetcher;
   if (signal) fetcher = (url, options = {}) => baseFetcher(url, { ...options,
     signal: AbortSignal.any([signal, options.signal ?? AbortSignal.timeout(20000)]) });
@@ -222,13 +279,17 @@ export async function applyUpdate(home = stateHome(), { automatic = false, repai
     const completed = await readJson(join(directory, 'result.json'), null);
     const matchingResult = completed && completed.version === previous?.version &&
       (!previous?.attemptId || completed.attemptId === previous.attemptId);
-    if (previous && !matchingResult && Date.now() - previous.startedAt < FAILURE_INTERVAL) {
+    const alreadyInstalled = previous?.version === RELEASE_VERSION && previous.sourceVersion &&
+      previous.sourceVersion !== RELEASE_VERSION;
+    if (previous && !matchingResult && !alreadyInstalled && Date.now() - previous.startedAt < FAILURE_INTERVAL) {
       throw Object.assign(new Error('安装器已启动，请完成系统安装操作；未启动时可在一小时后重试。'),
         { code: 'installer_pending', version: previous.version });
     }
     // Always re-read authoritative policy before execution, even after a cached notification.
     const policy = validateUpdatePolicy(await boundedJson(await fetcher(`${release.gateway}/v1/update-policy`)));
-    version = repair ? RELEASE_VERSION : automatic ? policy.auto : policy.stable;
+    if (confirmedVersion && compareVersions(confirmedVersion, RELEASE_VERSION) <= 0) return { changed: false, version: confirmedVersion };
+    if (confirmedVersion && policy.stable !== confirmedVersion) throw new Error('可用版本已变化，请重新检查并确认更新。');
+    version = repair ? RELEASE_VERSION : automatic ? policy.auto : confirmedVersion ?? policy.stable;
     if (!version || (!repair && compareVersions(version, RELEASE_VERSION) <= 0)) return { changed: false };
     if (automatic && !(await updateStatus(home)).automatic) return { changed: false };
     const target = await updateTarget();
@@ -261,15 +322,20 @@ export async function applyUpdate(home = stateHome(), { automatic = false, repai
         onProgress('已验证更新，正在交给安装器；连接将短暂重启…');
         await rm(join(directory, 'result.json'), { force: true });
         const attemptId = randomUUID();
-        await atomicJson(join(directory, 'attempt.json'), { version, startedAt: Date.now(), attemptId });
+        const attempt = { version, sourceVersion: RELEASE_VERSION, repair, startedAt: Date.now(), attemptId, phase: 'starting' };
+        await atomicJson(join(directory, 'attempt.json'), attempt);
         const result = await handoff(file, version, home, root, { attemptId });
-        // A cancelled macOS authorization window must not pause remote access.
-        // macOS is user-confirmed installation, never unattended activation.
-        if (process.platform === 'darwin') {
+        if (result?.cancelled) {
           if (drained) await updateBridge(state, 'DELETE').catch(() => {});
           await rm(join(directory, 'attempt.json'), { force: true });
+          return { ...result, version };
         }
-        return result;
+        await atomicJson(join(directory, 'attempt.json'), { ...attempt,
+          phase: result?.requiresAuthorization ? 'awaiting-authorization' : 'installing' });
+        // Native macOS authorization happens after open(1) returns. Do not keep
+        // remote admission paused while the user reads or cancels Installer UI.
+        if (process.platform === 'darwin' && drained) await updateBridge(state, 'DELETE').catch(() => {});
+        return { ...result, version };
       } catch (error) {
         if (drained) await updateBridge(state, 'DELETE').catch(() => {});
         // Ambiguous task-start failures keep the short-lived attempt guard; inspect

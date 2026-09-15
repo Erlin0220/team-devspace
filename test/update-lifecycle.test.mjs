@@ -134,6 +134,20 @@ test('a stale result from another attempt cannot authorize a duplicate installer
   await assert.rejects(applyUpdate(home, { ...options, handoff: () => assert.fail('Duplicate installer') }), { code: 'installer_pending' });
 });
 
+test('existing attempt facts project installing, failure and successful new-startup restoration', async t => {
+  const home = await temporary(t), directory = join(home, 'updates'); await mkdir(directory);
+  await atomicJson(join(directory, 'attempt.json'), { version: futureVersion, startedAt: Date.now(), attemptId: 'pending', phase: 'installing' });
+  assert.deepEqual((await updateStatus(home)).installation.status, 'installing');
+  await atomicJson(join(directory, 'result.json'), { version: futureVersion, attemptId: 'pending', exitCode: 7 });
+  assert.deepEqual((await updateStatus(home)).installation.status, 'failed');
+  await atomicJson(join(directory, 'attempt.json'), { version: RELEASE_VERSION, sourceVersion: '0.2.4',
+    startedAt: Date.now(), attemptId: 'restarted', phase: 'installing' });
+  await rm(join(directory, 'result.json'));
+  const restored = await updateStatus(home);
+  assert.equal(restored.installation.status, 'installed');
+  assert.equal((await readJson(join(directory, 'attempt.json'), null)).attemptId, 'restarted', 'Status projection is read-only');
+});
+
 test('same-version repair is explicit, signed, and cannot become an automatic downgrade', async t => {
   const home = await temporary(t), options = await applyOptions(home, RELEASE_VERSION); let calls = 0;
   const handoff = async (_file, version, _home, _root, { attemptId }) => {
@@ -143,6 +157,16 @@ test('same-version repair is explicit, signed, and cannot become an automatic do
   await assert.rejects(applyUpdate(home, { ...options, repair: true, automatic: true, handoff }), /explicit user/);
   assert.equal((await applyUpdate(home, { ...options, repair: true, handoff })).handedOff, true);
   assert.equal(calls, 1);
+});
+
+test('a proven already-running historical target does not block the next exact upgrade', async t => {
+  const home = await temporary(t), options = await applyOptions(home); let handoffs = 0;
+  await atomicJson(join(home, 'updates/attempt.json'), { version: RELEASE_VERSION, sourceVersion: '0.2.4',
+    startedAt: Date.now(), attemptId: 'previous-upgrade', phase: 'installing' });
+  const result = await applyUpdate(home, { ...options, confirmedVersion: futureVersion,
+    handoff: async (_file, version) => { handoffs++; return { handedOff: true, version }; } });
+  assert.equal(result.version, futureVersion); assert.equal(handoffs, 1);
+  assert.equal((await readJson(join(home, 'updates/attempt.json'))).version, futureVersion);
 });
 
 test('server Retry-After controls background retry within a bounded day, not an unbounded freeze', async t => {

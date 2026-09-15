@@ -6,7 +6,7 @@ import { desktopErrorText, macProgress } from './desktop.mjs';
 import { stateHome } from './state.mjs';
 import { desktopState } from './desktop-state.mjs';
 import { createGatewayStatusProbe } from './gateway-status.mjs';
-import { updateStatus, checkForUpdates, applyUpdate, setAutomaticUpdates, startUpdateChecks } from './updates.mjs';
+import { updateStatus, checkForUpdates, applyUpdate, fetchReleaseNotes, releaseNotesUrl, setAutomaticUpdates, startUpdateChecks } from './updates.mjs';
 export { desktopState } from './desktop-state.mjs';
 
 const ACTIVITY = {
@@ -40,16 +40,36 @@ export function createDesktopController(home = stateHome(), options = {}) {
     'choose-folder': ({ signal, projectRoot }) => promptProjectRoot(projectRoot, { signal, home }),
     logs: () => openLogs(home), diagnostics: () => diagnosticReport(home),
     'update-check': ({ signal }) => checkForUpdates(home, { force: true, signal }),
-    'update-apply': ({ onProgress, signal }) => applyUpdate(home, { onProgress, signal }),
+    'release-notes': async ({ version, signal }) => {
+      try { return await fetchReleaseNotes(version, { signal }); }
+      catch { return { version, summary: null, url: releaseNotesUrl(version), error: '暂时无法读取更新说明' }; }
+    },
+    'update-apply': ({ onProgress, signal, confirmedVersion }) => applyUpdate(home, { onProgress, signal, confirmedVersion }),
     'update-auto': ({ enabled }) => setAutomaticUpdates(enabled, home),
     exit: () => stopTeamDevSpace(home),
   };
-  let status = null, local = {}, activity = '正在启动…', notice, failure, probeFailure;
+  let status = null, local = {}, activity = '正在启动…', notice, failure, probeFailure, noticeTimer;
   let revision = 0, pending = null, refreshPromise = null, closing = false, disposed = false, interval;
-  let started = false, checkedAt = null, refreshForced = false, updates = null, stopUpdates;
-  const refreshUpdates = async () => { if (!options.operations) { updates = await updateStatus(home).catch(() => null); publish(); } };
+  let started = false, checkedAt = null, refreshForced = false, updates = null, stopUpdates, failureAction;
+  const clearNotice = () => { clearTimeout(noticeTimer); noticeTimer = undefined; notice = undefined; };
+  const setNotice = (message, persistent = false) => {
+    clearNotice(); notice = message;
+    if (!message || persistent) return;
+    noticeTimer = setTimeout(() => { noticeTimer = undefined; notice = undefined; publish(); }, options.noticeTtl ?? 6000);
+    noticeTimer.unref?.();
+  };
+  const refreshUpdates = async (generation = revision) => {
+    if (!options.operations) {
+      const value = await updateStatus(home).catch(() => null);
+      if (value && generation === revision && !disposed) {
+        updates = value;
+      }
+      publish();
+    }
+  };
   const listeners = new Set();
   const utilities = new Map();
+  const releaseNotesCache = new Map();
   let prompts = new AbortController();
   const snapshot = () => ({ ...desktopState(status, { ...local, busy: Boolean(pending) || utilities.has('choose-folder') || closing,
     exiting: closing, activity: !closing && utilities.has('choose-folder') ? '正在选择项目目录…' : activity,
@@ -72,7 +92,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
     }, error => {
       if (generation === revision && !disposed) { status = null; probeFailure = desktopErrorText(error); }
     }).finally(async () => {
-      await refreshUpdates();
+      await refreshUpdates(generation);
       refreshPromise = null;
       if (generation === revision && !disposed) { activity = undefined; publish(); }
     });
@@ -81,11 +101,16 @@ export function createDesktopController(home = stateHome(), options = {}) {
   const dispatch = async (action, input = {}) => {
     if (disposed || closing) throw Object.assign(new Error('正在退出 Team DevSpace'), { status: 409 });
     if (action === 'check') {
-      if (!pending) { notice = undefined; activity = '正在检查连接…'; publish(); }
+      const generation = revision;
+      if (!pending) { clearNotice(); activity = '正在检查连接…'; publish(); }
       await refresh(true);
-      if (!pending && !closing) {
+      if (generation === revision && !pending && !closing) {
         activity = undefined;
-        notice = snapshot().status === 'ready' ? '连接检查完成，一切正常' : '连接检查完成，请查看当前状态';
+        if ((snapshot().status === 'ready' && ['resume', 'restart', 'repair'].includes(failureAction)) ||
+            (failureAction === 'suspend' && status?.gateway === 'suspended' && status?.desiredRemoteAccess === 'suspended')) {
+          failure = undefined; failureAction = undefined;
+        }
+        setNotice(snapshot().status === 'ready' ? '连接检查完成，一切正常' : '连接检查完成，请查看当前状态');
         publish();
       }
       return snapshot();
@@ -100,25 +125,37 @@ export function createDesktopController(home = stateHome(), options = {}) {
         await operations.exit();
         return { stopped: true };
       } catch (error) {
-        closing = false; activity = undefined; failure = `关闭 Team DevSpace失败：${desktopErrorText(error)}`;
+        closing = false; activity = undefined; failureAction = 'exit'; failure = `关闭 Team DevSpace失败：${desktopErrorText(error)}`;
         publish(); throw error;
       }
+    }
+    if (action === 'release-notes') {
+      const notes = operations[action] ?? (async ({ version, signal }) => {
+        try { return await fetchReleaseNotes(version, { signal }); }
+        catch { return { version, summary: null, url: releaseNotesUrl(version), error: '暂时无法读取更新说明' }; }
+      });
+      if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(input.version ?? '')) throw Object.assign(new Error('更新版本无效'), { status: 400 });
+      if (!releaseNotesCache.has(input.version) && releaseNotesCache.size >= 4) releaseNotesCache.delete(releaseNotesCache.keys().next().value);
+      if (!releaseNotesCache.has(input.version)) releaseNotesCache.set(input.version,
+        Promise.resolve().then(() => notes({ ...input, signal: prompts.signal })));
+      return releaseNotesCache.get(input.version);
     }
     if (['logs', 'diagnostics', 'choose-folder'].includes(action)) {
       if (!operations[action]) throw new Error('不支持的操作');
       if (utilities.has(action)) return utilities.get(action);
-      if (action === 'choose-folder') { failure = undefined; notice = undefined; }
+      if (action === 'choose-folder') { failure = undefined; clearNotice(); }
       if (prompts.signal.aborted) prompts = new AbortController();
       const task = Promise.resolve().then(() => operations[action]({ ...input, signal: prompts.signal }))
-        .then(result => { if (action === 'logs' && !closing) notice = '已打开日志目录'; return result; })
-        .catch(error => { failure = desktopErrorText(error); publish(); throw error; })
+        .then(result => { if (action === 'logs' && !closing) setNotice('已打开日志目录'); return result; })
+        .catch(error => { failureAction = action; failure = desktopErrorText(error); publish(); throw error; })
         .finally(() => { utilities.delete(action); publish(); });
       utilities.set(action, task); publish();
       return task;
     }
     if (!Object.hasOwn(ACTIVITY, action) || !operations[action]) throw Object.assign(new Error('未知控制操作'), { status: 400 });
     if (pending || utilities.has('choose-folder')) throw Object.assign(new Error('已有操作正在进行，请等待完成'), { status: 409 });
-    revision++; gatewayStatus.invalidate(); failure = undefined; notice = undefined; activity = ACTIVITY[action];
+    revision++; gatewayStatus.invalidate(); failure = undefined; failureAction = undefined; clearNotice(); activity = ACTIVITY[action];
+    if (action === 'update-check') releaseNotesCache.clear();
     pending = Promise.resolve().then(async () => {
       let parameters = input;
       // Selecting a replacement is one controller operation. Cancellation never
@@ -127,7 +164,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
         activity = '正在选择项目目录…'; publish();
         const projectRoot = await dispatch('choose-folder', { projectRoot: status?.currentProjectRoot ?? local.currentProjectRoot });
         if (!projectRoot || closing || prompts.signal.aborted) {
-          if (!closing) notice = '已取消更换项目目录';
+          if (!closing) setNotice('已取消更换项目目录');
           return { cancelled: true };
         }
         parameters = { ...input, projectRoot };
@@ -136,7 +173,9 @@ export function createDesktopController(home = stateHome(), options = {}) {
       const result = await operations[action]({ ...parameters, signal: prompts.signal,
         onProgress: message => { if (!closing) { activity = macProgress(message); publish(); } } });
       await readLocal();
-      if (action.startsWith('update-')) await refreshUpdates();
+      if (action === 'update-check') {
+        updates = result;
+      } else if (action.startsWith('update-')) await refreshUpdates();
       if (!closing) {
         try {
           // An Enrollment acknowledgement is not a runtime health snapshot.
@@ -144,12 +183,21 @@ export function createDesktopController(home = stateHome(), options = {}) {
             ? result : await operations.status({ forceGateway: true });
           probeFailure = undefined;
         } catch (error) { status = null; probeFailure = desktopErrorText(error); }
-        if (!result?.cancelled) notice = action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action];
+        if (action === 'update-apply') {
+          if (result?.cancelled) setNotice('已取消软件更新');
+          else if (result?.handedOff) setNotice(result.requiresAuthorization
+            ? '系统安装器已打开，正在等待授权或安装；本页面会在服务恢复后自动重新连接'
+            : '系统安装器已启动，正在安装并等待服务重新连接');
+          else if (result?.deferred) setNotice(result.message ?? '更新已准备，将在本机空闲后继续');
+          else setNotice('当前没有需要安装的新版本');
+        } else if (action === 'update-check') {
+          if (!result?.available && !result?.error && result?.checkedAt && result?.policy?.stable) setNotice('当前已是最新版本');
+        } else if (!result?.cancelled) setNotice(action === 'project-root' && result?.changed === false ? '项目目录未更改' : SUCCESS[action]);
         checkedAt = new Date().toISOString();
       }
       return result;
     }).catch(async error => {
-      failure = desktopErrorText(error); publish();
+      failureAction = action; failure = desktopErrorText(error); publish();
       // A failed operation may still persist a safety intent or partial binding.
       await readLocal().catch(() => {});
       if (!closing) {
@@ -178,7 +226,7 @@ export function createDesktopController(home = stateHome(), options = {}) {
       interval.unref();
     },
     async dispose() {
-      disposed = true; clearInterval(interval); stopUpdates?.(); prompts.abort(); listeners.clear();
+      disposed = true; clearInterval(interval); clearTimeout(noticeTimer); stopUpdates?.(); prompts.abort(); listeners.clear();
       await pending?.catch(() => {});
     },
   };
