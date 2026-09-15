@@ -29,7 +29,7 @@ Windows/macOS 托盘的“软件更新…”进入现有本机设置页；用户
 
 手动检查发现新版本时，本机设置页读取固定下载源 `/releases/<version>/release-notes.txt` 的有界摘要并自动打开确认框；完整说明仍直接链接下载源，读取失败不阻止签名更新。后台发现只更新入口提示，不弹确认框；检查操作本身永不安装。确认绑定当次目标版本，下载完成后若 stable 已变化则要求重新检查，不能静默安装另一个版本。
 
-本机 WebUI 固定使用 `127.0.0.1:53682`，冲突明确报错且不随机换端口。私有 capability 由既有状态目录跨正常升级保存，仍只经 URL fragment 交付；新托盘实例启动后沿用同一受保护页面，页面在 Installer 导致的计划内离线期间显示等待，并在服务恢复时按新实例标识重新载入资源。Host、Origin、Fetch Site、Authorization 与 CSP 校验保持不变，不提供 token 读取接口。
+Local WebUI listens on loopback only. `53682` is the preferred first port; the selected port is persisted in private `control-endpoint.json` and reused across normal restarts/upgrades. A short-lived old owner is retried for a bounded period, while a persistent collision migrates to a browser-safe high port and stores the new endpoint. If an existing endpoint migrates, rotate its local capability and open the new Control Center; the abandoned origin must not keep a credential accepted by the new endpoint. Control Center port/assets/browser failures affect only that auxiliary surface and must not terminate Tray, Runtime, Bridge, or Tunnel. The private capability still survives normal upgrades and is delivered only through the URL fragment; Host, Origin, Fetch Site, Authorization and CSP checks remain unchanged.
 
 检查间隔为 6–7 小时，带随机抖动并持久化，调度器按这个 deadline 唤醒，而不是在缓存命中后重新加上 6 小时。检查失败至少等待一小时；429/503 的有效 `Retry-After` 可以延长后台等待，但最多 24 小时。失败缓存也记录当前运行版本，首次失败或升级后失败不会因为重启绕过退避。时钟回拨或安装版本变化会使旧检查缓存失效。退出会取消在途检查（含手动检查）和下载，不写入假失败。绑定及恢复请求同时上报版本，不需要追加高频心跳。Windows/macOS 使用现有桌面控制器；Linux 使用现有运行进程，暂停/退出后没有额外后台 daemon，仍可手动更新。
 

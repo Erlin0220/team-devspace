@@ -161,6 +161,22 @@ test('Admin Web requires a valid Access JWT, escapes D1 fields, omits secrets an
   assert.ok(!lifecycleAdmin.includes('<th>清理状态</th>'));
 });
 
+test('Admin Web keeps key management available when optional audit history is unavailable', async t => {
+  stubAccessKeys(t);
+  const fixture = webService();
+  fixture.service.listKeyEvents = async () => { throw new Error('synthetic audit outage'); };
+  const originalWarn = console.warn; const warnings = []; console.warn = value => warnings.push(value);
+  t.after(() => { console.warn = originalWarn; });
+  const response = await adminWeb(new Request('https://team.example.test/admin', { headers: await accessHeaders() }), accessEnv(), fixture.service);
+  const html = await response.text();
+  assert.equal(response.status, 200);
+  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'), 'Core key rows remain available');
+  assert.ok(html.includes('\u6700\u8fd1\u64cd\u4f5c\u8bb0\u5f55\u6682\u65f6\u4e0d\u53ef\u7528'));
+  assert.ok(html.includes('\u8bbf\u95ee\u5bc6\u94a5\u4e0e\u8bbe\u5907\u7ba1\u7406\u4e0d\u53d7\u5f71\u54cd'));
+  assert.equal(warnings.length, 1);
+  assert.ok(!warnings[0].includes('synthetic audit outage'), 'Provider details are not copied into logs');
+});
+
 test('Admin Web accepts only same-origin hash-only POSTs and never performs lifecycle actions through GET', async t => {
   stubAccessKeys(t);
   const fixture = webService();

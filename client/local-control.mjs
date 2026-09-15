@@ -1,14 +1,17 @@
 import { createServer } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { desktopErrorText } from './desktop.mjs';
 import { atomicJson, randomSecret, readJson, secureStateDirectory, stateHome } from './state.mjs';
 
-export const CONTROL_UI_PORT = 53682;
+export const CONTROL_UI_PREFERRED_PORT = 53682;
+const CONTROL_UI_FALLBACK_MIN = 49152;
+const CONTROL_UI_FALLBACK_MAX = 65535;
 
 const ASSETS = { '/': ['control.html', 'text/html; charset=utf-8'],
   '/diagnostics': ['control.html', 'text/html; charset=utf-8'],
@@ -52,9 +55,8 @@ export async function openControlBrowser(url) {
   }
 }
 
-// Production uses one documented browser-safe loopback port. Tests may inject
-// port 0, but a production collision is explicit and never falls back randomly.
-export async function listenOnBrowserPort(server, port = CONTROL_UI_PORT) {
+// Exact bind primitive. Production chooses and persists a preferred endpoint separately.
+export async function listenOnBrowserPort(server, port = CONTROL_UI_PREFERRED_PORT) {
   try {
     await new Promise((resolve, reject) => {
       const cleanup = () => { server.removeListener('error', failed); server.removeListener('listening', ready); };
@@ -72,18 +74,71 @@ export async function listenOnBrowserPort(server, port = CONTROL_UI_PORT) {
   }
 }
 
+function validControlPort(value) {
+  return Number.isInteger(value) && value >= CONTROL_UI_FALLBACK_MIN && value <= CONTROL_UI_FALLBACK_MAX;
+}
+
+async function readControlEndpoint(path) {
+  try {
+    const value = await readJson(path, null);
+    return value?.schema === 1 && validControlPort(value.port) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function listenOnPersistentControlPort(server, home, {
+  preferredPort = CONTROL_UI_PREFERRED_PORT, retryAttempts = 12, retryDelayMs = 250, legacyEndpointExpected = false,
+  chooseFallbackPort = () => randomInt(CONTROL_UI_FALLBACK_MIN, CONTROL_UI_FALLBACK_MAX + 1),
+} = {}) {
+  const previous = await readControlEndpoint(join(home, 'control-endpoint.json'));
+  const requested = previous?.port ?? preferredPort;
+  let lastError;
+  for (let attempt = 0; attempt < retryAttempts; attempt++) {
+    try {
+      await listenOnBrowserPort(server, requested);
+      return { port: server.address().port, migratedFrom: null };
+    } catch (error) {
+      if (error.code === 'EACCES') { lastError = error; break; }
+      if (error.code !== 'EADDRINUSE') throw error;
+      lastError = error;
+      if (attempt + 1 < retryAttempts) await sleep(retryDelayMs);
+    }
+  }
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const candidate = chooseFallbackPort();
+    if (!validControlPort(candidate) || candidate === requested) continue;
+    try {
+      await listenOnBrowserPort(server, candidate);
+      const actual = server.address().port;
+      return { port: actual, migratedFrom: previous?.port ?? (legacyEndpointExpected ? requested : null) };
+    } catch (error) {
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
+      lastError = error;
+    }
+  }
+  throw Object.assign(new Error('Control Center could not find an available loopback port', { cause: lastError }),
+    { code: lastError?.code ?? 'control_port_unavailable' });
+}
+
+async function rotateControlCapability(home) {
+  const token = randomSecret();
+  await atomicJson(join(home, 'control-capability.json'), { schema: 1, token });
+  return token;
+}
+
 async function controlCapability(home) {
   await secureStateDirectory(home);
   const path = join(home, 'control-capability.json');
   const existing = await readJson(path, null);
   if (existing !== null) {
-    if (existing?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(existing.token ?? '')) return existing.token;
+    if (existing?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(existing.token ?? '')) return { token: existing.token, existing: true };
     throw new Error('本机控制中心 capability 凭据无效；请从受信任的安装恢复本机状态。');
   }
   const token = randomSecret();
-  if (await atomicJson(path, { schema: 1, token }, { createOnly: true })) return token;
+  if (await atomicJson(path, { schema: 1, token }, { createOnly: true })) return { token, existing: false };
   const winner = await readJson(path);
-  if (winner?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(winner.token ?? '')) return winner.token;
+  if (winner?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.test(winner.token ?? '')) return { token: winner.token, existing: true };
   throw new Error('本机控制中心 capability 凭据无效；请从受信任的安装恢复本机状态。');
 }
 
@@ -91,11 +146,12 @@ async function controlCapability(home) {
 // Its private capability survives a normal upgrade so the same already-open page
 // can reconnect; the capability is only delivered in a URL fragment.
 export async function startLocalControl(controller, { openBrowser = openControlBrowser, home = stateHome(),
-  port = CONTROL_UI_PORT, capability } = {}) {
-  const token = capability ?? await controlCapability(home);
+  port, capability, preferredPort = CONTROL_UI_PREFERRED_PORT, portRetryAttempts, portRetryDelayMs, chooseFallbackPort } = {}) {
+  const resolvedCapability = capability === undefined ? await controlCapability(home) : { token: capability, existing: true };
+  let token = resolvedCapability.token;
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Invalid local Control Center capability');
   const instanceId = randomUUID();
-  const authorization = Buffer.from(`Bearer ${token}`);
+  let authorization = Buffer.from(`Bearer ${token}`);
   const assets = new Map(await Promise.all(Object.entries(ASSETS).map(async ([path, [file, type]]) =>
     [path, { bytes: await readFile(new URL(file, import.meta.url)), type }])));
   let origin;
@@ -167,10 +223,29 @@ export async function startLocalControl(controller, { openBrowser = openControlB
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   server.on('clientError', (_error, socket) => socket.destroy());
-  await listenOnBrowserPort(server, port);
+  let endpoint;
+  try {
+    endpoint = port === undefined
+      ? await listenOnPersistentControlPort(server, home, { preferredPort, retryAttempts: portRetryAttempts,
+        retryDelayMs: portRetryDelayMs, chooseFallbackPort, legacyEndpointExpected: resolvedCapability.existing })
+      : (await listenOnBrowserPort(server, port), { port: server.address().port, migratedFrom: null });
+    if (endpoint.migratedFrom && capability === undefined) {
+      token = await rotateControlCapability(home);
+      authorization = Buffer.from(`Bearer ${token}`);
+    }
+    endpoint.persisted = port === undefined
+      ? await atomicJson(join(home, 'control-endpoint.json'), { schema: 1, port: endpoint.port }).then(() => true, () => false)
+      : false;
+  } catch (error) {
+    if (server.listening) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(() => resolve()));
+    }
+    throw error;
+  }
   origin = `http://127.0.0.1:${server.address().port}`;
   return {
-    url: `${origin}/#${token}`,
+    url: `${origin}/#${token}`, port: endpoint.port, migratedFrom: endpoint.migratedFrom, endpointPersisted: endpoint.persisted,
     open: section => openBrowser(`${origin}/${['diagnostics', 'about', 'updates'].includes(section) ? section : ''}#${token}`),
     close: () => new Promise((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());

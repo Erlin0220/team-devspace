@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest, createServer } from 'node:http';
 import { createDesktopController } from '../client/desktop-controller.mjs';
-import { CONTROL_UI_PORT, startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
+import { CONTROL_UI_PREFERRED_PORT, startLocalControl, listenOnBrowserPort } from '../client/local-control.mjs';
 import { diagnosticReport, stopTeamDevSpace } from '../client/control.mjs';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
@@ -15,18 +15,74 @@ const paused = { ready: false, devspace: false, bridge: false, tunnel: false, ga
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function until(predicate) { for (let i = 0; i < 100; i++) { if (predicate()) return; await delay(10); } assert.fail('Condition did not settle'); }
 
-test('Control Center uses one fixed loopback port and reports collisions without random fallback', async t => {
-  const blocker = createServer(), server = createServer((_request, response) => response.end('reachable'));
-  const listeningHandlers = server.listenerCount('listening'); // Node HTTP owns a connection-tracking listener.
+test('Control Center persists its chosen loopback port, retries brief ownership, and migrates a real collision', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-port-'));
+  const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
+  const servers = [], surfaces = [];
+  const reserveFreePort = async () => {
+    const probe = createServer(); await listenOnBrowserPort(probe, 0);
+    const port = probe.address().port; await new Promise(resolve => probe.close(resolve)); return port;
+  };
+  t.after(async () => {
+    await Promise.all(surfaces.map(surface => surface.close().catch(() => {})));
+    for (const server of servers) { server.close(); server.closeAllConnections(); }
+    await controller.dispose(); await rm(home, { recursive: true, force: true });
+  });
+  assert.equal(CONTROL_UI_PREFERRED_PORT, 53682);
+  const blocker = createServer(); servers.push(blocker); await listenOnBrowserPort(blocker, 0);
+  const preferred = blocker.address().port, fallback = await reserveFreePort();
+  const first = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
+    portRetryDelayMs: 1, chooseFallbackPort: () => fallback, openBrowser: async () => {} });
+  surfaces.push(first);
+  assert.equal(first.port, fallback); assert.equal(first.migratedFrom, null); assert.equal(first.endpointPersisted, true);
+  const firstToken = new URL(first.url).hash;
+  assert.equal(JSON.parse(await readFile(join(home, 'control-endpoint.json'), 'utf8')).port, fallback);
+  await first.close(); surfaces.splice(surfaces.indexOf(first), 1);
+
+  const second = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
+    portRetryDelayMs: 1, chooseFallbackPort: () => { throw new Error('persisted port should be reused'); }, openBrowser: async () => {} });
+  surfaces.push(second); assert.equal(second.port, fallback); assert.equal(new URL(second.url).hash, firstToken);
+  await second.close(); surfaces.splice(surfaces.indexOf(second), 1);
+
+  const persistedBlocker = createServer(); servers.push(persistedBlocker); await listenOnBrowserPort(persistedBlocker, fallback);
+  const next = await reserveFreePort();
+  const third = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
+    portRetryDelayMs: 1, chooseFallbackPort: () => next, openBrowser: async () => {} });
+  surfaces.push(third);
+  assert.equal(third.port, next); assert.equal(third.migratedFrom, fallback);
+  assert.notEqual(new URL(third.url).hash, firstToken, 'Persistent port migration rotates the local capability');
+  assert.equal(JSON.parse(await readFile(join(home, 'control-endpoint.json'), 'utf8')).port, next);
+});
+
+test('legacy fixed-port capability migrates safely when the old 53682 origin cannot be reclaimed', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tds-control-legacy-port-'));
+  const controller = createDesktopController('unused', { operations: { status: async () => healthy } });
+  const blocker = createServer(); let surface;
+  t.after(async () => { await surface?.close().catch(() => {}); blocker.close(); blocker.closeAllConnections();
+    await controller.dispose(); await rm(home, { recursive: true, force: true }); });
+  await writeFile(join(home, 'control-capability.json'), JSON.stringify({ schema: 1, token: 'a'.repeat(43) }));
+  await listenOnBrowserPort(blocker, 0); const preferred = blocker.address().port;
+  const fallbackProbe = createServer(); await listenOnBrowserPort(fallbackProbe, 0); const fallback = fallbackProbe.address().port;
+  await new Promise(resolve => fallbackProbe.close(resolve));
+  surface = await startLocalControl(controller, { home, preferredPort: preferred, portRetryAttempts: 1,
+    portRetryDelayMs: 1, chooseFallbackPort: () => fallback, openBrowser: async () => {} });
+  assert.equal(surface.migratedFrom, preferred);
+  assert.equal(surface.port, fallback);
+  assert.notEqual(new URL(surface.url).hash, '#'+ 'a'.repeat(43), 'The abandoned fixed origin cannot reuse the migrated endpoint credential');
+  const migrated = new URL(surface.url);
+  assert.equal((await fetch(migrated.origin + '/api/state', { headers: { Authorization: 'Bearer ' + migrated.hash.slice(1) } })).status, 200);
+  assert.equal((await fetch(migrated.origin + '/api/state', { headers: { Authorization: 'Bearer ' + 'a'.repeat(43) } })).status, 401,
+    'The abandoned origin credential is rejected by the migrated endpoint');
+});
+
+test('the exact bind primitive reports a collision without leaking listeners', async t => {
+  const blocker = createServer(), server = createServer();
   t.after(() => { blocker.close(); blocker.closeAllConnections(); server.close(); server.closeAllConnections(); });
-  await listenOnBrowserPort(blocker, 0);
-  const occupied = blocker.address().port;
-  assert.equal(CONTROL_UI_PORT, 53682);
-  await assert.rejects(listenOnBrowserPort(server, occupied), error =>
-    error.code === 'EADDRINUSE' && error.port === occupied && /端口.*无法使用/.test(error.message));
-  assert.equal(server.listening, false, 'A collision must not silently bind a different port');
-  assert.equal(server.listenerCount('error'), 0);
-  assert.equal(server.listenerCount('listening'), listeningHandlers);
+  await listenOnBrowserPort(blocker, 0); const occupied = blocker.address().port;
+  const handlers = server.listenerCount('listening');
+  await assert.rejects(listenOnBrowserPort(server, occupied), { code: 'EADDRINUSE' });
+  assert.equal(server.listening, false); assert.equal(server.listenerCount('error'), 0);
+  assert.equal(server.listenerCount('listening'), handlers);
 });
 
 test('Control Center bounds stalled requests without retrying an uncertain mutation', async t => {

@@ -101,6 +101,29 @@ test('native adapter coalesces opening settings, ignores removed actions and sto
   assert.deepEqual(calls.filter(value => value !== 'settings'), ['logs', 'diagnostics', 'exit', 'close']);
 });
 
+test('Control Center failures stay isolated from the native tray and a later menu action can retry', { timeout: 5000 }, async () => {
+  const calls = []; let starts = 0;
+  const fake = `
+    console.log(JSON.stringify({event:'ready'}));
+    let sent=false;
+    process.stdin.on('data',()=>{if(sent)return;sent=true;
+      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'settings'})),50);
+      setTimeout(()=>console.log(JSON.stringify({event:'menu',action:'exit'})),150);
+    });
+    process.stdin.on('end',()=>process.exit(0));
+  `;
+  await runTray('unused', { helper: process.execPath, helperArgs: ['--input-type=module', '-e', fake],
+    operations: { status: async () => healthy, localState: async () => ({ accessKeyMode: 'replace-key' }),
+      exit: async () => { calls.push('exit'); } },
+    startLocalControl: async () => {
+      starts++; if (starts === 1) throw new Error('synthetic auxiliary WebUI failure');
+      return { open: async () => { calls.push('open'); }, close: async () => { calls.push('close'); throw new Error('synthetic close failure'); } };
+    },
+  });
+  assert.equal(starts, 2, 'A menu action retries the auxiliary WebUI after eager startup failed');
+  assert.deepEqual(calls, ['open', 'exit', 'close']);
+});
+
 test('native startup keeps tray separate from runtime and never embeds credentials', { skip: !['win32', 'darwin'].includes(process.platform) }, () => {
   const state = { deviceId: randomUUID(), deviceSecret: 'secret', ownerToken: 'x'.repeat(43), accessKey: 'tds_secret',
     ports: { devspace: 47670, bridge: 47770, metrics: 47870 } };

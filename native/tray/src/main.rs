@@ -119,26 +119,39 @@ impl Application {
     fn update(&mut self, state: TrayState) {
         let layout = state.entries().map(|item| format!("{}:{}:{}", item.id, item.separator, item.children.len())).collect::<Vec<_>>();
         if layout != self.layout {
-            let menu = Menu::new(); self.items.clear(); self.submenus.clear();
+            let menu = Menu::new();
+            let mut items = HashMap::new();
+            let mut submenus = HashMap::new();
+            let mut failed = false;
             for entry in &state.menu {
-                if entry.separator { menu.append(&PredefinedMenuItem::separator()).expect("separator"); }
-                else if !entry.children.is_empty() {
+                if entry.separator {
+                    failed |= menu.append(&PredefinedMenuItem::separator()).is_err();
+                } else if !entry.children.is_empty() {
                     let submenu = Submenu::new(bounded_text(&entry.text, 64), entry.enabled);
                     for child in &entry.children {
-                        if child.separator { submenu.append(&PredefinedMenuItem::separator()).expect("separator"); }
+                        if child.separator { failed |= submenu.append(&PredefinedMenuItem::separator()).is_err(); }
                         else {
                             let item = MenuItem::new(bounded_text(&child.text, 64), child.enabled, None);
-                            submenu.append(&item).expect("submenu item"); self.items.insert(child.id.clone(), item);
+                            if submenu.append(&item).is_err() { failed = true; }
+                            else { items.insert(child.id.clone(), item); }
                         }
                     }
-                    menu.append(&submenu).expect("submenu"); self.submenus.insert(entry.id.clone(), submenu);
+                    if menu.append(&submenu).is_err() { failed = true; }
+                    else { submenus.insert(entry.id.clone(), submenu); }
                 } else {
                     let item = MenuItem::new(bounded_text(&entry.text, 64), entry.enabled, None);
-                    menu.append(&item).expect("menu item"); self.items.insert(entry.id.clone(), item);
+                    if menu.append(&item).is_err() { failed = true; }
+                    else { items.insert(entry.id.clone(), item); }
                 }
             }
-            if let Some(tray) = &self.tray { tray.set_menu(Some(Box::new(menu))); }
-            self.layout = layout;
+            if failed {
+                eprintln!("Team DevSpace tray menu update failed; retaining the previous menu");
+            } else if let Some(tray) = &self.tray {
+                tray.set_menu(Some(Box::new(menu)));
+                self.items = items; self.submenus = submenus; self.layout = layout;
+            } else {
+                eprintln!("Team DevSpace tray menu is not ready; retaining the previous menu");
+            }
         }
         for entry in state.entries() {
             if let Some(item) = self.items.get(&entry.id) { item.set_text(bounded_text(&entry.text, 64)); item.set_enabled(entry.enabled); }

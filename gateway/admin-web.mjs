@@ -106,7 +106,8 @@ function eventText(value) {
     reset: '重置设备绑定', deleted: '删除吊销记录' })[value] ?? value;
 }
 
-function renderAudit(events) {
+function renderAudit(events, unavailable = false) {
+  if (unavailable) return `<section class="audit-section" aria-label="\u6700\u8fd1\u64cd\u4f5c\u8bb0\u5f55"><div class="audit-hint">\u6700\u8fd1\u64cd\u4f5c\u8bb0\u5f55\u6682\u65f6\u4e0d\u53ef\u7528\uff1b\u8bbf\u95ee\u5bc6\u94a5\u4e0e\u8bbe\u5907\u7ba1\u7406\u4e0d\u53d7\u5f71\u54cd\u3002</div></section>`;
   if (!events.length) return '';
   const rows = events.map(event => `<tr><td class="key-name">${escapeHtml(event.label)}</td>` +
     `<td>${escapeHtml(eventText(event.event))}</td>` +
@@ -153,7 +154,7 @@ function keyTable(rows, emptyText) {
     `<tbody>${rows || `<tr class="empty-row"><td colspan="5">${escapeHtml(emptyText)}</td></tr>`}</tbody></table></div>`;
 }
 
-export function renderAdmin(keys, events = []) {
+export function renderAdmin(keys, events = [], { auditUnavailable = false } = {}) {
   const activeKeys = keys.filter(key => key.state !== 'revoked' || key.cleanupPending);
   const revokedKeys = keys.filter(key => key.state === 'revoked' && !key.cleanupPending);
   const rows = activeKeys.map(renderKeyRow).join('');
@@ -173,7 +174,7 @@ export function renderAdmin(keys, events = []) {
     `<p id="notice" class="notice" role="alert" hidden></p>` +
     `<section class="table-card" aria-label="访问密钥列表">${keyTable(rows, revokedKeys.length ? '暂无有效或待处理的访问密钥' : '暂无访问密钥')}</section>` +
     revokedSection +
-    renderAudit(events) +
+    renderAudit(events, auditUnavailable) +
     `<dialog id="policy-dialog" aria-labelledby="policy-dialog-title"><article class="policy-dialog-card">` +
     `<header class="dialog-header"><div><h2 id="policy-dialog-title">编辑版本策略</h2>` +
     `<p>调整自动推广与最低支持版本，不会远程强制执行安装器。</p></div>` +
@@ -222,8 +223,13 @@ export async function adminWeb(request, env, service, updates) {
     return new Response(request.method === 'HEAD' ? null : asset.body, { status: asset.status, headers: output });
   }
   if ((pathname === '/admin' || pathname === '/admin/') && request.method === 'GET') {
-    const [keys, events] = await Promise.all([service.listKeys(), service.listKeyEvents(100)]);
-    return new Response(renderAdmin(keys, events), { headers: headers('text/html; charset=utf-8') });
+    const [keys, audit] = await Promise.all([service.listKeys(), service.listKeyEvents(100)
+      .then(events => ({ events, unavailable: false }), () => {
+        console.warn(JSON.stringify({ event: 'admin_audit_unavailable' }));
+        return { events: [], unavailable: true };
+      })]);
+    return new Response(renderAdmin(keys, audit.events, { auditUnavailable: audit.unavailable }),
+      { headers: headers('text/html; charset=utf-8') });
   }
   if (pathname === '/admin/update-policy' && updates) {
     if (request.method === 'GET') return json(await updates.read());

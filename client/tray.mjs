@@ -18,7 +18,7 @@ export async function runTray(home = stateHome(), options = {}) {
     env: { ...process.env, TEAM_DEVSPACE_TRAY_INSTANCE_ID: await trayInstanceId(home) },
   });
   let closed = false, visible = false, duplicate = false, exiting = false, ready = false;
-  let controlSurface, controlStarting, controlStartError, opening, shutdownTimer, unsubscribe;
+  let controlSurface, controlStarting, opening, shutdownTimer, unsubscribe;
   const requireVisible = options.requireVisible ?? (process.platform === 'darwin' && !options.helper);
   const startupTimer = requireVisible ? setTimeout(() => {
     if (!visible && !duplicate && !closed) child.kill();
@@ -30,12 +30,24 @@ export async function runTray(home = stateHome(), options = {}) {
     if (!closed && !child.stdin.destroyed && child.stdin.writable) child.stdin.write(`${JSON.stringify(state)}\n`);
   };
   const ensureControlSurface = () => {
+    if (controlSurface) return Promise.resolve(controlSurface);
     if (!controlStarting) controlStarting = (options.startLocalControl ?? startLocalControl)(controller, { home })
-      .then(value => (controlSurface = value), error => {
-        controlStartError = error;
-        if (!closed) child.kill();
+      .then(value => {
+        controlSurface = value;
+        if (value.endpointPersisted === false && value.port) {
+          process.stderr.write('[Team DevSpace desktop] Control Center endpoint could not be persisted; this run remains usable.\n');
+        }
+        if (value.migratedFrom) {
+          process.stderr.write(`[Team DevSpace desktop] Control Center moved from 127.0.0.1:${value.migratedFrom} to 127.0.0.1:${value.port}; the previous port stayed occupied.\n`);
+          if (!options.openSettings) void value.open().catch(error => {
+            process.stderr.write(`[Team DevSpace desktop] Open migrated Control Center: ${desktopErrorText(error)}\n`);
+          });
+        }
+        return value;
+      }, error => {
+        process.stderr.write(`[Team DevSpace desktop] Control Center unavailable: ${desktopErrorText(error)}\n`);
         throw error;
-      });
+      }).finally(() => { if (!controlSurface) controlStarting = undefined; });
     return controlStarting;
   };
   const openSettings = section => {
@@ -92,7 +104,6 @@ export async function runTray(home = stateHome(), options = {}) {
       child.once('error', reject);
       child.once('exit', (code, signal) => { closed = true; resolve({ code, signal }); });
     });
-    if (controlStartError) throw controlStartError;
     if (requireVisible && !visible && !duplicate) throw new Error('Native macOS tray exited before its menu bar item became visible');
     if (!exiting && (exit.signal || exit.code !== 0)) throw new Error(`Native tray exited unexpectedly (${exit.signal ?? exit.code})`);
   } finally {
@@ -100,6 +111,8 @@ export async function runTray(home = stateHome(), options = {}) {
     await controller.dispose();
     await opening?.catch(() => {});
     await controlStarting?.catch(() => {});
-    await controlSurface?.close();
+    if (controlSurface) await controlSurface.close().catch(error => {
+      process.stderr.write(`[Team DevSpace desktop] Close Control Center: ${desktopErrorText(error)}\n`);
+    });
   }
 }
