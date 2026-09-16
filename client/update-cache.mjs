@@ -1,6 +1,6 @@
 import { lstat, readdir, rm, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
+import { acquireProcessLock } from './process-lock.mjs';
 import { readJson, RELEASE_VERSION } from './state.mjs';
 import { UPDATE_VERSION } from './update-policy.mjs';
 import { DOWNLOAD_TARGETS, packageName } from './release-catalog.mjs';
@@ -10,8 +10,8 @@ import { DOWNLOAD_TARGETS, packageName } from './release-catalog.mjs';
 export async function pruneUpdateCache(home, policy, now = Date.now()) {
   const directory = join(home, 'updates');
   let unlock;
-  try { unlock = await lockfile.lock(join(directory, '.apply'), { realpath: false, lockfilePath: join(directory, '.apply.lock'), stale: 30000, update: 5000 }); }
-  catch (error) { if (error.code === 'ELOCKED' || error.code === 'ENOENT') return; throw error; }
+  try { unlock = await acquireProcessLock(join(directory, '.apply-lock.sqlite')); }
+  catch (error) { if (error.code === 'process_lock_busy' || error.code === 'SQLITE_CANTOPEN') return; throw error; }
   try {
     const attempt = await readJson(join(directory, 'attempt.json'), null);
     const request = await readJson(join(directory, 'install-request.json'), null);

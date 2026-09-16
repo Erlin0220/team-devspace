@@ -5,15 +5,14 @@ import { dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
-import lockfile from 'proper-lockfile';
 import { atomicJson, loadState, privateDirectory, readJson } from './state.mjs';
 import { withDeviceOperation } from './operation.mjs';
+import { acquireProcessLock, processLockHeld } from './process-lock.mjs';
 import { componentArguments, executablePaths } from './platform.mjs';
 import { loopbackRequest } from './http.mjs';
 
 const COMPONENTS = ['runtime', 'tunnel'];
 const MAX_LOG = 5 * 1024 * 1024;
-const LOCK_STALE = 30000;
 const entrypoint = fileURLToPath(import.meta.url);
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 24);
 const missing = error => ['ENOENT', 'ESRCH'].includes(error.code);
@@ -99,7 +98,7 @@ async function clearSession(owner, nonce) {
 }
 
 const recordPath = (directory, component) => join(directory, `${componentName(component)}.json`);
-const lockPath = (directory, component) => join(directory, `${componentName(component)}.lock`);
+const lockPath = (directory, component) => join(directory, `${componentName(component)}.lock.sqlite`);
 const startupPath = (home, component) => join(home, 'startup', `${componentName(component)}.standalone.json`);
 
 async function readRecord(directory, component, home) {
@@ -153,10 +152,9 @@ export async function installStandalone(state, home, root, scope) {
 async function stopOne(home, directory, component) {
   const record = await readRecord(directory, component, home);
   if (!record) {
-    if (await lockfile.check(directory, { lockfilePath: lockPath(directory, component), stale: LOCK_STALE })) {
+    if (await processLockHeld(lockPath(directory, component))) {
       throw new Error('Standalone startup is still acquiring ownership; retry after it completes');
     }
-    await rm(lockPath(directory, component), { recursive: true, force: true });
     return;
   }
   if (await keeperAlive(record)) {
@@ -176,7 +174,6 @@ async function stopOne(home, directory, component) {
   const current = await readRecord(directory, component, home);
   if (current && current.nonce !== record.nonce) throw new Error('Standalone owner changed while stopping');
   await rm(recordPath(directory, component), { force: true });
-  await rm(lockPath(directory, component), { recursive: true, force: true });
 }
 
 async function localReady(state, component) {
@@ -240,7 +237,11 @@ export async function standaloneAction(action, state, home, components) {
       else {
         try {
           await stopOne(home, directory, component);
-          if (action === 'remove') await rm(startupPath(home, component), { force: true });
+          if (action === 'remove') {
+            await rm(startupPath(home, component), { force: true });
+            const path = lockPath(directory, component);
+            await Promise.all([path, `${path}-journal`, `${path}-wal`, `${path}-shm`].map(file => rm(file, { force: true })));
+          }
         } catch (error) { failures.push(error); }
       }
     }
@@ -295,8 +296,7 @@ async function runKeeper(home, component, nonce) {
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
   process.on('SIGHUP', stop);
-  const release = await lockfile.lock(directory, { lockfilePath: lockPath(directory, component), stale: LOCK_STALE,
-    update: 5000, onCompromised: stop });
+  const release = await acquireProcessLock(lockPath(directory, component));
   const output = await logWriter(join(home, 'logs', `${component}.log`));
   const errors = await logWriter(join(home, 'logs', `${component}.error.log`));
   const event = message => errors.write(`${new Date().toISOString()} standalone ${component}: ${message}\n`);

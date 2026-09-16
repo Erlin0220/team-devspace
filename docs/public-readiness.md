@@ -4,6 +4,22 @@ Assessment: 2026-09-15. Tracking: Issue #9. Scope: the existing repository,
 including every fetched public-candidate branch/tag, GitHub metadata and old
 release assets, not merely the cleaned working tree.
 
+## Cutover update — 2026-09-16
+
+The repository owner explicitly accepted publication of the historical private
+contact metadata described below. The remaining legacy-binary gate was closed by
+quarantining the only previously published binary release (`v0.2.0`) as a draft
+after its restricted local backup was rechecked against GitHub's recorded asset
+digests. No historical Git rewrite or byte replacement was used.
+
+The repository is now Public. The `Reviewed main` branch ruleset is active and
+requires a pull request, linear history, no branch deletion/non-fast-forward
+updates, and the `verify` plus `secret-scan` checks. The original 2026-09-15
+assessment below is retained as the audit record of what was known before this
+explicit owner decision and cutover. Public visibility does not by itself approve
+new installer bytes: native four-platform build/acceptance and the normal release
+gates still apply to each new version.
+
 ## Decision and execution boundary
 
 **NO-GO for making the existing repository Public in this review.** No usable

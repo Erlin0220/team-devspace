@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
 import { applyUpdate, checkForUpdates, startUpdateChecks, updateStatus } from '../client/updates.mjs';
 import { pruneUpdateCache } from '../client/update-cache.mjs';
+import { acquireProcessLock } from '../client/process-lock.mjs';
 import { atomicJson, readJson, RELEASE_VERSION } from '../client/state.mjs';
 import { packageName } from '../client/release-catalog.mjs';
 import { boundedJson } from '../client/update-policy.mjs';
@@ -94,6 +94,21 @@ test('remote-work retries probe only local readiness before another apply attemp
   assert.equal((await updateStatus(home)).automaticResult.code, 'remote_work_active');
 });
 
+test('a concurrent automatic apply is projected as local busy and retried promptly', async t => {
+  const home = await temporary(t), timer = clock();
+  const stop = startUpdateChecks(home, () => {}, () => true, { ...timer,
+    check: async () => ({ nextCheckAt: timer.now() + 21600000, automatic: true, policy: policy(futureVersion),
+      automaticResult: await readJson(join(home, 'updates/automatic-result.json'), null) }),
+    apply: async () => { throw Object.assign(new Error('busy'), { code: 'update_busy', version: futureVersion }); },
+  });
+  t.after(stop);
+  await timer.tick();
+  const result = (await updateStatus(home)).automaticResult;
+  assert.equal(result.code, 'local_operation_active');
+  assert.equal(result.nextAttemptAt - timer.now(), 600000);
+  assert.match(result.message, /本机操作/);
+});
+
 test('macOS prepared authorization state is retained without repeated preparation', async t => {
   const home = await temporary(t), timer = clock(); let prepares = 0;
   const stop = startUpdateChecks(home, () => {}, () => true, { ...timer,
@@ -124,8 +139,21 @@ test('apply lock spans the asynchronous handoff and does not conflict with check
   try {
     const checked = await checkForUpdates(home, { fetcher: async () => Response.json(policy()) });
     assert.equal(checked.error, null);
-    await assert.rejects(applyUpdate(home, options), { code: 'ELOCKED' });
+    await assert.rejects(applyUpdate(home, options), error => {
+      assert.equal(error.code, 'update_busy');
+      assert.equal(error.message, '另一个更新操作仍在进行；本次操作未执行，请稍后重试。');
+      assert.equal(error.message.includes('Lock file'), false);
+      return true;
+    });
   } finally { finish.resolve(); await applying; }
+});
+
+test('a stale legacy proper-lockfile directory cannot permanently block a new updater', async t => {
+  const home = await temporary(t), options = await applyOptions(home); let handoffs = 0;
+  await mkdir(join(home, 'updates', '.apply.lock'), { recursive: true });
+  const result = await applyUpdate(home, { ...options,
+    handoff: async () => { handoffs++; return { handedOff: true }; } });
+  assert.equal(result.handedOff, true); assert.equal(handoffs, 1);
 });
 
 test('a stale result from another attempt cannot authorize a duplicate installer', async t => {
@@ -220,7 +248,7 @@ test('update cache GC preserves current/approved/in-flight packages and never fo
   await symlink(outside, join(directory, '0.0.1'), process.platform === 'win32' ? 'junction' : 'dir');
   await atomicJson(join(directory, 'attempt.json'), { version: '0.2.2' });
   await atomicJson(join(directory, 'install-request.json'), { version: '0.2.3' });
-  const unlock = await lockfile.lock(join(directory, '.apply'), { realpath: false, lockfilePath: join(directory, '.apply.lock') });
+  const unlock = await acquireProcessLock(join(directory, '.apply-lock.sqlite'));
   await pruneUpdateCache(home, policy(futureVersion));
   assert.equal(await readFile(join(old, oldName), 'utf8'), 'cached'); await unlock();
   await pruneUpdateCache(home, policy(futureVersion));

@@ -57,7 +57,7 @@ if (wrangler.workers_dev !== false || wrangler.preview_urls !== false) {
 if (manifest.packageManager !== `npm@${manifest.devDependencies.npm}`) {
   throw new Error('Build npm must match packageManager');
 }
-const allowedRuntimeDependencies = ['@waishnav/devspace', 'jose', 'proper-lockfile'].sort();
+const allowedRuntimeDependencies = ['@waishnav/devspace', 'better-sqlite3', 'jose'].sort();
 const runtimeDependencies = Object.keys(manifest.dependencies ?? {}).sort();
 if (JSON.stringify(runtimeDependencies) !== JSON.stringify(allowedRuntimeDependencies)) {
   throw new Error(`Employee runtime dependencies must stay thin: ${allowedRuntimeDependencies.join(', ')}`);
