@@ -4,9 +4,9 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import http from 'node:http';
-import lockfile from 'proper-lockfile';
 import { atomicJson, installRoot, loadState, privateDirectory, readJson, RELEASE_VERSION, stateHome } from './state.mjs';
 import { withDeviceOperation, notifyObserver } from './operation.mjs';
+import { acquireProcessLock } from './process-lock.mjs';
 import { runWindowsDesktop } from './windows-desktop.mjs';
 import { boundedJson, compareVersions, UPDATE_VERSION, validateUpdatePolicy, verifySignedCatalog, versionUnsupported } from './update-policy.mjs';
 import { DOWNLOAD_TARGETS, packageUrls } from './release-catalog.mjs';
@@ -100,8 +100,8 @@ export async function checkForUpdates(home = stateHome(), { force = false, fetch
   const directory = updateDirectory(home);
   await privateDirectory(directory);
   let unlock;
-  try { unlock = await lockfile.lock(join(directory, '.check'), { realpath: false, lockfilePath: join(directory, '.check.lock'), stale: 30000, update: 5000 }); }
-  catch (error) { if (error.code === 'ELOCKED') return updateStatus(home); throw error; }
+  try { unlock = await acquireProcessLock(join(directory, '.check-lock.sqlite')); }
+  catch (error) { if (error.code === 'process_lock_busy') return updateStatus(home); throw error; }
   try {
     // This is a discovery cache, not an installation guard or authorization setting.
     const previous = await readJson(join(directory, 'check.json'), {}).catch(() => ({}));
@@ -271,7 +271,14 @@ export async function applyUpdate(home = stateHome(), { automatic = false, repai
     signal: AbortSignal.any([signal, options.signal ?? AbortSignal.timeout(20000)]) });
   const directory = updateDirectory(home);
   await privateDirectory(directory);
-  const unlock = await lockfile.lock(join(directory, '.apply'), { realpath: false, lockfilePath: join(directory, '.apply.lock'), stale: 30000, update: 5000 });
+  let unlock;
+  try { unlock = await acquireProcessLock(join(directory, '.apply-lock.sqlite')); }
+  catch (error) {
+    if (error.code === 'process_lock_busy') throw Object.assign(
+      new Error('另一个更新操作仍在进行；本次操作未执行，请稍后重试。'),
+      { code: 'update_busy', cause: error });
+    throw error;
+  }
   let version;
   try {
     // An unresolved handoff is a local fact. Reject duplicate preparation before
@@ -392,11 +399,14 @@ export function startUpdateChecks(home, onChange = () => {}, canApply = () => tr
       }
     } catch (error) {
       if (stopped) return;
-      const busy = error.code === 'remote_work_active';
+      const remoteBusy = error.code === 'remote_work_active';
+      const localBusy = ['update_busy', 'lifecycle_busy'].includes(error.code);
       outcome = { version: error.version ?? status?.policy?.auto, checkedAt: new Date(now()).toISOString(), deferred: true,
-        code: busy ? 'remote_work_active' : error.code === 'installer_pending' ? 'installer_pending' : 'update_failed',
-        nextAttemptAt: now() + (busy ? BUSY_INTERVAL : Math.max(FAILURE_INTERVAL, error.retryAfterMs ?? 0)),
-        message: busy ? '更新已准备；远程工作结束后会再次尝试安装。'
+        code: remoteBusy ? 'remote_work_active' : localBusy ? 'local_operation_active'
+          : error.code === 'installer_pending' ? 'installer_pending' : 'update_failed',
+        nextAttemptAt: now() + (remoteBusy || localBusy ? BUSY_INTERVAL : Math.max(FAILURE_INTERVAL, error.retryAfterMs ?? 0)),
+        message: remoteBusy ? '更新已准备；远程工作结束后会再次尝试安装。'
+          : localBusy ? '另一项本机操作仍在进行；完成后会再次尝试安装。'
           : '自动更新暂未完成；已保留当前版本，将稍后重试。可查看安装结果或手动检查更新。' };
       await atomicJson(join(updateDirectory(home), 'automatic-result.json'), outcome).catch(() => {});
     }

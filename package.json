@@ -48,8 +48,8 @@
   },
   "dependencies": {
     "@waishnav/devspace": "1.0.8",
-    "jose": "6.2.12",
-    "proper-lockfile": "4.1.2"
+    "better-sqlite3": "12.11.1",
+    "jose": "6.2.12"
   },
   "allowScripts": {
     "@google/genai@1.52.0": false,

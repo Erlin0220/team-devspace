@@ -1,14 +1,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import lockfile from 'proper-lockfile';
+import { acquireProcessLock } from './process-lock.mjs';
 import { privateDirectory } from './state.mjs';
 
 const operation = new AsyncLocalStorage();
 
 // One mutation owner per installation, shared by the CLI, tray and installers.
-// Reuse the existing dependency's atomic acquisition, heartbeat, crash recovery
-// and compromise detection instead of implementing another lease mechanism.
+// Native SQLite file ownership is released by the OS on process exit/crash, so
+// lifecycle serialization does not need a heartbeat or stale-file lease.
 export async function withDeviceOperation(home, task) {
   await privateDirectory(home);
   const canonical = await realpath(home);
@@ -16,14 +16,11 @@ export async function withDeviceOperation(home, task) {
   if (operation.getStore() === key) return task();
   let release;
   try {
-    release = await lockfile.lock(key, {
-      lockfilePath: join(key, '.lifecycle.lock'),
-      stale: 30000,
-      update: 5000,
-      retries: { retries: 20, minTimeout: 100, maxTimeout: 250, factor: 1.2 },
+    release = await acquireProcessLock(join(key, '.lifecycle-lock.sqlite'), {
+      retries: 20, minTimeout: 100, maxTimeout: 250, factor: 1.2,
     });
   } catch (error) {
-    if (error.code === 'ELOCKED') throw Object.assign(
+    if (error.code === 'process_lock_busy') throw Object.assign(
       new Error('另一个安装、修复或连接操作仍在进行；本次操作未执行，请完成后重试。'),
       { code: 'lifecycle_busy', cause: error });
     throw error;

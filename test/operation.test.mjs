@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
-import { mkdtemp, rm, access, utimes } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +51,6 @@ if (process.argv[2] === '--operation-worker') {
       throw new Error('injected operation failure');
     })), /injected operation failure/);
     assert.equal(await withDeviceOperation(home, async () => 'recovered'), 'recovered');
-    assert.equal(await access(join(home, '.lifecycle.lock')).then(() => true, () => false), false);
   });
 
   test('separate processes share one device operation owner without blocking another installation', async t => {
@@ -71,15 +70,12 @@ if (process.argv[2] === '--operation-worker') {
     assert.equal((await second.exited).code, 0);
   });
 
-  test('a killed operation owner is recoverable after its lock becomes stale', async t => {
+  test('a killed operation owner is immediately recoverable without a stale timeout', async t => {
     const home = await fixture(t);
     const first = worker(t, home);
     await first.wait('acquired');
     first.child.kill('SIGKILL');
     await first.exited;
-    // Advance only the abandoned lock age, not production stale/retry settings.
-    const old = new Date(Date.now() - 60000);
-    await utimes(join(home, '.lifecycle.lock'), old, old);
     assert.equal(await withDeviceOperation(home, async () => 'recovered-after-crash'), 'recovered-after-crash');
   });
 }

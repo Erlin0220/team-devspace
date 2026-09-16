@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { execFileSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pipeline } from 'node:stream/promises';
-import lockfile from 'proper-lockfile';
+import { acquireProcessLock } from '../client/process-lock.mjs';
 import { atomicJson, readJson, secureStateDirectory } from '../client/state.mjs';
 import { run, sha256File, sourceIdentity } from './build-utils.mjs';
 import { packageName } from './download-catalog.mjs';
@@ -313,7 +313,14 @@ export async function main(argv = process.argv.slice(2)) {
   const architectures = values.arch === 'both' ? ARCHES : [values.arch];
   const recordPath = resolve('build', 'codemagic', `${commit}.json`);
   await mkdir(dirname(recordPath), { recursive: true });
-  const unlock = await lockfile.lock(recordPath, { realpath: false, retries: 0 });
+  let unlock;
+  try { unlock = await acquireProcessLock(`${recordPath}.lock.sqlite`); }
+  catch (error) {
+    if (error.code === 'process_lock_busy') throw Object.assign(
+      new Error('Another Codemagic action is already using this build record; retry after it finishes.'),
+      { code: 'codemagic_busy', cause: error });
+    throw error;
+  }
   try {
     const record = await readJson(recordPath, { appId: config.appId, commit, version, expectedProfileSha256, builds: {} });
     if (record.appId !== config.appId || record.commit !== commit || record.version !== version) throw new Error('Local build references belong to another source/app');
